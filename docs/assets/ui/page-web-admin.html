@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>内核后台</title>
+  <link rel="stylesheet" href="./shell.css" />
+</head>
+<body>
+  <div class="win">
+    <div class="chrome"><i class="dot r"></i><i class="dot y"></i><i class="dot g"></i><span>ccLoad</span></div>
+    <div class="app">
+      <aside class="aside">
+        <div class="brand">
+          <svg class="mark" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+          <div><div class="t">ccLoad</div><small>desktop client</small></div>
+        </div>
+        <nav><div style="margin-bottom:16px"><div class="gt">监控</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h7v9H3zM14 3h7v5h-7zM14 12h7v9h-7zM3 16h7v5H3z"/></svg>总览</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>实时日志</div></div><div style="margin-bottom:16px"><div class="gt">配置</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8l4 4-4 4M12 16h8"/></svg>CLI 接管</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8M14 7h7v7"/></svg>调度图</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v12M6 15l4 4 4-4M18 21V9M18 9l-4-4-4 4"/></svg>模型链</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16 16h6v6h-6zM2 16h6v6H2zM9 2h6v6H9zM12 8v8M5 16v-4h14v4"/></svg>模型导入</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v6M8 6h8M4 10h16v10H4z"/></svg>扩展管理</div></div><div style="margin-bottom:16px"><div class="gt">系统</div><div class="item on"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></svg>内核后台</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1L7 17M17 7l2.1-2.1"/></svg>设置</div></div></nav>
+        <div class="foot">
+          <div class="lang"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1L7 17M17 7l2.1-2.1"/></svg><span style="font-size:11px">中文</span></div>
+          <div class="status"><span class="ping"></span>运行中 · v4.6.37-beta.1</div>
+        </div>
+      </aside>
+      <main>
+    <div>
+      <h1 class="t-display">内核后台</h1>
+      <p class="lede">ccLoad 自带的管理界面，在独立窗口中打开，字段随内核升级自动跟进。</p>
+    </div>
+    <div style="margin-top:18px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+      <div class="card" style="padding:16px"><div class="t-title">渠道管理</div><div class="muted" style="font-size:12px;margin-top:4px">上游渠道、Key、模型与降级链配置</div></div><div class="card" style="padding:16px"><div class="t-title">令牌管理</div><div class="muted" style="font-size:12px;margin-top:4px">CLI 接入用的 API 令牌与限额</div></div><div class="card" style="padding:16px"><div class="t-title">请求日志</div><div class="muted" style="font-size:12px;margin-top:4px">实时请求流与错误排查</div></div><div class="card" style="padding:16px"><div class="t-title">用量统计</div><div class="muted" style="font-size:12px;margin-top:4px">成本、Token 用量与渠道健康度</div></div><div class="card" style="padding:16px"><div class="t-title">内核设置</div><div class="muted" style="font-size:12px;margin-top:4px">内核运行参数与系统设置</div></div>
+    </div>
+  </main>
+    </div>
+  </div>
+</body>
+</html>

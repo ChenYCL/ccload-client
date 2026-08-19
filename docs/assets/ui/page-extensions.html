@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>扩展管理</title>
+  <link rel="stylesheet" href="./shell.css" />
+</head>
+<body>
+  <div class="win">
+    <div class="chrome"><i class="dot r"></i><i class="dot y"></i><i class="dot g"></i><span>ccLoad</span></div>
+    <div class="app">
+      <aside class="aside">
+        <div class="brand">
+          <svg class="mark" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+          <div><div class="t">ccLoad</div><small>desktop client</small></div>
+        </div>
+        <nav><div style="margin-bottom:16px"><div class="gt">监控</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h7v9H3zM14 3h7v5h-7zM14 12h7v9h-7zM3 16h7v5H3z"/></svg>总览</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>实时日志</div></div><div style="margin-bottom:16px"><div class="gt">配置</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8l4 4-4 4M12 16h8"/></svg>CLI 接管</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8M14 7h7v7"/></svg>调度图</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v12M6 15l4 4 4-4M18 21V9M18 9l-4-4-4 4"/></svg>模型链</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16 16h6v6h-6zM2 16h6v6H2zM9 2h6v6H9zM12 8v8M5 16v-4h14v4"/></svg>模型导入</div><div class="item on"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v6M8 6h8M4 10h16v10H4z"/></svg>扩展管理</div></div><div style="margin-bottom:16px"><div class="gt">系统</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></svg>内核后台</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1L7 17M17 7l2.1-2.1"/></svg>设置</div></div></nav>
+        <div class="foot">
+          <div class="lang"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1L7 17M17 7l2.1-2.1"/></svg><span style="font-size:11px">中文</span></div>
+          <div class="status"><span class="ping"></span>运行中 · v4.6.37-beta.1</div>
+        </div>
+      </aside>
+      <main>
+    <div class="row">
+      <div>
+        <h1 class="t-display">扩展管理</h1>
+        <p class="lede">MCP / Skill / Agent / Hook 一处配置，推给装了它们的每一个 CLI。</p>
+      </div>
+      <div class="btn-a">新建</div>
+    </div>
+    <div style="margin-top:14px;display:flex;gap:8px">
+      <span class="btn" style="background:rgb(var(--accent)/0.1);border:0;color:rgb(var(--accent));font-weight:500">MCP</span>
+      <span class="btn">Skill</span>
+      <span class="btn">Agent</span>
+      <span class="btn">Hook</span>
+    </div>
+    <div style="margin-top:14px;display:flex;flex-direction:column;gap:10px">
+      
+        <div class="card" style="padding:14px 16px">
+          <div class="row">
+            <div>
+              <div class="mono" style="font-weight:600">filesystem</div>
+              <div class="muted" style="font-size:13px">读写工作区文件</div>
+            </div>
+            <div style="display:flex;gap:6px"><span class="btn" style="font-size:11px;padding:3px 8px">Claude Code</span><span class="btn" style="font-size:11px;padding:3px 8px">Codex</span></div>
+          </div>
+        </div>
+        <div class="card" style="padding:14px 16px">
+          <div class="row">
+            <div>
+              <div class="mono" style="font-weight:600">github</div>
+              <div class="muted" style="font-size:13px">仓库、Issue、PR</div>
+            </div>
+            <div style="display:flex;gap:6px"><span class="btn" style="font-size:11px;padding:3px 8px">Claude Code</span></div>
+          </div>
+        </div>
+        <div class="card" style="padding:14px 16px">
+          <div class="row">
+            <div>
+              <div class="mono" style="font-weight:600">ccload-vision</div>
+              <div class="muted" style="font-size:13px">把图片交给内核里的多模态模型</div>
+            </div>
+            <div style="display:flex;gap:6px"><span class="btn" style="font-size:11px;padding:3px 8px">Claude Code</span><span class="btn" style="font-size:11px;padding:3px 8px">OpenCode</span></div>
+          </div>
+        </div>
+    </div>
+  </main>
+    </div>
+  </div>
+</body>
+</html>

@@ -51,17 +51,63 @@ ccLoad Desktop handles those cases with:
 - **A sandbox.** Writes land in a side folder until you turn sandbox off.
 - **An overview that matches the gateway.** Spend, health, live requests, logs — the same ccLoad numbers, not a second counter.
 
-## What you can do
+## Each sidebar page
 
-| You want to | Open | You get |
-|---|---|---|
-| Run a gateway here, or join one you already have | Settings | This Mac as the entry, or the box you already share |
-| Point CLIs at it | CLI takeover | Claude Code / Codex / Gemini / Grok / OpenCode on one gateway |
-| Edit channels, keys, tokens | Kernel admin | The real ccLoad screens, not a thinner copy |
-| Opus on this provider, fallback on that one | Dispatch graph | Conflicts are errors, not a silent pick |
-| Put channel models into the CLI lists | Model import | Names are appended; a Claude Code row with no slot is skipped |
-| See which MCP / Skill is on which CLI | Extensions | One row, badges for each tool |
-| See today’s spend and a sick channel | Overview / live logs | The same figures as the ccLoad dashboard |
+The sidebar is three groups: watch what is happening, then change how it runs, then touch the environment. Pages follow that order. Screenshots match the shipped light shell (sidebar groups, kernel status in the corner). Numbers are sample data.
+
+### Monitor · Overview
+
+This is the first screen: how many requests today, how many succeeded, how busy the last minute was, how much it cost. Below that: the traffic curve, per-channel health, which models are spending. Figures come from the kernel; the client only aggregates.
+
+![Overview](docs/assets/ui/page-dashboard.png)
+
+### Monitor · Live logs
+
+The top list is in-flight requests (not in history yet). The table is finished ones. Filter by model, channel, or status, or show errors only. Turn “live” off if you do not want the laptop polling the kernel; refresh by hand instead.
+
+![Live logs](docs/assets/ui/page-logs.png)
+
+### Configure · CLI takeover
+
+Point Claude Code, Codex, Gemini CLI, Grok Build, and OpenCode at the current gateway. Already-pointed tools can be written again (to fix a half-edited file). Every write is snapshotted; “Snapshot history” in the corner rolls one CLI back. With sandbox on in Settings, this page only writes a side folder.
+
+![CLI takeover](docs/assets/ui/page-cli.png)
+
+### Configure · Dispatch graph
+
+A table for “this kind of work uses that provider’s that model.” After you apply it, CLIs only speak tier aliases (opus / sonnet / …). Failover and cooldown stay in the kernel. Contradictory orderings are blocked instead of silently picked.
+
+![Dispatch graph](docs/assets/ui/page-graph.png)
+
+### Configure · Model chain
+
+A fallback: try this, then that. Written as channels in decreasing priority so the kernel’s picker walks the whole chain. The graph is “how traffic is split”; the chain is “where it goes when something dies.”
+
+![Model chain](docs/assets/ui/page-fallback.png)
+
+### Configure · Model import
+
+Aliases your live channels can actually serve, appended to Codex / OpenCode catalogs. Claude Code has no catalog file, only a few slots: a row is written only if you pick opus / sonnet / … — otherwise it is skipped, so the model you are using is not overwritten.
+
+![Model import](docs/assets/ui/page-models.png)
+
+### Configure · Extensions
+
+One row per MCP / Skill / Agent / Hook, with badges for which CLIs have it. Edit once, push to every CLI that has it. File formats stay native; writes are snapshotted first.
+
+![Extensions](docs/assets/ui/page-extensions.png)
+
+### System · Kernel admin
+
+Channels, tokens, the kernel’s own logs and settings. This opens ccLoad’s stock admin in a separate window, so fields follow kernel upgrades. There is no thinner copy of those forms here.
+
+![Kernel admin](docs/assets/ui/page-web-admin.png)
+
+### System · Settings
+
+Where the gateway lives: run one on this machine, or paste an instance you already have. Turn on sandbox CLI writes while you experiment. The page also lists Anthropic / OpenAI / Gemini entrypoints for tools that do not go through takeover.
+
+![Settings](docs/assets/ui/page-settings.png)
 
 ## Get it
 

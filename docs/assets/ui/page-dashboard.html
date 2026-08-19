@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>总览</title>
+  <link rel="stylesheet" href="./shell.css" />
+</head>
+<body>
+  <div class="win">
+    <div class="chrome"><i class="dot r"></i><i class="dot y"></i><i class="dot g"></i><span>ccLoad</span></div>
+    <div class="app">
+      <aside class="aside">
+        <div class="brand">
+          <svg class="mark" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+          <div><div class="t">ccLoad</div><small>desktop client</small></div>
+        </div>
+        <nav><div style="margin-bottom:16px"><div class="gt">监控</div><div class="item on"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h7v9H3zM14 3h7v5h-7zM14 12h7v9h-7zM3 16h7v5H3z"/></svg>总览</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>实时日志</div></div><div style="margin-bottom:16px"><div class="gt">配置</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8l4 4-4 4M12 16h8"/></svg>CLI 接管</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8M14 7h7v7"/></svg>调度图</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v12M6 15l4 4 4-4M18 21V9M18 9l-4-4-4 4"/></svg>模型链</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16 16h6v6h-6zM2 16h6v6H2zM9 2h6v6H9zM12 8v8M5 16v-4h14v4"/></svg>模型导入</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v6M8 6h8M4 10h16v10H4z"/></svg>扩展管理</div></div><div style="margin-bottom:16px"><div class="gt">系统</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></svg>内核后台</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1L7 17M17 7l2.1-2.1"/></svg>设置</div></div></nav>
+        <div class="foot">
+          <div class="lang"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1L7 17M17 7l2.1-2.1"/></svg><span style="font-size:11px">中文</span></div>
+          <div class="status"><span class="ping"></span>运行中 · v4.6.37-beta.1</div>
+        </div>
+      </aside>
+      <main>
+    <div class="row" style="margin-bottom:16px">
+      <div>
+        <h1 class="t-display">总览</h1>
+        <p class="lede">全部数字来自内核 Admin API 的真实字段，客户端只做聚合，不做估算。</p>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center">
+        <span style="background:rgb(16 185 129 / 0.12);color:#047857;border-radius:999px;padding:4px 10px;font-size:12px;font-weight:500">2 个请求进行中</span>
+        <div class="card" style="display:flex;overflow:hidden">
+          <div style="padding:6px 12px;background:rgb(var(--accent)/0.12);color:rgb(var(--accent));font-size:13px;font-weight:500">本日</div>
+          <div style="padding:6px 12px;font-size:13px;color:rgb(var(--muted))">昨日</div>
+          <div style="padding:6px 12px;font-size:13px;color:rgb(var(--muted))">本周</div>
+        </div>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
+      <div class="card" style="padding:14px"><div class="muted" style="font-size:12px">请求数</div><div style="font-size:28px;font-weight:600;letter-spacing:-0.03em">1,284</div><div class="muted" style="font-size:11px">成功 1,261 · 失败 23</div></div><div class="card" style="padding:14px"><div class="muted" style="font-size:12px">成功率</div><div style="font-size:28px;font-weight:600;letter-spacing:-0.03em">98.2%</div><div class="muted" style="font-size:11px">23 次失败待排查</div></div><div class="card" style="padding:14px"><div class="muted" style="font-size:12px">近一分钟 RPM</div><div style="font-size:28px;font-weight:600;letter-spacing:-0.03em">14</div><div class="muted" style="font-size:11px">今日峰值 41</div></div><div class="card" style="padding:14px"><div class="muted" style="font-size:12px">费用</div><div style="font-size:28px;font-weight:600;letter-spacing:-0.03em">$18.40</div><div class="muted" style="font-size:11px">本日累计</div></div>
+    </div>
+    <div class="card" style="margin-top:16px;padding:14px 16px">
+      <div class="t-title">请求量与成功率</div>
+      <svg viewBox="0 0 640 120" style="width:100%;height:120px;margin-top:8px">
+        <polyline fill="none" stroke="#4F52DD" stroke-width="2" points="0,80 40,72 80,76 120,58 160,62 200,44 240,50 280,38 320,42 360,30 400,36 440,28 480,34 520,22 560,26 600,18 640,24"/>
+        <polyline fill="none" stroke="#22c55e" stroke-width="1.5" opacity=".7" points="0,20 80,18 160,22 240,16 320,19 400,15 480,17 560,14 640,16"/>
+      </svg>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">
+      <div class="card" style="padding:14px 16px">
+        <div class="t-title">渠道健康</div>
+        <div class="row" style="padding:8px 0;border-top:1px solid rgb(var(--border));margin-top:8px"><span>Anthropic</span><span class="muted" style="font-size:13px">成功率 98% · 均延迟 12.1s</span></div><div class="row" style="padding:8px 0;border-top:1px solid rgb(var(--border));margin-top:8px"><span>OpenAI</span><span class="muted" style="font-size:13px">成功率 96% · 均延迟 18.4s</span></div><div class="row" style="padding:8px 0;border-top:1px solid rgb(var(--border));margin-top:8px"><span>Gemini</span><span class="muted" style="font-size:13px">成功率 91% · 均延迟 24.0s</span></div>
+      </div>
+      <div class="card" style="padding:14px 16px">
+        <div class="t-title">模型消耗</div>
+        <div class="row" style="padding:8px 0;border-top:1px solid rgb(var(--border));margin-top:8px"><span class="mono" style="font-size:13px">claude-opus-5</span><span>$11.20</span></div><div class="row" style="padding:8px 0;border-top:1px solid rgb(var(--border));margin-top:8px"><span class="mono" style="font-size:13px">gpt-5.4</span><span>$4.80</span></div><div class="row" style="padding:8px 0;border-top:1px solid rgb(var(--border));margin-top:8px"><span class="mono" style="font-size:13px">gemini-3-pro</span><span>$2.40</span></div>
+      </div>
+    </div>
+  </main>
+    </div>
+  </div>
+</body>
+</html>
