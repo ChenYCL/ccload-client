@@ -1,6 +1,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { Check, Download, Eye, RefreshCw, Radar, Wand2 } from "lucide-react";
+import { useT } from "../i18n";
 import { api } from "../lib/api";
 import { cn } from "../lib/cn";
 import { fetchCatalog, lookupMeta } from "../lib/modelCatalog";
@@ -66,38 +67,69 @@ const TIER_LABELS: Record<string, string> = {
   haiku: "haiku",
 };
 
+/// Claude Code 只有这 5 个槽位。按别名里的 opus/sonnet/… 字样猜，每个槽位只填一次。
+function guessTierFromName(alias: string): (typeof TIERS)[number] | null {
+  const n = alias.toLowerCase();
+  if (n.includes("fable")) return "fable";
+  if (n.includes("opus")) return "opus";
+  if (n.includes("sonnet")) return "sonnet";
+  if (n.includes("haiku")) return "haiku";
+  return null;
+}
+
 /** 视觉 MCP 的服务器名，与后端 `vision_mcp::MCP_NAME` 一致。 */
 const VISION_MCP_ID = "ccload-vision";
 
-type TargetOutcome = { t: CliTarget; ok: boolean; text: string };
+/// 一个目标的写入结果。`skipped` 必须和 `ok` 分开：跳过等于**没写**，塞进
+/// `ok` 再靠 `text` 解释，回显模板套出来就是「已写入 跳过（…）」这种自相矛盾的
+/// 话，用户没法判断到底写没写。视觉 MCP 那条路只会产出 ok / failed 两态。
+type TargetOutcome = {
+  t: CliTarget;
+  status: "ok" | "skipped" | "failed";
+  text: string;
+};
 
 /// 批量写多个 CLI：一个失败不影响其余，每个目标都带回自己的成败。
-/// 用 Promise.all + 每项自己 catch，而不是让整个 mutation 落到 onError ——
-/// 那样五家里坏一家，另外四家写没写成用户根本看不到。
+/// 必须串行。五路并行会同时改 `backups/manifest.json`，短写入叠在旧文件尾巴上，
+/// 表现就是截图里的 `trailing characters at line 46`，装和卸全部卡死。
 async function visionBatch(
   targets: CliTarget[],
   enabled: boolean,
   model?: string,
 ): Promise<TargetOutcome[]> {
-  return Promise.all(
-    targets.map(async (t) => {
-      try {
-        const written = await api.visionMcpSet(t, enabled, model);
-        return { t, ok: true, text: written.join("、") };
-      } catch (e) {
-        return { t, ok: false, text: errText(e) };
-      }
-    }),
-  );
+  const out: TargetOutcome[] = [];
+  for (const t of targets) {
+    try {
+      const written = await api.visionMcpSet(t, enabled, model);
+      out.push({
+        t,
+        status: "ok",
+        text: written.join("、") || (enabled ? "已安装" : "已移除"),
+      });
+    } catch (e) {
+      out.push({ t, status: "failed", text: errText(e) });
+    }
+  }
+  return out;
 }
 
 function summarize(rs: TargetOutcome[], okWord: string, failWord: string): string {
   return rs
-    .map((r) => `${TARGET_LABELS[r.t]}：${r.ok ? okWord : `${failWord} —— ${r.text}`}`)
+    .map((r) => `${TARGET_LABELS[r.t]}：${r.status === "ok" ? okWord : `${failWord} —— ${r.text}`}`)
     .join("\n");
 }
 
+/// 模型导入的三态回显。跳过要说清「没写、为什么、其它家不受牵连」——它出现的
+/// 场合就是混选 Claude + Codex，用户得看得出另外几家是照常写了的。
+function describeImport(r: TargetOutcome): string {
+  const label = TARGET_LABELS[r.t];
+  if (r.status === "skipped") return `${label}：跳过 —— ${r.text}`;
+  if (r.status === "failed") return `${label}：失败 —— ${r.text}`;
+  return `${label}：已写入 ${r.text}`;
+}
+
 export function ModelsPage() {
+  const t = useT();
   const channels = useQuery({
     queryKey: ["channels"],
     queryFn: () => api.admin<Channel[]>("GET", "channels"),
@@ -217,33 +249,41 @@ export function ModelsPage() {
           contextWindow: row(a).contextWindow,
           tier: row(a).tier,
         }));
-      // 一个目标失败不该把其余的结果一起吞掉 —— 每个都要有自己的成败。
-      return Promise.all(
-        targets.map(async (t) => {
-          try {
-            // tier 只有 Claude Code 认；别家传 null，避免写进不认识的字段。
-            const forTarget =
-              t === "claude-code"
-                ? entries
-                : entries.map((e) => ({ ...e, tier: null }));
-            const r = await api.modelImport(t, forTarget);
-            const note =
-              r.skipped.length > 0
-                ? `（${r.skipped.length} 个模型没选 Tier 槽位，未写入）`
-                : "";
-            return { t, ok: true as const, text: r.written.join("、") + note };
-          } catch (e) {
-            return { t, ok: false as const, text: errText(e) };
+      // 逐个写：并行会和视觉 MCP 一样把备份清单踩坏。一家失败不影响其余。
+      const rs: TargetOutcome[] = [];
+      for (const t of targets) {
+        try {
+          // Claude Code 没选槽位时后端会整次失败；其它 CLI 不认 tier，
+          // 混选时跳过 Claude，让 Codex/OpenCode 照常写入。
+          if (
+            t === "claude-code" &&
+            entries.every((e) => !e.tier || e.tier === "none")
+          ) {
+            rs.push({
+              t,
+              status: "skipped",
+              text: "没给任何模型选 Tier 槽位，配置未改动；其它 CLI 见各自那行",
+            });
+            continue;
           }
-        }),
-      );
+          // tier 只有 Claude Code 认；别家传 null，避免写进不认识的字段。
+          const forTarget =
+            t === "claude-code"
+              ? entries
+              : entries.map((e) => ({ ...e, tier: null }));
+          const r = await api.modelImport(t, forTarget);
+          const note =
+            r.skipped.length > 0
+              ? `（${r.skipped.length} 个模型没选 Tier 槽位，未写入）`
+              : "";
+          rs.push({ t, status: "ok", text: r.written.join("、") + note });
+        } catch (e) {
+          rs.push({ t, status: "failed", text: errText(e) });
+        }
+      }
+      return rs;
     },
-    onSuccess: (rs) =>
-      setMessage(
-        rs
-          .map((r) => `${TARGET_LABELS[r.t]}：${r.ok ? `已写入 ${r.text}` : `失败 —— ${r.text}`}`)
-          .join("\n"),
-      ),
+    onSuccess: (rs) => setMessage(rs.map(describeImport).join("\n")),
     onError: (e) => setMessage(errText(e)),
   });
 
@@ -321,11 +361,35 @@ export function ModelsPage() {
   // Tier 只有 Claude Code 用得上；多选里只要它在，这一列就要能编辑。
   const showTier = targets.includes("claude-code");
   const visionCandidates = aliases.filter((a) => row(a).vision);
-  // 含 Claude Code 且一个槽位都没选时，后端必然报错 —— 与其等一次往返，
-  // 不如把按钮按下去了并讲清楚缺什么。
+  // 含 Claude Code 且一个槽位都没选时，后端必然报错。只选了 Claude 才禁用
+  // 按钮；和 Codex/OpenCode 一起选时仍可导入其它家，Claude 那路会跳过。
   const claudeNeedsSlot =
     targets.includes("claude-code") &&
     aliases.every((a) => !row(a).checked || row(a).tier === "none");
+  const claudeIsOnlyTarget = targets.length === 1 && targets[0] === "claude-code";
+  const importBlocked = claudeNeedsSlot && claudeIsOnlyTarget;
+
+  const fillTiersByName = () => {
+    const used = new Set(
+      aliases.filter((a) => row(a).checked && row(a).tier !== "none").map((a) => row(a).tier),
+    );
+    const next: Record<string, RowState> = { ...rows };
+    for (const a of aliases) {
+      if (!row(a).checked || row(a).tier !== "none") continue;
+      const guessed = guessTierFromName(a);
+      if (!guessed || used.has(guessed)) continue;
+      used.add(guessed);
+      next[a] = { ...row(a), tier: guessed };
+    }
+    setRows(next);
+  };
+
+  const bindFirstAsDefault = () => {
+    if (aliases.some((a) => row(a).checked && row(a).tier === "default")) return;
+    const first = aliases.find((a) => row(a).checked);
+    if (!first) return;
+    setRow(first, { tier: "default" });
+  };
 
   return (
     <div>
@@ -408,10 +472,10 @@ export function ModelsPage() {
                 apply.isPending ||
                 checkedCount === 0 ||
                 targets.length === 0 ||
-                claudeNeedsSlot
+                importBlocked
               }
               title={
-                claudeNeedsSlot
+                importBlocked
                   ? "Claude Code 没有模型目录文件：请在 Tier 列给至少一个模型选一个槽位"
                   : undefined
               }
@@ -423,6 +487,30 @@ export function ModelsPage() {
                 : `导入到 ${targets.length} 个 CLI`}
             </button>
           </div>
+
+          {claudeNeedsSlot && (
+            <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-900">
+              <span>
+                {t(
+                  "Claude Code 没有模型目录，只能绑 5 个槽位。现在勾选的行全是「不绑定」，导入不会改 Claude Code。",
+                )}
+              </span>
+              <button
+                type="button"
+                onClick={fillTiersByName}
+                className="rounded-lg border border-amber-500/40 bg-surface-raised px-2.5 py-1 text-xs hover:bg-surface-2"
+              >
+                {t("按名称填槽位")}
+              </button>
+              <button
+                type="button"
+                onClick={bindFirstAsDefault}
+                className="rounded-lg border border-amber-500/40 bg-surface-raised px-2.5 py-1 text-xs hover:bg-surface-2"
+              >
+                {t("把第一个勾选的设为主模型")}
+              </button>
+            </div>
+          )}
 
           {/* 上游校验。内核已经能「按渠道声明的协议去问上游要模型清单」
               （GET /admin/channels/:id/models/fetch），这里只负责把它拉回来、

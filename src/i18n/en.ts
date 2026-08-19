@@ -122,6 +122,10 @@ registerDict("en", {
   已同步: "Synced",
   视觉辅助: "Vision assist",
   写入到: "Write to",
+  "Claude Code 没有模型目录，只能绑 5 个槽位。现在勾选的行全是「不绑定」，导入不会改 Claude Code。":
+    "Claude Code has no model catalog — only 5 slots. Every checked row is unbound, so import will not change Claude Code.",
+  按名称填槽位: "Fill slots by name",
+  把第一个勾选的设为主模型: "Bind the first checked model as default",
 
   // ---- 模型链 ----
   新建链: "New chain",
