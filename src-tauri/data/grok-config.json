@@ -1,0 +1,395 @@
+{
+  "source": "https://docs.x.ai/build/settings",
+  "keys": [
+    {
+      "key": "auth.auth_provider_command",
+      "description": "External auth binary path",
+      "default": ""
+    },
+    {
+      "key": "auth.auth_provider_label",
+      "description": "Display name on the TUI login screen",
+      "default": ""
+    },
+    {
+      "key": "auth.auth_token_ttl",
+      "description": "Token lifetime in seconds",
+      "default": ""
+    },
+    {
+      "key": "cli.auto_update",
+      "description": "Launch-time update check",
+      "default": "true"
+    },
+    {
+      "key": "cli.maximum_version",
+      "description": "Updater will not install above this version",
+      "default": ""
+    },
+    {
+      "key": "cli.minimum_version",
+      "description": "Updater will not downgrade below this version",
+      "default": ""
+    },
+    {
+      "key": "cli.required_maximum_version",
+      "description": "Refuse to start above this version",
+      "default": ""
+    },
+    {
+      "key": "cli.required_minimum_version",
+      "description": "Refuse to start below this version",
+      "default": ""
+    },
+    {
+      "key": "features.codebase_indexing",
+      "description": "Code graph indexing",
+      "default": "true"
+    },
+    {
+      "key": "features.feedback",
+      "description": "Feedback system",
+      "default": "true"
+    },
+    {
+      "key": "features.lsp_tools",
+      "description": "Expose the lsp tool",
+      "default": "false"
+    },
+    {
+      "key": "features.remote_fetch",
+      "description": "Allow online model-catalog fetches",
+      "default": "true"
+    },
+    {
+      "key": "features.telemetry",
+      "description": "Anonymous usage telemetry",
+      "default": "false"
+    },
+    {
+      "key": "features.two_pass_compaction",
+      "description": "Prefire two-pass compaction",
+      "default": "false"
+    },
+    {
+      "key": "hints.fork_worktree_mode",
+      "description": "/fork worktree prompt: ask|always|never",
+      "default": "ask"
+    },
+    {
+      "key": "hints.memory_modal_fullscreen",
+      "description": "Remember memory modal fullscreen state",
+      "default": "false"
+    },
+    {
+      "key": "hints.new_session_worktree_mode",
+      "description": "/new worktree prompt: ask|always|never",
+      "default": "never"
+    },
+    {
+      "key": "memory.embedding.dimensions",
+      "description": "Memory embedding vector dimensions",
+      "default": "1024"
+    },
+    {
+      "key": "memory.enabled",
+      "description": "Enable cross-session memory",
+      "default": "false"
+    },
+    {
+      "key": "memory.initial_injection.enabled",
+      "description": "Auto-inject memory on the first turn",
+      "default": "true"
+    },
+    {
+      "key": "memory.initial_injection.min_score",
+      "description": "Score threshold for first-turn injection",
+      "default": "0.9"
+    },
+    {
+      "key": "memory.search.max_results",
+      "description": "Default number of memory search results",
+      "default": "6"
+    },
+    {
+      "key": "memory.search.min_score",
+      "description": "Minimum relevance score for memory search",
+      "default": "0.7"
+    },
+    {
+      "key": "memory.session.save_on_end",
+      "description": "Write a metadata summary on session end",
+      "default": "true"
+    },
+    {
+      "key": "memory.watcher.enabled",
+      "description": "Watch memory files for external edits",
+      "default": "true"
+    },
+    {
+      "key": "models.default_reasoning_effort",
+      "description": "Default reasoning effort for new sessions",
+      "default": ""
+    },
+    {
+      "key": "models.inference_idle_timeout_secs",
+      "description": "Idle timeout for inference streams (seconds)",
+      "default": "600"
+    },
+    {
+      "key": "models.max_completion_tokens",
+      "description": "Default max tokens per response",
+      "default": ""
+    },
+    {
+      "key": "models.max_retries",
+      "description": "Default request retries",
+      "default": "8"
+    },
+    {
+      "key": "models.stream_tool_calls",
+      "description": "Stream tool calls in the request shape",
+      "default": "true"
+    },
+    {
+      "key": "models.temperature",
+      "description": "Default sampling temperature for every model",
+      "default": ""
+    },
+    {
+      "key": "models.top_p",
+      "description": "Default nucleus sampling for every model",
+      "default": ""
+    },
+    {
+      "key": "models.web_search",
+      "description": "Model used by the web_search tool",
+      "default": ""
+    },
+    {
+      "key": "session.auto_compact_threshold_percent",
+      "description": "Auto-compact at this % of the context window",
+      "default": "85"
+    },
+    {
+      "key": "session.load_envrc",
+      "description": "Load .envrc environment variables",
+      "default": "true"
+    },
+    {
+      "key": "subagents.enabled",
+      "description": "Enable subagents",
+      "default": "true"
+    },
+    {
+      "key": "telemetry.events_url",
+      "description": "Send product-analytics events to your collector",
+      "default": ""
+    },
+    {
+      "key": "telemetry.mixpanel_enabled",
+      "description": "Mixpanel product analytics",
+      "default": ""
+    },
+    {
+      "key": "telemetry.otel_certificate",
+      "description": "Optional private CA path",
+      "default": ""
+    },
+    {
+      "key": "telemetry.otel_client_certificate",
+      "description": "Optional mTLS client cert path",
+      "default": ""
+    },
+    {
+      "key": "telemetry.otel_client_key",
+      "description": "Optional mTLS client key path",
+      "default": ""
+    },
+    {
+      "key": "telemetry.otel_enabled",
+      "description": "External OTEL master switch",
+      "default": ""
+    },
+    {
+      "key": "telemetry.otel_endpoint",
+      "description": "OTLP base endpoint",
+      "default": ""
+    },
+    {
+      "key": "telemetry.otel_log_tool_details",
+      "description": "OTEL content gate for tool details",
+      "default": "false"
+    },
+    {
+      "key": "telemetry.otel_log_user_prompts",
+      "description": "OTEL content gate for user prompts",
+      "default": "false"
+    },
+    {
+      "key": "telemetry.otel_logs_exporter",
+      "description": "otlp|console|none",
+      "default": ""
+    },
+    {
+      "key": "telemetry.otel_metrics_exporter",
+      "description": "otlp|console|none",
+      "default": ""
+    },
+    {
+      "key": "telemetry.otel_protocol",
+      "description": "http/protobuf|grpc",
+      "default": ""
+    },
+    {
+      "key": "telemetry.trace_upload",
+      "description": "Session/trace uploads",
+      "default": ""
+    },
+    {
+      "key": "tools.respect_gitignore",
+      "description": "Make every tool skip gitignored files",
+      "default": "false"
+    },
+    {
+      "key": "toolset.ask_user_question.timeout_enabled",
+      "description": "Time out the ask-user-question prompt",
+      "default": "true"
+    },
+    {
+      "key": "toolset.ask_user_question.timeout_secs",
+      "description": "Seconds to wait for ask-user-question",
+      "default": "1800"
+    },
+    {
+      "key": "toolset.bash.output_byte_limit",
+      "description": "Max captured bash output in bytes",
+      "default": "20000"
+    },
+    {
+      "key": "toolset.bash.timeout_secs",
+      "description": "Foreground bash timeout in seconds",
+      "default": "120"
+    },
+    {
+      "key": "toolset.web_fetch.allow_local",
+      "description": "Allow web_fetch to explicit loopback hosts",
+      "default": "false"
+    },
+    {
+      "key": "toolset.web_fetch.proxy_endpoint",
+      "description": "Egress proxy URL for web_fetch",
+      "default": ""
+    },
+    {
+      "key": "ui.collapsed_edit_blocks",
+      "description": "Show edits as one-line +N/-M summaries",
+      "default": "false"
+    },
+    {
+      "key": "ui.default_selected_permission",
+      "description": "Preselected row on the first approval prompt (always_allow_all_sessions|allow_command_always|allow_once|reject)",
+      "default": "always_allow_all_sessions"
+    },
+    {
+      "key": "ui.follow_up_behavior",
+      "description": "Mid-turn follow-ups: queue|steer",
+      "default": "queue"
+    },
+    {
+      "key": "ui.group_tool_verbs",
+      "description": "Fold consecutive read/search/list tool rows",
+      "default": "true"
+    },
+    {
+      "key": "ui.invert_scroll",
+      "description": "Reverse vertical scroll direction",
+      "default": "false"
+    },
+    {
+      "key": "ui.max_thoughts_width",
+      "description": "Max column width for reasoning display",
+      "default": "120"
+    },
+    {
+      "key": "ui.notifications.condition",
+      "description": "When to notify: unfocused|always|never",
+      "default": "unfocused"
+    },
+    {
+      "key": "ui.notifications.idle_threshold_secs",
+      "description": "Seconds unfocused before a notification fires",
+      "default": "3"
+    },
+    {
+      "key": "ui.notifications.method",
+      "description": "Notification protocol: auto|osc9|osc99|osc777|bel|none",
+      "default": "auto"
+    },
+    {
+      "key": "ui.notifications.progress_bar",
+      "description": "Show tab progress bar (OSC 9;4)",
+      "default": "true"
+    },
+    {
+      "key": "ui.notifications.sleep_prevention",
+      "description": "Keep the display awake during agent turns",
+      "default": "true"
+    },
+    {
+      "key": "ui.notifications.title.enabled",
+      "description": "Set the terminal title to reflect agent state",
+      "default": "true"
+    },
+    {
+      "key": "ui.page_flip_on_send",
+      "description": "Pin a just-sent prompt at the top of the viewport",
+      "default": "true"
+    },
+    {
+      "key": "ui.remember_tool_approvals",
+      "description": "Show per-command Always allow options",
+      "default": "false"
+    },
+    {
+      "key": "ui.screen_mode",
+      "description": "Default render mode: fullscreen|minimal",
+      "default": "fullscreen"
+    },
+    {
+      "key": "ui.scroll_lines",
+      "description": "Lines per scroll tick (unset keeps terminal default)",
+      "default": ""
+    },
+    {
+      "key": "ui.scroll_mode",
+      "description": "auto|wheel|trackpad",
+      "default": "auto"
+    },
+    {
+      "key": "ui.scroll_speed",
+      "description": "Wheel/trackpad speed 1–100",
+      "default": "50"
+    },
+    {
+      "key": "ui.show_thinking_blocks",
+      "description": "Show agent thinking blocks in the TUI",
+      "default": "true"
+    },
+    {
+      "key": "ui.simple_mode",
+      "description": "true = readline prompt editing; false = vim prompt editing",
+      "default": "true"
+    },
+    {
+      "key": "ui.vim_mode",
+      "description": "Vim-style scrollback navigation",
+      "default": "false"
+    },
+    {
+      "key": "workflows.enabled",
+      "description": "Background workflows and /goal driver",
+      "default": "true"
+    }
+  ]
+}

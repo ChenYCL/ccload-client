@@ -1,0 +1,295 @@
+{
+  "source": "https://developers.openai.com/codex/config-schema.json",
+  "keys": [
+    {
+      "key": "allow_login_shell",
+      "description": "Whether the model may request a login shell for shell-based tools. Default to `true` If `true`, the model may request a login shell (`login = true`), and omitt…",
+      "default": ""
+    },
+    {
+      "key": "approval_policy",
+      "description": "Default approval policy for executing commands. (untrusted,on-request,never)",
+      "default": ""
+    },
+    {
+      "key": "approvals_reviewer",
+      "description": "Configures who approval requests are routed to for review once they have been escalated. This does not disable separate safety checks such as ARC. (user,auto_r…",
+      "default": ""
+    },
+    {
+      "key": "apps_mcp_product_sku",
+      "description": "Optional product SKU forwarded on host-owned Codex Apps MCP requests.",
+      "default": ""
+    },
+    {
+      "key": "background_terminal_max_timeout",
+      "description": "Maximum poll window for background terminal output (`write_stdin`), in milliseconds. Default: `300000` (5 minutes).",
+      "default": ""
+    },
+    {
+      "key": "chatgpt_base_url",
+      "description": "Base URL for requests to ChatGPT (as opposed to the OpenAI API).",
+      "default": ""
+    },
+    {
+      "key": "check_for_update_on_startup",
+      "description": "When `true`, checks for Codex updates on startup and surfaces update prompts. Set to `false` only if your Codex updates are centrally managed. Defaults to `tru…",
+      "default": ""
+    },
+    {
+      "key": "cli_auth_credentials_store",
+      "description": "Preferred backend for storing CLI auth credentials. file (default): Use a file in the Codex home directory. keyring: Use an OS-specific keyring service. auto: …",
+      "default": ""
+    },
+    {
+      "key": "compact_prompt",
+      "description": "Compact prompt used for history compaction.",
+      "default": ""
+    },
+    {
+      "key": "default_permissions",
+      "description": "Default permissions profile to apply. Names starting with `:` refer to built-in profiles; other names are resolved from the `[permissions]` table.",
+      "default": ""
+    },
+    {
+      "key": "developer_instructions",
+      "description": "Developer instructions inserted as a `developer` role message.",
+      "default": ""
+    },
+    {
+      "key": "disable_paste_burst",
+      "description": "When true, disables burst-paste detection for typed input entirely. All characters are inserted as they are received, and no buffering or placeholder replaceme…",
+      "default": ""
+    },
+    {
+      "key": "experimental_compact_prompt_file",
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem). IMPORTANT: When deseriali…",
+      "default": ""
+    },
+    {
+      "key": "experimental_realtime_start_instructions",
+      "description": "Experimental / do not use. Replaces the built-in realtime start instructions inserted into developer messages when realtime becomes active.",
+      "default": ""
+    },
+    {
+      "key": "experimental_realtime_webrtc_call_base_url",
+      "description": "Experimental / do not use. Overrides only the WebRTC realtime call creation base URL. This is separate from `experimental_realtime_ws_base_url` because WebRTC …",
+      "default": ""
+    },
+    {
+      "key": "experimental_realtime_ws_backend_prompt",
+      "description": "Experimental / do not use. Overrides only the realtime conversation websocket transport instructions (the `Op::RealtimeConversation` `/ws` session.update instr…",
+      "default": ""
+    },
+    {
+      "key": "experimental_realtime_ws_base_url",
+      "description": "Experimental / do not use. Overrides only the realtime conversation websocket transport base URL (the `Op::RealtimeConversation` `/v1/realtime` connection) wit…",
+      "default": ""
+    },
+    {
+      "key": "experimental_realtime_ws_model",
+      "description": "Experimental / do not use. Selects the realtime websocket model/snapshot used for the `Op::RealtimeConversation` connection.",
+      "default": ""
+    },
+    {
+      "key": "experimental_realtime_ws_startup_context",
+      "description": "Experimental / do not use. Replaces the synthesized realtime startup context appended to websocket session instructions. An empty string disables startup conte…",
+      "default": ""
+    },
+    {
+      "key": "experimental_thread_config_endpoint",
+      "description": "Experimental / do not use. When set, app-server fetches thread-scoped config from a remote service at this endpoint.",
+      "default": ""
+    },
+    {
+      "key": "experimental_use_unified_exec_tool",
+      "description": "",
+      "default": ""
+    },
+    {
+      "key": "file_opener",
+      "description": "Optional URI-based file opener. If set, citations to files in the model output will be hyperlinked using the specified URI scheme. (vscode,vscode-insiders,wind…",
+      "default": ""
+    },
+    {
+      "key": "forced_chatgpt_workspace_id",
+      "description": "When set, restricts ChatGPT login to one or more workspace identifiers.",
+      "default": ""
+    },
+    {
+      "key": "forced_login_method",
+      "description": "When set, restricts the login mechanism users may use. (chatgpt,api)",
+      "default": ""
+    },
+    {
+      "key": "hide_agent_reasoning",
+      "description": "When set to `true`, `AgentReasoning` events will be hidden from the UI/output. Defaults to `false`.",
+      "default": "false"
+    },
+    {
+      "key": "include_apps_instructions",
+      "description": "Whether to inject the `<apps_instructions>` developer block.",
+      "default": ""
+    },
+    {
+      "key": "include_collaboration_mode_instructions",
+      "description": "Whether to inject the `<collaboration_mode>` developer block.",
+      "default": ""
+    },
+    {
+      "key": "include_environment_context",
+      "description": "Whether to inject the `<environment_context>` user block.",
+      "default": ""
+    },
+    {
+      "key": "include_permissions_instructions",
+      "description": "Whether to inject the `<permissions instructions>` developer block.",
+      "default": ""
+    },
+    {
+      "key": "instructions",
+      "description": "System instructions.",
+      "default": ""
+    },
+    {
+      "key": "log_dir",
+      "description": "Directory where Codex writes log files. Setting this value explicitly also enables the TUI text log in this directory. Defaults to `$CODEX_HOME/log`.",
+      "default": ""
+    },
+    {
+      "key": "mcp_oauth_callback_port",
+      "description": "Optional fixed port for the local HTTP callback server used during MCP OAuth login. When unset, Codex will bind to an ephemeral port chosen by the OS.",
+      "default": ""
+    },
+    {
+      "key": "mcp_oauth_callback_url",
+      "description": "Optional redirect URI to use during MCP OAuth login. When set, this URI is used in the OAuth authorization request instead of the local listener address. The l…",
+      "default": ""
+    },
+    {
+      "key": "mcp_oauth_credentials_store",
+      "description": "Preferred backend for storing MCP OAuth credentials. keyring: Use an OS-specific keyring service. https://github.com/openai/codex/blob/main/codex-rs/rmcp-clien…",
+      "default": ""
+    },
+    {
+      "key": "model",
+      "description": "Optional override of model selection.",
+      "default": ""
+    },
+    {
+      "key": "model_auto_compact_token_limit",
+      "description": "Token usage threshold triggering auto-compaction of conversation history.",
+      "default": ""
+    },
+    {
+      "key": "model_auto_compact_token_limit_scope",
+      "description": "Controls whether the auto-compaction limit applies to the full context or only to tokens after the carried prefix in the current compaction window. (total,body…",
+      "default": ""
+    },
+    {
+      "key": "model_catalog_json",
+      "description": "Optional path to a JSON model catalog (applied on startup only). Per-thread `config` overrides are accepted but do not reapply this (no-ops).",
+      "default": ""
+    },
+    {
+      "key": "model_context_window",
+      "description": "Size of the context window for the model, in tokens.",
+      "default": ""
+    },
+    {
+      "key": "model_instructions_file",
+      "description": "Optional path to a file containing model instructions that will override the built-in instructions for the selected model. Users are STRONGLY DISCOURAGED from …",
+      "default": ""
+    },
+    {
+      "key": "model_provider",
+      "description": "Provider to use from the model_providers map.",
+      "default": ""
+    },
+    {
+      "key": "model_reasoning_effort",
+      "description": "A non-empty reasoning effort value advertised by the model.",
+      "default": ""
+    },
+    {
+      "key": "model_reasoning_summary",
+      "description": "A summary of the reasoning performed by the model. This can be useful for debugging and understanding the model's reasoning process. See https://platform.opena…",
+      "default": ""
+    },
+    {
+      "key": "model_verbosity",
+      "description": "Optional verbosity control for GPT-5 models (Responses API `text.verbosity`). (low,medium,high)",
+      "default": ""
+    },
+    {
+      "key": "openai_base_url",
+      "description": "Base URL override for the built-in `openai` model provider.",
+      "default": ""
+    },
+    {
+      "key": "oss_provider",
+      "description": "Preferred OSS provider for local models, e.g. \"lmstudio\" or \"ollama\".",
+      "default": ""
+    },
+    {
+      "key": "personality",
+      "description": "Optionally specify a personality for the model (none,friendly,pragmatic)",
+      "default": ""
+    },
+    {
+      "key": "plan_mode_reasoning_effort",
+      "description": "A non-empty reasoning effort value advertised by the model.",
+      "default": ""
+    },
+    {
+      "key": "profile",
+      "description": "Profile to use from the `profiles` map.",
+      "default": ""
+    },
+    {
+      "key": "project_doc_max_bytes",
+      "description": "Maximum total bytes of project instruction content across all selected environments.",
+      "default": "32768"
+    },
+    {
+      "key": "review_model",
+      "description": "Review model override used by the `/review` feature.",
+      "default": ""
+    },
+    {
+      "key": "sandbox_mode",
+      "description": "Sandbox mode to use. (read-only,workspace-write,danger-full-access)",
+      "default": ""
+    },
+    {
+      "key": "service_tier",
+      "description": "Optional explicit service tier request id for new turns (for example `default`, `priority`, or `flex`; legacy `fast` also works).",
+      "default": ""
+    },
+    {
+      "key": "show_raw_agent_reasoning",
+      "description": "When set to `true`, `AgentReasoningRawContentEvent` events will be shown in the UI/output. Defaults to `false`.",
+      "default": ""
+    },
+    {
+      "key": "sqlite_home",
+      "description": "Directory where Codex stores the SQLite state DB. Defaults to `$CODEX_SQLITE_HOME` when set. Otherwise uses `$CODEX_HOME`.",
+      "default": ""
+    },
+    {
+      "key": "suppress_unstable_features_warning",
+      "description": "Suppress warnings about unstable (under development) features.",
+      "default": ""
+    },
+    {
+      "key": "tool_output_token_limit",
+      "description": "Token budget applied when storing tool/function outputs in the context manager.",
+      "default": ""
+    },
+    {
+      "key": "web_search",
+      "description": "Controls the web search tool mode: disabled, cached, indexed, or live. (disabled,cached,indexed,live)",
+      "default": ""
+    }
+  ]
+}

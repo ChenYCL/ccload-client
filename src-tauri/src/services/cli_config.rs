@@ -6,7 +6,9 @@
 use serde_json::Value;
 
 use crate::error::AppError;
-use crate::services::cli_advanced::TakeoverOptions;
+use crate::services::cli_advanced::{
+    blocked_for_user, merge_extra_json, merge_extra_toml, TakeoverOptions,
+};
 use crate::services::cli_grok;
 use crate::services::cli_io::{
     object_at, read_json, write_atomic, write_pretty_json,
@@ -164,12 +166,21 @@ pub fn apply_takeover(
                 if let Some(m) = opts.haiku_model.filter(|s| !s.is_empty()) {
                     env.insert("ANTHROPIC_DEFAULT_HAIKU_MODEL".into(), Value::String(m));
                 }
-                // Free-form extra env (timeout, retry, telemetry flags, …)
-                if let Some(extra) = opts.extra_env {
+                // Free-form extra env (timeout, retry, telemetry flags, …).
+                // Same rules as every other CLI's merge: an emptied form field
+                // means "leave it unset", not `"KEY": ""` — Claude Code would
+                // use that literal empty string. Host-injected identity keys
+                // (CLAUDE_PID …) are refused here too, not just hidden from
+                // the form, because the custom-key input can type anything.
+                if let Some(extra) = &opts.extra_env {
                     for (k, v) in extra {
-                        if !k.is_empty() {
-                            env.insert(k, Value::String(v));
+                        if k.is_empty()
+                            || v.is_empty()
+                            || blocked_for_user(CliTarget::ClaudeCode, k)
+                        {
+                            continue;
                         }
+                        env.insert(k.clone(), Value::String(v.clone()));
                     }
                 }
             }
@@ -183,6 +194,9 @@ pub fn apply_takeover(
                 let env = object_at(&mut doc, "env")?;
                 env.insert("GOOGLE_GEMINI_BASE_URL".into(), Value::String(endpoint));
                 env.insert("GEMINI_API_KEY".into(), Value::String(api_token.into()));
+            }
+            if let Some(extra) = &opts.extra_env {
+                merge_extra_json(&mut doc, extra, CliTarget::GeminiCli, true)?;
             }
             write_pretty_json(&path, &doc)?;
             written.push(path.display().to_string());
@@ -198,11 +212,29 @@ pub fn apply_takeover(
                     "options": { "baseURL": endpoint, "apiKey": api_token }
                 }),
             );
+            if let Some(extra) = &opts.extra_env {
+                merge_extra_json(&mut doc, extra, CliTarget::OpenCode, false)?;
+            }
             write_pretty_json(&path, &doc)?;
             written.push(path.display().to_string());
         }
         CliTarget::Codex => written.extend(write_codex(root, &endpoint, api_token, &opts)?),
-        CliTarget::GrokBuild => written.extend(cli_grok::apply(root, &endpoint, api_token)?),
+        CliTarget::GrokBuild => {
+            written.extend(cli_grok::apply(root, &endpoint, api_token)?);
+            if let Some(extra) = &opts.extra_env {
+                let path = root.join(".grok/config.toml");
+                let raw = if path.exists() {
+                    std::fs::read_to_string(&path)?
+                } else {
+                    String::new()
+                };
+                let mut doc = raw
+                    .parse::<toml_edit::DocumentMut>()
+                    .map_err(|e| AppError::Config(format!("{}: {e}", path.display())))?;
+                merge_extra_toml(&mut doc, extra, CliTarget::GrokBuild)?;
+                write_atomic(&path, &doc.to_string())?;
+            }
+        }
     }
 
     Ok(TakeoverResult {
@@ -255,6 +287,9 @@ fn write_codex(
     }
     if let Some(c) = opts.codex_context_window.filter(|n| *n > 0) {
         doc["model_context_window"] = toml_edit::value(c);
+    }
+    if let Some(extra) = &opts.extra_env {
+        merge_extra_toml(&mut doc, extra, CliTarget::Codex)?;
     }
     write_atomic(&toml_path, &doc.to_string())?;
     written.push(toml_path.display().to_string());

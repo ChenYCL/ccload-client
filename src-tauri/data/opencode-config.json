@@ -1,0 +1,245 @@
+{
+  "source": "https://opencode.ai/config.json",
+  "keys": [
+    {
+      "key": "attachment.image.auto_resize",
+      "description": "Resize images before sending them to the model when they exceed configured limits (default: true)",
+      "default": ""
+    },
+    {
+      "key": "attachment.image.max_base64_bytes",
+      "description": "Maximum base64 payload bytes for an image attachment (default: 5242880)",
+      "default": ""
+    },
+    {
+      "key": "attachment.image.max_height",
+      "description": "Maximum image height before resizing or rejecting the attachment (default: 2000)",
+      "default": ""
+    },
+    {
+      "key": "attachment.image.max_width",
+      "description": "Maximum image width before resizing or rejecting the attachment (default: 2000)",
+      "default": ""
+    },
+    {
+      "key": "autoshare",
+      "description": "@deprecated Use 'share' field instead. Share newly created sessions automatically",
+      "default": ""
+    },
+    {
+      "key": "autoupdate",
+      "description": "Automatically update to the latest version. Set to true to auto-update, false to disable, or 'notify' to show update notifications",
+      "default": ""
+    },
+    {
+      "key": "compaction.auto",
+      "description": "Enable automatic compaction when context is full (default: true)",
+      "default": ""
+    },
+    {
+      "key": "compaction.preserve_recent_tokens",
+      "description": "Maximum number of tokens from recent turns to preserve verbatim after compaction",
+      "default": ""
+    },
+    {
+      "key": "compaction.prune",
+      "description": "Enable pruning of old tool outputs (default: false)",
+      "default": ""
+    },
+    {
+      "key": "compaction.reserved",
+      "description": "Token buffer for compaction. Leaves enough window to avoid overflow during compaction.",
+      "default": ""
+    },
+    {
+      "key": "compaction.tail_turns",
+      "description": "Maximum number of recent user turns, including their following assistant/tool responses, to keep verbatim during compaction. By default retention is limited on…",
+      "default": ""
+    },
+    {
+      "key": "default_agent",
+      "description": "Default agent to use when none is specified. Must be a primary agent. Falls back to 'build' if not set or if the specified agent is invalid.",
+      "default": ""
+    },
+    {
+      "key": "enterprise.url",
+      "description": "Enterprise URL",
+      "default": ""
+    },
+    {
+      "key": "experimental.batch_tool",
+      "description": "Enable the batch tool",
+      "default": ""
+    },
+    {
+      "key": "experimental.continue_loop_on_deny",
+      "description": "Continue the agent loop when a tool call is denied",
+      "default": ""
+    },
+    {
+      "key": "experimental.disable_paste_summary",
+      "description": "Disable the summary shown in place of large pasted text",
+      "default": ""
+    },
+    {
+      "key": "experimental.mcp_timeout",
+      "description": "Timeout in milliseconds for model context protocol (MCP) requests",
+      "default": ""
+    },
+    {
+      "key": "experimental.openTelemetry",
+      "description": "Enable OpenTelemetry spans for AI SDK calls (using the 'experimental_telemetry' flag)",
+      "default": ""
+    },
+    {
+      "key": "layout",
+      "description": "@deprecated Always uses stretch layout.",
+      "default": ""
+    },
+    {
+      "key": "logLevel",
+      "description": "Log level",
+      "default": ""
+    },
+    {
+      "key": "model",
+      "description": "Model to use in the format of provider/model, eg anthropic/claude-2",
+      "default": ""
+    },
+    {
+      "key": "permission.bash",
+      "description": "Permission for the bash tool: 'ask', 'allow' or 'deny'",
+      "default": ""
+    },
+    {
+      "key": "permission.doom_loop",
+      "description": "Permission for doom loop detection: 'ask', 'allow' or 'deny'",
+      "default": ""
+    },
+    {
+      "key": "permission.edit",
+      "description": "Permission for the edit tool: 'ask', 'allow' or 'deny'",
+      "default": ""
+    },
+    {
+      "key": "permission.external_directory",
+      "description": "Permission for accessing directories outside the project: 'ask', 'allow' or 'deny'",
+      "default": ""
+    },
+    {
+      "key": "permission.glob",
+      "description": "Permission for the glob tool: 'ask', 'allow' or 'deny'",
+      "default": ""
+    },
+    {
+      "key": "permission.grep",
+      "description": "Permission for the grep tool: 'ask', 'allow' or 'deny'",
+      "default": ""
+    },
+    {
+      "key": "permission.list",
+      "description": "Permission for the list tool: 'ask', 'allow' or 'deny'",
+      "default": ""
+    },
+    {
+      "key": "permission.lsp",
+      "description": "Permission for the lsp tool: 'ask', 'allow' or 'deny'",
+      "default": ""
+    },
+    {
+      "key": "permission.question",
+      "description": "Permission for the question tool: 'ask', 'allow' or 'deny'",
+      "default": ""
+    },
+    {
+      "key": "permission.read",
+      "description": "Permission for the read tool: 'ask', 'allow' or 'deny'",
+      "default": ""
+    },
+    {
+      "key": "permission.skill",
+      "description": "Permission for the skill tool: 'ask', 'allow' or 'deny'",
+      "default": ""
+    },
+    {
+      "key": "permission.task",
+      "description": "Permission for the task tool: 'ask', 'allow' or 'deny'",
+      "default": ""
+    },
+    {
+      "key": "permission.todowrite",
+      "description": "Permission for the todowrite tool: 'ask', 'allow' or 'deny'",
+      "default": ""
+    },
+    {
+      "key": "permission.webfetch",
+      "description": "Permission for the webfetch tool: 'ask', 'allow' or 'deny'",
+      "default": ""
+    },
+    {
+      "key": "permission.websearch",
+      "description": "Permission for the websearch tool: 'ask', 'allow' or 'deny'",
+      "default": ""
+    },
+    {
+      "key": "server.hostname",
+      "description": "Hostname to listen on",
+      "default": ""
+    },
+    {
+      "key": "server.mdns",
+      "description": "Enable mDNS service discovery",
+      "default": ""
+    },
+    {
+      "key": "server.mdnsDomain",
+      "description": "Custom domain name for mDNS service (default: opencode.local)",
+      "default": ""
+    },
+    {
+      "key": "server.port",
+      "description": "Port to listen on",
+      "default": ""
+    },
+    {
+      "key": "share",
+      "description": "Control sharing behavior:'manual' allows manual sharing via commands, 'auto' enables automatic sharing, 'disabled' disables all sharing",
+      "default": ""
+    },
+    {
+      "key": "shell",
+      "description": "Default shell to use for terminal and bash tool",
+      "default": ""
+    },
+    {
+      "key": "small_model",
+      "description": "Small model to use for tasks like title generation in the format of provider/model",
+      "default": ""
+    },
+    {
+      "key": "snapshot",
+      "description": "Enable or disable snapshot tracking. When false, filesystem snapshots are not recorded and undoing or reverting will not undo/redo file changes. Defaults to tr…",
+      "default": ""
+    },
+    {
+      "key": "subagent_depth",
+      "description": "Maximum subagent nesting depth. Defaults to 1, which prevents subagents from launching subagents.",
+      "default": ""
+    },
+    {
+      "key": "tool_output.max_bytes",
+      "description": "Maximum bytes of tool output before it is truncated and saved to disk (default: 51200)",
+      "default": ""
+    },
+    {
+      "key": "tool_output.max_lines",
+      "description": "Maximum lines of tool output before it is truncated and saved to disk (default: 2000)",
+      "default": ""
+    },
+    {
+      "key": "username",
+      "description": "Custom username to display in conversations instead of system username",
+      "default": ""
+    }
+  ]
+}

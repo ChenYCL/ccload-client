@@ -160,7 +160,6 @@ function CliCard({
 }) {
   const [expanded, setExpanded] = useState(false);
   const isClaude = p.target === "claude-code";
-  const isCodex = p.target === "codex";
 
   return (
     <li className="card">
@@ -214,17 +213,16 @@ function CliCard({
         </div>
       </div>
 
-      {(isClaude || isCodex) && (
-        <div className="border-t border-border">
-          <button
-            onClick={() => setExpanded(!expanded)}
-            className="flex w-full items-center gap-1 px-4 py-2 text-xs text-muted hover:text-content"
-          >
-            {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-            高级配置
-          </button>
-          {expanded && (
-            <div className="px-4 pb-4">
+      <div className="border-t border-border">
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="flex w-full items-center gap-1 px-4 py-2 text-xs text-muted hover:text-content"
+        >
+          {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+          高级配置
+        </button>
+        {expanded && (
+          <div className="px-4 pb-4">
               {isClaude && (
                 <div className="mb-4 grid grid-cols-2 gap-3">
                   <ModelField
@@ -269,15 +267,14 @@ function CliCard({
                   />
                 </div>
               )}
-              <KnownKeysEditor
-                target={p.target}
-                options={options}
-                onOptionsChange={onOptionsChange}
-              />
-            </div>
-          )}
-        </div>
-      )}
+            <KnownKeysEditor
+              target={p.target}
+              options={options}
+              onOptionsChange={onOptionsChange}
+            />
+          </div>
+        )}
+      </div>
     </li>
   );
 }
@@ -347,11 +344,9 @@ function KnownKeysEditor({
   return (
     <div>
       <div className="mb-2 text-xs text-muted">
-        {isCodex
-          ? "config.toml 配置项 · 已读取本机现值，只有你改过的项才会写入"
-          : `Claude Code 官方 env 全量（${keys.data.filter((k) => !TIER_KEYS.includes(k.key)).length}）· 已读取本机现值；只有你改过的项才会写入`}
+        {catalogHint(target, keys.data.filter((k) => !TIER_KEYS.includes(k.key)).length)}
       </div>
-      {!isCodex && (
+      {keys.data.length > 6 && (
         <TextInput
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
@@ -427,7 +422,7 @@ function CustomEnvRows({
 
   return (
     <div className="mt-3 border-t border-border pt-3">
-      <div className="mb-2 text-xs text-muted">自定义环境变量（清单之外的任意 KEY）</div>
+      <div className="mb-2 text-xs text-muted">清单之外的项（点路径或自定义 KEY）</div>
       <div className="space-y-1">
         {custom.map(([k, v], i) => (
           <div key={i} className="flex items-center gap-2">
@@ -472,6 +467,21 @@ function CustomEnvRows({
 /// The four Claude tier keys. They live in the backend catalog so their
 /// on-disk values come back with everything else, but render as dedicated
 /// inputs here — so the generic row list must skip them or they show twice.
+function catalogHint(target: CliTarget, n: number): string {
+  switch (target) {
+    case "claude-code":
+      return `Claude Code 官方 env 全量（${n}）· 已读取本机现值；只有你改过的项才会写入`;
+    case "codex":
+      return `Codex 官方 config.toml 标量项（${n}）· 已读取本机现值；只有你改过的项才会写入`;
+    case "gemini-cli":
+      return `Gemini CLI 官方 settings（${n}）· 点路径写入 settings.json；只有你改过的项才会写入`;
+    case "grok-build":
+      return `Grok Build 官方 config.toml（${n}）· 已读取本机现值；只有你改过的项才会写入`;
+    case "opencode":
+      return `OpenCode 官方配置标量（${n}）· 已读取本机现值；只有你改过的项才会写入`;
+  }
+}
+
 const TIER_KEYS = [
   "ANTHROPIC_MODEL",
   "ANTHROPIC_DEFAULT_SONNET_MODEL",

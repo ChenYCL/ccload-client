@@ -151,11 +151,15 @@ pub const RESILIENT_ENV: &[(&str, &str)] = &[
     ("CLAUDE_CODE_RETRY_WATCHDOG", "1"),
 ];
 
-/// Official Claude Code env catalog, scraped from
-/// https://code.claude.com/docs/en/env-vars and checked against 2.1.226.
-/// The form lists every documented key — not a short "common" subset —
-/// because settings.json `env` accepts the whole set.
+/// Official catalogs. Each JSON is scraped from that CLI's own docs/schema —
+/// the form lists every scalar the official surface documents, not a short
+/// "common" subset. Tables/arrays stay in the raw editor (they cannot
+/// round-trip through a single text input).
 const CLAUDE_ENV_CATALOG_JSON: &str = include_str!("../../data/claude-code-env.json");
+const CODEX_CATALOG_JSON: &str = include_str!("../../data/codex-config.json");
+const GEMINI_CATALOG_JSON: &str = include_str!("../../data/gemini-settings.json");
+const GROK_CATALOG_JSON: &str = include_str!("../../data/grok-config.json");
+const OPENCODE_CATALOG_JSON: &str = include_str!("../../data/opencode-config.json");
 
 /// Takeover already owns these; they must not show up as "advanced knobs"
 /// or a 复原 click would fight the endpoint/token we just wrote.
@@ -174,42 +178,311 @@ const HOST_OWNED_ENV: &[&str] = &[
     "CLAUDE_PID",
 ];
 
-#[derive(Deserialize)]
-struct ClaudeEnvCatalogFile {
-    keys: Vec<ClaudeEnvCatalogEntry>,
+const CODEX_OWNED: &[&str] = &["model_provider", "model_providers"];
+const GEMINI_OWNED: &[&str] = &[
+    "GEMINI_API_KEY",
+    "GOOGLE_GEMINI_BASE_URL",
+    "GOOGLE_API_KEY",
+];
+const GROK_OWNED: &[&str] = &["models.default"];
+const OPENCODE_OWNED: &[&str] = &["provider"];
+
+/// Codex fields with dedicated TakeoverOptions slots. extra_env must not
+/// overwrite them a second time.
+const CODEX_DEDICATED: &[&str] = &[
+    "model",
+    "model_reasoning_effort",
+    "model_context_window",
+];
+
+/// Nothing else has dedicated slots — Grok's `model` is just a key the user
+/// may set, and swallowing it would lose the value instead of protecting one.
+fn dedicated_keys(target: CliTarget) -> &'static [&'static str] {
+    match target {
+        CliTarget::Codex => CODEX_DEDICATED,
+        _ => &[],
+    }
 }
 
 #[derive(Deserialize)]
-struct ClaudeEnvCatalogEntry {
+struct CatalogFile {
+    keys: Vec<CatalogEntry>,
+}
+
+#[derive(Deserialize, Clone)]
+struct CatalogEntry {
     key: String,
     description: String,
     #[serde(default)]
     default: String,
 }
 
-fn claude_env_catalog() -> &'static [ClaudeEnvCatalogEntry] {
-    use std::sync::OnceLock;
-    static CATALOG: OnceLock<Vec<ClaudeEnvCatalogEntry>> = OnceLock::new();
-    CATALOG
-        .get_or_init(|| {
-            let file: ClaudeEnvCatalogFile = serde_json::from_str(CLAUDE_ENV_CATALOG_JSON)
-                .expect("claude-code-env.json must parse");
-            file.keys
-        })
-        .as_slice()
+fn parse_catalog(raw: &'static str, name: &str) -> Vec<CatalogEntry> {
+    serde_json::from_str::<CatalogFile>(raw)
+        .unwrap_or_else(|e| panic!("{name} must parse: {e}"))
+        .keys
 }
 
-/// Codex knobs that live as top-level keys in `~/.codex/config.toml`.
-/// `(key, description, default)`.
-pub const KNOWN_CODEX_KEYS: &[(&str, &str, &str)] = &[
-    ("model", "默认模型", ""),
-    ("model_reasoning_effort", "推理深度 minimal|low|medium|high|xhigh", "high"),
-    ("model_context_window", "上下文窗口（tokens）", ""),
-    ("model_max_output_tokens", "单次输出上限", ""),
-    ("sandbox_mode", "沙箱模式 read-only|workspace-write|danger-full-access", "workspace-write"),
-    ("approval_policy", "审批策略 untrusted|on-failure|on-request|never", "on-request"),
-    ("disable_response_storage", "true 关闭响应存储", ""),
-];
+fn catalog_for(target: CliTarget) -> &'static [CatalogEntry] {
+    use std::sync::OnceLock;
+    fn load(
+        lock: &'static OnceLock<Vec<CatalogEntry>>,
+        raw: &'static str,
+        name: &str,
+    ) -> &'static [CatalogEntry] {
+        lock.get_or_init(|| parse_catalog(raw, name)).as_slice()
+    }
+    match target {
+        CliTarget::ClaudeCode => {
+            static C: OnceLock<Vec<CatalogEntry>> = OnceLock::new();
+            load(&C, CLAUDE_ENV_CATALOG_JSON, "claude-code-env.json")
+        }
+        CliTarget::Codex => {
+            static C: OnceLock<Vec<CatalogEntry>> = OnceLock::new();
+            load(&C, CODEX_CATALOG_JSON, "codex-config.json")
+        }
+        CliTarget::GeminiCli => {
+            static C: OnceLock<Vec<CatalogEntry>> = OnceLock::new();
+            load(&C, GEMINI_CATALOG_JSON, "gemini-settings.json")
+        }
+        CliTarget::GrokBuild => {
+            static C: OnceLock<Vec<CatalogEntry>> = OnceLock::new();
+            load(&C, GROK_CATALOG_JSON, "grok-config.json")
+        }
+        CliTarget::OpenCode => {
+            static C: OnceLock<Vec<CatalogEntry>> = OnceLock::new();
+            load(&C, OPENCODE_CATALOG_JSON, "opencode-config.json")
+        }
+    }
+}
+
+fn owned_keys(target: CliTarget) -> &'static [&'static str] {
+    match target {
+        CliTarget::ClaudeCode => TAKEOVER_OWNED_ENV,
+        CliTarget::Codex => CODEX_OWNED,
+        CliTarget::GeminiCli => GEMINI_OWNED,
+        CliTarget::GrokBuild => GROK_OWNED,
+        CliTarget::OpenCode => OPENCODE_OWNED,
+    }
+}
+
+fn is_owned(key: &str, owned: &[&str]) -> bool {
+    owned
+        .iter()
+        .any(|o| key == *o || key.starts_with(&format!("{o}.")))
+}
+
+/// Keys the user must not be able to write through the advanced form: the ones
+/// takeover itself owns, plus the ones Claude Code's host process injects.
+///
+/// The form and the writer both call this. Keeping two lists is exactly how
+/// `CLAUDE_PID` ended up typeable into `settings.json` — hidden from the form,
+/// happily written by the takeover.
+pub(crate) fn blocked_for_user(target: CliTarget, key: &str) -> bool {
+    is_owned(key, owned_keys(target))
+        || (target == CliTarget::ClaudeCode && HOST_OWNED_ENV.contains(&key))
+}
+
+fn is_env_key(key: &str) -> bool {
+    !key.contains('.')
+        && key
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+        && key.chars().any(|c| c.is_ascii_alphabetic())
+}
+
+enum Scalar {
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Str(String),
+}
+
+fn parse_scalar(raw: &str) -> Scalar {
+    let s = raw.trim();
+    if s.eq_ignore_ascii_case("true") {
+        return Scalar::Bool(true);
+    }
+    if s.eq_ignore_ascii_case("false") {
+        return Scalar::Bool(false);
+    }
+    if let Ok(i) = s.parse::<i64>() {
+        return Scalar::Int(i);
+    }
+    if s.contains('.') {
+        if let Ok(f) = s.parse::<f64>() {
+            if f.is_finite() {
+                return Scalar::Float(f);
+            }
+        }
+    }
+    Scalar::Str(raw.to_string())
+}
+
+impl Scalar {
+    fn to_json(&self) -> serde_json::Value {
+        match self {
+            Scalar::Bool(b) => serde_json::Value::Bool(*b),
+            Scalar::Int(i) => serde_json::json!(i),
+            Scalar::Float(f) => serde_json::json!(f),
+            Scalar::Str(s) => serde_json::Value::String(s.clone()),
+        }
+    }
+
+    fn to_toml(&self) -> toml_edit::Value {
+        match self {
+            Scalar::Bool(b) => toml_edit::Value::from(*b),
+            Scalar::Int(i) => toml_edit::Value::from(*i),
+            Scalar::Float(f) => toml_edit::Value::from(*f),
+            Scalar::Str(s) => toml_edit::Value::from(s.as_str()),
+        }
+    }
+}
+
+fn json_as_text(v: &serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+fn get_json_path(root: &serde_json::Value, path: &str) -> Option<String> {
+    let mut cur = root;
+    for p in path.split('.') {
+        cur = cur.get(p)?;
+    }
+    json_as_text(cur)
+}
+
+fn set_json_path(
+    root: &mut serde_json::Value,
+    path: &str,
+    val: serde_json::Value,
+) -> Result<(), AppError> {
+    if !root.is_object() {
+        *root = serde_json::Value::Object(serde_json::Map::new());
+    }
+    let parts: Vec<&str> = path.split('.').collect();
+    let mut cur = root;
+    for (i, p) in parts.iter().enumerate() {
+        if i + 1 == parts.len() {
+            cur.as_object_mut()
+                .ok_or_else(|| AppError::Config(format!("{path} 不是对象，拒绝写入")))?
+                .insert((*p).into(), val);
+            return Ok(());
+        }
+        let obj = cur
+            .as_object_mut()
+            .ok_or_else(|| AppError::Config(format!("{path}: {p} 不是对象，拒绝写入")))?;
+        // Only a missing (or null) parent may be created. Replacing an existing
+        // scalar/array with an empty object would silently drop what the user
+        // had there — the same case the TOML side refuses.
+        match obj.get(*p) {
+            Some(v) if v.is_object() => {}
+            None | Some(serde_json::Value::Null) => {
+                obj.insert((*p).into(), serde_json::Value::Object(serde_json::Map::new()));
+            }
+            Some(_) => {
+                return Err(AppError::Config(format!(
+                    "{path}: {p} 不是对象，拒绝写入"
+                )))
+            }
+        }
+        cur = obj.get_mut(*p).expect("parent exists or was just created");
+    }
+    Ok(())
+}
+
+fn get_toml_path(doc: &toml_edit::DocumentMut, path: &str) -> Option<String> {
+    let mut item: Option<&toml_edit::Item> = None;
+    for (i, p) in path.split('.').enumerate() {
+        item = if i == 0 { doc.get(p) } else { item?.get(p) };
+    }
+    let item = item?;
+    if let Some(s) = item.as_str() {
+        return Some(s.to_string());
+    }
+    if let Some(i) = item.as_integer() {
+        return Some(i.to_string());
+    }
+    if let Some(b) = item.as_bool() {
+        return Some(b.to_string());
+    }
+    if let Some(f) = item.as_float() {
+        return Some(f.to_string());
+    }
+    None
+}
+
+fn set_toml_path(
+    doc: &mut toml_edit::DocumentMut,
+    path: &str,
+    val: toml_edit::Value,
+) -> Result<(), AppError> {
+    let parts: Vec<&str> = path.split('.').collect();
+    if parts.is_empty() {
+        return Ok(());
+    }
+    if parts.len() == 1 {
+        doc[parts[0]] = toml_edit::Item::Value(val);
+        return Ok(());
+    }
+    let mut cur: &mut dyn toml_edit::TableLike = doc.as_table_mut();
+    for p in &parts[..parts.len() - 1] {
+        if cur.get(p).is_none() {
+            cur.insert(p, toml_edit::table());
+        }
+        cur = cur
+            .get_mut(p)
+            .and_then(|i| i.as_table_like_mut())
+            .ok_or_else(|| AppError::Config(format!("{path}: {p} 不是表，拒绝写入")))?;
+    }
+    cur.insert(parts[parts.len() - 1], toml_edit::Item::Value(val));
+    Ok(())
+}
+
+/// Merge typed advanced knobs into a JSON config (Gemini / OpenCode).
+/// ALL_CAPS keys go into `env` for Gemini so they match takeover's env block.
+pub(crate) fn merge_extra_json(
+    doc: &mut serde_json::Value,
+    extra: &std::collections::BTreeMap<String, String>,
+    target: CliTarget,
+    all_caps_to_env: bool,
+) -> Result<(), AppError> {
+    for (k, v) in extra {
+        if k.is_empty() || v.is_empty() || blocked_for_user(target, k) {
+            continue;
+        }
+        if all_caps_to_env && is_env_key(k) {
+            crate::services::cli_io::object_at(doc, "env")?
+                .insert(k.clone(), serde_json::Value::String(v.clone()));
+        } else {
+            set_json_path(doc, k, parse_scalar(v).to_json())?;
+        }
+    }
+    Ok(())
+}
+
+/// Merge typed advanced knobs into a TOML config (Codex / Grok).
+pub(crate) fn merge_extra_toml(
+    doc: &mut toml_edit::DocumentMut,
+    extra: &std::collections::BTreeMap<String, String>,
+    target: CliTarget,
+) -> Result<(), AppError> {
+    for (k, v) in extra {
+        if k.is_empty()
+            || v.is_empty()
+            || blocked_for_user(target, k)
+            || dedicated_keys(target).contains(&k.as_str())
+        {
+            continue;
+        }
+        set_toml_path(doc, k, parse_scalar(v).to_toml())?;
+    }
+    Ok(())
+}
 
 /// Metadata for the settings UI: which knobs exist for a target, what we
 /// suggest, and what the machine currently has. `current` is what makes the
@@ -223,94 +496,129 @@ pub struct EnvKeyInfo {
     pub current: Option<String>,
 }
 
+fn json_doc(root: &ConfigRoot, rel: &str) -> Option<serde_json::Value> {
+    crate::services::cli_io::read_json(&root.join(rel)).ok()
+}
+
+fn toml_doc(root: &ConfigRoot, rel: &str) -> Option<toml_edit::DocumentMut> {
+    std::fs::read_to_string(root.join(rel))
+        .ok()?
+        .parse()
+        .ok()
+}
+
 /// Read the values a target currently has on disk, so the form opens
 /// pre-filled instead of making the user retype what is already configured.
 fn current_values(root: &ConfigRoot, target: CliTarget) -> std::collections::BTreeMap<String, String> {
     let mut out = std::collections::BTreeMap::new();
+    let catalog = catalog_for(target);
     match target {
         CliTarget::ClaudeCode => {
-            if let Ok(doc) = crate::services::cli_io::read_json(&root.join(".claude/settings.json"))
-            {
+            if let Some(doc) = json_doc(root, ".claude/settings.json") {
                 if let Some(env) = doc.get("env").and_then(|e| e.as_object()) {
                     for (k, v) in env {
-                        if let Some(s) = v.as_str() {
-                            out.insert(k.clone(), s.to_string());
+                        if let Some(s) = json_as_text(v) {
+                            out.insert(k.clone(), s);
+                        }
+                    }
+                }
+            }
+        }
+        CliTarget::GeminiCli => {
+            if let Some(doc) = json_doc(root, ".gemini/settings.json") {
+                for e in catalog {
+                    if let Some(v) = if is_env_key(&e.key) {
+                        doc.get("env").and_then(|env| env.get(&e.key)).and_then(json_as_text)
+                    } else {
+                        get_json_path(&doc, &e.key)
+                    } {
+                        out.insert(e.key.clone(), v);
+                    }
+                }
+                if let Some(env) = doc.get("env").and_then(|e| e.as_object()) {
+                    for (k, v) in env {
+                        if let Some(s) = json_as_text(v) {
+                            out.entry(k.clone()).or_insert(s);
+                        }
+                    }
+                }
+            }
+        }
+        CliTarget::OpenCode => {
+            if let Some(doc) = json_doc(root, ".config/opencode/opencode.json") {
+                for e in catalog {
+                    if let Some(v) = get_json_path(&doc, &e.key) {
+                        out.insert(e.key.clone(), v);
+                    }
+                }
+                if let Some(obj) = doc.as_object() {
+                    for (k, v) in obj {
+                        if let Some(s) = json_as_text(v) {
+                            out.entry(k.clone()).or_insert(s);
                         }
                     }
                 }
             }
         }
         CliTarget::Codex => {
-            if let Ok(raw) = std::fs::read_to_string(root.join(".codex/config.toml")) {
-                if let Ok(doc) = raw.parse::<toml_edit::DocumentMut>() {
-                    for (k, _, _) in KNOWN_CODEX_KEYS {
-                        // Scalars only: a table would not round-trip through a
-                        // single text input.
-                        if let Some(item) = doc.get(k) {
-                            if let Some(v) = item.as_str() {
-                                out.insert((*k).to_string(), v.to_string());
-                            } else if let Some(v) = item.as_integer() {
-                                out.insert((*k).to_string(), v.to_string());
-                            } else if let Some(v) = item.as_bool() {
-                                out.insert((*k).to_string(), v.to_string());
-                            }
-                        }
+            if let Some(doc) = toml_doc(root, ".codex/config.toml") {
+                for e in catalog {
+                    if let Some(v) = get_toml_path(&doc, &e.key) {
+                        out.insert(e.key.clone(), v);
+                    }
+                }
+                for (k, item) in doc.as_table().iter() {
+                    let text = item.as_str().map(|s| s.to_string()).or_else(|| {
+                        item.as_integer()
+                            .map(|i| i.to_string())
+                            .or_else(|| item.as_bool().map(|b| b.to_string()))
+                    });
+                    if let Some(s) = text {
+                        out.entry(k.to_string()).or_insert(s);
                     }
                 }
             }
         }
-        _ => {}
+        CliTarget::GrokBuild => {
+            if let Some(doc) = toml_doc(root, ".grok/config.toml") {
+                for e in catalog {
+                    if let Some(v) = get_toml_path(&doc, &e.key) {
+                        out.insert(e.key.clone(), v);
+                    }
+                }
+            }
+        }
     }
     out
 }
 
 pub fn known_env_keys(root: &ConfigRoot, target: CliTarget) -> Vec<EnvKeyInfo> {
     let current = current_values(root, target);
-    let mut out: Vec<EnvKeyInfo> = match target {
-        CliTarget::ClaudeCode => claude_env_catalog()
-            .iter()
-            .filter(|e| {
-                !TAKEOVER_OWNED_ENV.contains(&e.key.as_str())
-                    && !HOST_OWNED_ENV.contains(&e.key.as_str())
-            })
-            .map(|e| EnvKeyInfo {
-                key: e.key.clone(),
-                description: e.description.clone(),
-                default: e.default.clone(),
-                current: current.get(&e.key).cloned(),
-            })
-            .collect(),
-        CliTarget::Codex => KNOWN_CODEX_KEYS
-            .iter()
-            .map(|(key, description, default)| EnvKeyInfo {
-                key: (*key).to_string(),
-                description: (*description).to_string(),
-                default: (*default).to_string(),
-                current: current.get(*key).cloned(),
-            })
-            .collect(),
-        // Other CLIs carry their knobs in their own config files rather than
-        // an env block; the raw editor covers them.
-        _ => Vec::new(),
-    };
+    let mut out: Vec<EnvKeyInfo> = catalog_for(target)
+        .iter()
+        .filter(|e| !blocked_for_user(target, &e.key))
+        .map(|e| EnvKeyInfo {
+            key: e.key.clone(),
+            description: e.description.clone(),
+            default: e.default.clone(),
+            current: current.get(&e.key).cloned(),
+        })
+        .collect();
     // Anything already on disk but not in the official catalog (FIGMA_TOKEN,
-    // a brand-new Claude Code flag, …) still has to show up.
-    if target == CliTarget::ClaudeCode {
-        for (key, value) in &current {
-            if TAKEOVER_OWNED_ENV.contains(&key.as_str()) || HOST_OWNED_ENV.contains(&key.as_str())
-            {
-                continue;
-            }
-            if out.iter().any(|row| row.key == *key) {
-                continue;
-            }
-            out.push(EnvKeyInfo {
-                key: key.clone(),
-                description: "本机已有（官方 env 文档未收录，原样保留）".into(),
-                default: String::new(),
-                current: Some(value.clone()),
-            });
+    // a brand-new flag, …) still has to show up.
+    for (key, value) in &current {
+        if blocked_for_user(target, key) {
+            continue;
         }
+        if out.iter().any(|row| row.key == *key) {
+            continue;
+        }
+        out.push(EnvKeyInfo {
+            key: key.clone(),
+            description: "本机已有（官方文档未收录，原样保留）".into(),
+            default: String::new(),
+            current: Some(value.clone()),
+        });
     }
     out
 }
@@ -428,7 +736,10 @@ mod tests {
 
     #[test]
     fn claude_catalog_covers_official_docs_not_a_short_subset() {
-        let keys: Vec<_> = claude_env_catalog().iter().map(|e| e.key.as_str()).collect();
+        let keys: Vec<_> = catalog_for(CliTarget::ClaudeCode)
+            .iter()
+            .map(|e| e.key.as_str())
+            .collect();
         assert!(
             keys.len() >= 300,
             "catalog shrank: {} keys",
@@ -445,5 +756,150 @@ mod tests {
         ] {
             assert!(keys.contains(&must), "missing {must}");
         }
+    }
+
+    #[test]
+    fn other_cli_catalogs_cover_official_docs_not_a_short_subset() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = ConfigRoot::sandbox(dir.path().to_path_buf());
+        let codex: Vec<_> = known_env_keys(&root, CliTarget::Codex)
+            .into_iter()
+            .map(|k| k.key)
+            .collect();
+        assert!(codex.len() >= 40, "codex catalog shrank: {}", codex.len());
+        for must in ["sandbox_mode", "approval_policy", "model", "web_search"] {
+            assert!(codex.iter().any(|k| k == must), "codex missing {must}");
+        }
+        assert!(
+            !codex.iter().any(|k| k == "model_provider"),
+            "takeover-owned model_provider stays off the form"
+        );
+
+        let gemini: Vec<_> = known_env_keys(&root, CliTarget::GeminiCli)
+            .into_iter()
+            .map(|k| k.key)
+            .collect();
+        assert!(gemini.len() >= 80, "gemini catalog shrank: {}", gemini.len());
+        for must in ["model.name", "general.vimMode", "GEMINI_MODEL"] {
+            assert!(gemini.iter().any(|k| k == must), "gemini missing {must}");
+        }
+        assert!(!gemini.iter().any(|k| k == "GEMINI_API_KEY"));
+
+        let grok: Vec<_> = known_env_keys(&root, CliTarget::GrokBuild)
+            .into_iter()
+            .map(|k| k.key)
+            .collect();
+        assert!(grok.len() >= 50, "grok catalog shrank: {}", grok.len());
+        for must in ["ui.simple_mode", "session.auto_compact_threshold_percent"] {
+            assert!(grok.iter().any(|k| k == must), "grok missing {must}");
+        }
+        assert!(!grok.iter().any(|k| k == "models.default"));
+
+        let oc: Vec<_> = known_env_keys(&root, CliTarget::OpenCode)
+            .into_iter()
+            .map(|k| k.key)
+            .collect();
+        assert!(oc.len() >= 45, "opencode catalog shrank: {}", oc.len());
+        for must in [
+            "model",
+            "small_model",
+            "autoupdate",
+            // 点路径的三层结构 —— 只铺顶层标量的话这些会一起消失。
+            "permission.bash",
+            "server.port",
+            "attachment.image.max_width",
+        ] {
+            assert!(oc.iter().any(|k| k == must), "opencode missing {must}");
+        }
+        assert!(!oc.iter().any(|k| k == "provider"));
+    }
+
+    #[test]
+    fn merge_extra_json_writes_dotted_paths_and_env_keys() {
+        let mut doc = serde_json::json!({});
+        let mut extra = std::collections::BTreeMap::new();
+        extra.insert("model.name".into(), "gemini-3".into());
+        extra.insert("general.vimMode".into(), "true".into());
+        extra.insert("GEMINI_MODEL".into(), "gemini-3".into());
+        extra.insert("GEMINI_API_KEY".into(), "should-skip".into());
+        merge_extra_json(&mut doc, &extra, CliTarget::GeminiCli, true).unwrap();
+        assert_eq!(doc.pointer("/model/name").unwrap(), "gemini-3");
+        assert_eq!(doc.pointer("/general/vimMode").unwrap(), true);
+        assert_eq!(doc.pointer("/env/GEMINI_MODEL").unwrap(), "gemini-3");
+        assert!(doc.pointer("/env/GEMINI_API_KEY").is_none());
+    }
+
+    #[test]
+    fn merge_extra_toml_writes_dotted_paths() {
+        let mut doc = toml_edit::DocumentMut::new();
+        let mut extra = std::collections::BTreeMap::new();
+        extra.insert("ui.simple_mode".into(), "false".into());
+        extra.insert("sandbox_mode".into(), "read-only".into());
+        extra.insert("models.default".into(), "should-skip".into());
+        merge_extra_toml(&mut doc, &extra, CliTarget::GrokBuild).unwrap();
+        assert_eq!(
+            doc["ui"]["simple_mode"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(doc["sandbox_mode"].as_str(), Some("read-only"));
+        assert!(doc.get("models").is_none());
+    }
+
+    /// `model` has a dedicated TakeoverOptions slot for Codex only. Grok has no
+    /// such slot, so dropping its `model` key loses the user's value instead of
+    /// protecting anything.
+    #[test]
+    fn dedicated_keys_are_skipped_for_codex_only() {
+        let mut extra = std::collections::BTreeMap::new();
+        extra.insert("model".into(), "grok-4-fast".into());
+        extra.insert("model_reasoning_effort".into(), "high".into());
+
+        let mut codex = toml_edit::DocumentMut::new();
+        merge_extra_toml(&mut codex, &extra, CliTarget::Codex).unwrap();
+        assert!(codex.get("model").is_none(), "codex writes it from its own slot");
+        assert!(codex.get("model_reasoning_effort").is_none());
+
+        let mut grok = toml_edit::DocumentMut::new();
+        merge_extra_toml(&mut grok, &extra, CliTarget::GrokBuild).unwrap();
+        assert_eq!(grok["model"].as_str(), Some("grok-4-fast"));
+        assert_eq!(grok["model_reasoning_effort"].as_str(), Some("high"));
+    }
+
+    /// Merging must never destroy what it did not write. A parent that is
+    /// already a scalar is a refusal, exactly like the TOML side — overwriting
+    /// it with an empty object is the "整块替换" this codebase forbids.
+    #[test]
+    fn set_json_path_refuses_a_scalar_parent_and_leaves_it_intact() {
+        let mut doc = serde_json::json!({"model": "gemini-2.5-pro", "tools": ["a"]});
+        let err =
+            set_json_path(&mut doc, "model.name", serde_json::json!("gemini-3")).unwrap_err();
+        assert!(err.to_string().contains("拒绝写入"), "{err}");
+        assert_eq!(doc["model"], "gemini-2.5-pro", "the old value survives");
+
+        let err = set_json_path(&mut doc, "tools.core", serde_json::json!("x")).unwrap_err();
+        assert!(err.to_string().contains("拒绝写入"), "{err}");
+        assert_eq!(doc["tools"], serde_json::json!(["a"]));
+
+        // Missing and null parents are still created — that is the normal case.
+        doc["nulled"] = serde_json::Value::Null;
+        set_json_path(&mut doc, "nulled.deep.x", serde_json::json!(1)).unwrap();
+        set_json_path(&mut doc, "general.vimMode", serde_json::json!(true)).unwrap();
+        assert_eq!(doc.pointer("/nulled/deep/x").unwrap(), 1);
+        assert_eq!(doc.pointer("/general/vimMode").unwrap(), true);
+    }
+
+    /// The form and the writer share one predicate; `CLAUDE_PID` typed into the
+    /// custom-key box must be refused on the way to disk, not merely hidden.
+    #[test]
+    fn host_owned_keys_are_blocked_for_claude_code_only() {
+        assert!(blocked_for_user(CliTarget::ClaudeCode, "CLAUDE_PID"));
+        assert!(blocked_for_user(CliTarget::ClaudeCode, "CLAUDECODE"));
+        assert!(blocked_for_user(CliTarget::ClaudeCode, "ANTHROPIC_AUTH_TOKEN"));
+        assert!(!blocked_for_user(CliTarget::ClaudeCode, "API_TIMEOUT_MS"));
+        // Only Claude Code's host injects these; elsewhere the name means nothing.
+        assert!(!blocked_for_user(CliTarget::Codex, "CLAUDE_PID"));
+        // Dotted children of an owned prefix are owned too.
+        assert!(blocked_for_user(CliTarget::GrokBuild, "models.default"));
+        assert!(blocked_for_user(CliTarget::OpenCode, "provider.ccload"));
     }
 }
