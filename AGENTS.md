@@ -133,9 +133,31 @@ if let Err(e) = carry_permissions(path, &tmp) { … }
 
 ## 发版
 
-tag 形如 `v0.1.0`，只标客户端版本；打进包里的内核版本由 `KERNEL_VERSION` 单独
-钉住，两者互不牵连。推 tag 触发 `.github/workflows/release.yml`，三平台并行构建，
-产物汇总成一个**草稿** release —— 包体上百 MB，发出去之前人眼看一眼产物齐不齐。
+两条线，互不干扰。
+
+**beta —— 不打 tag，跑 workflow。** Actions → **Beta Release** → Run workflow，填
+分支即可（`workflow_dispatch`，见 `.github/workflows/beta.yml`）。版本号由流水线
+自己算：`package.json` 的 version + 当天日期 + 该日第 N 次，形如
+`v0.1.0-beta.20260819.2`，tag 也由它创建。只发 **prerelease**，`latest` 永远不会
+指到它。
+
+> 别为了打 beta 去手改 `package.json` 的 version。那个字段是 beta 版本号的
+> **基座**，把它写成 `0.2.0-beta.1` 会让流水线算出
+> `v0.2.0-beta.1-beta.20260819.1`。beta 序号是流水线的事，不是人的事。
+
+beta 的 Windows 只出 NSIS，不出 MSI —— 原因写在 `beta.yml` 的 matrix 注释里
+（MSI 的 ProductVersion 比较时忽略第四段，两个 beta 会被当成同一版本，覆盖安装
+报 1638）。要动这块之前先读那段注释。
+
+**正式版 —— 人推 tag。** tag 形如 `v0.1.0`，只标客户端版本；打进包里的内核版本由
+`KERNEL_VERSION` 单独钉住，两者互不牵连。推 tag 触发
+`.github/workflows/release.yml`，三平台并行构建，产物汇总成一个**草稿**
+release —— 包体上百 MB，发出去之前人眼看一眼产物齐不齐。草稿在 Releases 列表里
+对非 owner 不可见，产物是在的，别以为没打出来。
+
+正式版的版本号写在三处且必须一致：`package.json`、`src-tauri/tauri.conf.json`、
+`src-tauri/Cargo.toml`（`Cargo.lock` 跑一次 `cargo check` 自动跟上）。流水线里的
+「Verify tag matches app version」会拿 tag 去比前两处，对不上直接红。
 
 Apple 签名相关的 secret 没配时流水线照常出未签名包（用户首次打开需右键「打开」），
 不会因为缺开发者账号整条红掉。
