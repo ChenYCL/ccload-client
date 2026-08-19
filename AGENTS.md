@@ -137,6 +137,24 @@ tag 形如 `v0.1.0`，只标客户端版本；打进包里的内核版本由 `KE
 钉住，两者互不牵连。推 tag 触发 `.github/workflows/release.yml`，三平台并行构建，
 产物汇总成一个**草稿** release —— 包体上百 MB，发出去之前人眼看一眼产物齐不齐。
 
+版本号写在三处，必须一致：`package.json`、`src-tauri/tauri.conf.json`、
+`src-tauri/Cargo.toml`（`Cargo.lock` 跑一次 `cargo check` 自动跟上）。流水线里的
+「Verify tag matches app version」会拿 tag 去比前两处，对不上直接红 —— 它挡的是
+「MSI 的 ProductVersion 没变、覆盖安装装不上去」。
+
+**打 beta（版本号带 `-beta.x`）时还要设 `bundle.windows.wix.version`。** WiX 的
+ProductVersion 只认纯数字的 `major.minor.patch.build`，而 tauri-bundler 的
+`convert_version` 遇到非数字的 pre-release 标识是直接 `bail!`，不是降级 ——
+`0.2.0-beta.1` 会让 Windows 那一路整个红掉（NSIS 不受影响，它只 warning 然后回落
+到 `major.minor.patch`）。官方留的口子就是这个字段：
+
+```jsonc
+// src-tauri/tauri.conf.json
+"bundle": { "windows": { "wix": { "version": "0.2.0.1" } } }
+```
+
+主版本号照常写 `0.2.0-beta.1`，只有 MSI 用这个覆盖值，第四位就是 beta 序号。
+
 Apple 签名相关的 secret 没配时流水线照常出未签名包（用户首次打开需右键「打开」），
 不会因为缺开发者账号整条红掉。
 
