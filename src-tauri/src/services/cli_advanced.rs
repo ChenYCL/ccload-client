@@ -151,43 +151,53 @@ pub const RESILIENT_ENV: &[(&str, &str)] = &[
     ("CLAUDE_CODE_RETRY_WATCHDOG", "1"),
 ];
 
-/// Env keys the UI offers as inputs for Claude Code, with the value we
-/// suggest when the key is absent. Keeping the list here (not in the
-/// renderer) means the Rust writer and the form cannot drift.
-///
-/// `(key, description, default)`. An empty default means "no opinion" — the
-/// form shows it blank and writes nothing unless the user types a value.
-pub const KNOWN_CLAUDE_ENV: &[(&str, &str, &str)] = &[
-    // The four model tiers. They are rendered as dedicated inputs rather than
-    // generic rows (see TIER_KEYS in the renderer), but they live here so
-    // their current on-disk values come back through the same read.
-    ("ANTHROPIC_MODEL", "默认模型", ""),
-    ("ANTHROPIC_DEFAULT_SONNET_MODEL", "Sonnet tier", ""),
-    ("ANTHROPIC_DEFAULT_OPUS_MODEL", "Opus tier", ""),
-    ("ANTHROPIC_DEFAULT_HAIKU_MODEL", "Haiku tier", ""),
-    ("API_TIMEOUT_MS", "单请求超时（毫秒）", "1200000"),
-    ("API_FORCE_IDLE_TIMEOUT", "0 表示不因空闲中断流式响应", "0"),
-    ("CLAUDE_CODE_RETRY_WATCHDOG", "1 开启重试看门狗", "1"),
-    ("CLAUDE_CODE_MAX_RETRIES", "最大重试次数", "10"),
-    ("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "单次输出上限", ""),
-    (
-        "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
-        "上下文窗口（非 claude- 前缀模型生效）",
-        "",
-    ),
-    ("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "自动压缩触发窗口", ""),
-    ("CLAUDE_CODE_SUBAGENT_MODEL", "子代理使用的模型", ""),
-    ("ANTHROPIC_SMALL_FAST_MODEL", "轻量快速模型", ""),
-    ("ANTHROPIC_LOG", "日志级别", ""),
-    ("DISABLE_TELEMETRY", "1 关闭遥测", "1"),
-    ("DISABLE_ERROR_REPORTING", "1 关闭错误上报", "1"),
-    ("DISABLE_AUTOUPDATER", "1 关闭自动更新", "1"),
-    (
-        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
-        "1 关闭非必要流量",
-        "1",
-    ),
+/// Official Claude Code env catalog, scraped from
+/// https://code.claude.com/docs/en/env-vars and checked against 2.1.226.
+/// The form lists every documented key — not a short "common" subset —
+/// because settings.json `env` accepts the whole set.
+const CLAUDE_ENV_CATALOG_JSON: &str = include_str!("../../data/claude-code-env.json");
+
+/// Takeover already owns these; they must not show up as "advanced knobs"
+/// or a 复原 click would fight the endpoint/token we just wrote.
+const TAKEOVER_OWNED_ENV: &[&str] = &[
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_API_KEY",
 ];
+
+/// Hosting identity — Claude Code ignores these in settings.json `env`.
+const HOST_OWNED_ENV: &[&str] = &[
+    "CLAUDE_CODE_REMOTE",
+    "CLAUDE_CODE_ACCOUNT_UUID",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDECODE",
+    "CLAUDE_PID",
+];
+
+#[derive(Deserialize)]
+struct ClaudeEnvCatalogFile {
+    keys: Vec<ClaudeEnvCatalogEntry>,
+}
+
+#[derive(Deserialize)]
+struct ClaudeEnvCatalogEntry {
+    key: String,
+    description: String,
+    #[serde(default)]
+    default: String,
+}
+
+fn claude_env_catalog() -> &'static [ClaudeEnvCatalogEntry] {
+    use std::sync::OnceLock;
+    static CATALOG: OnceLock<Vec<ClaudeEnvCatalogEntry>> = OnceLock::new();
+    CATALOG
+        .get_or_init(|| {
+            let file: ClaudeEnvCatalogFile = serde_json::from_str(CLAUDE_ENV_CATALOG_JSON)
+                .expect("claude-code-env.json must parse");
+            file.keys
+        })
+        .as_slice()
+}
 
 /// Codex knobs that live as top-level keys in `~/.codex/config.toml`.
 /// `(key, description, default)`.
@@ -207,9 +217,9 @@ pub const KNOWN_CODEX_KEYS: &[(&str, &str, &str)] = &[
 /// `current` when present and falls back to `default`.
 #[derive(Debug, Serialize)]
 pub struct EnvKeyInfo {
-    pub key: &'static str,
-    pub description: &'static str,
-    pub default: &'static str,
+    pub key: String,
+    pub description: String,
+    pub default: String,
     pub current: Option<String>,
 }
 
@@ -255,22 +265,54 @@ fn current_values(root: &ConfigRoot, target: CliTarget) -> std::collections::BTr
 }
 
 pub fn known_env_keys(root: &ConfigRoot, target: CliTarget) -> Vec<EnvKeyInfo> {
-    let list: &[(&'static str, &'static str, &'static str)] = match target {
-        CliTarget::ClaudeCode => KNOWN_CLAUDE_ENV,
-        CliTarget::Codex => KNOWN_CODEX_KEYS,
+    let current = current_values(root, target);
+    let mut out: Vec<EnvKeyInfo> = match target {
+        CliTarget::ClaudeCode => claude_env_catalog()
+            .iter()
+            .filter(|e| {
+                !TAKEOVER_OWNED_ENV.contains(&e.key.as_str())
+                    && !HOST_OWNED_ENV.contains(&e.key.as_str())
+            })
+            .map(|e| EnvKeyInfo {
+                key: e.key.clone(),
+                description: e.description.clone(),
+                default: e.default.clone(),
+                current: current.get(&e.key).cloned(),
+            })
+            .collect(),
+        CliTarget::Codex => KNOWN_CODEX_KEYS
+            .iter()
+            .map(|(key, description, default)| EnvKeyInfo {
+                key: (*key).to_string(),
+                description: (*description).to_string(),
+                default: (*default).to_string(),
+                current: current.get(*key).cloned(),
+            })
+            .collect(),
         // Other CLIs carry their knobs in their own config files rather than
         // an env block; the raw editor covers them.
-        _ => &[],
+        _ => Vec::new(),
     };
-    let current = current_values(root, target);
-    list.iter()
-        .map(|(key, description, default)| EnvKeyInfo {
-            key,
-            description,
-            default,
-            current: current.get(*key).cloned(),
-        })
-        .collect()
+    // Anything already on disk but not in the official catalog (FIGMA_TOKEN,
+    // a brand-new Claude Code flag, …) still has to show up.
+    if target == CliTarget::ClaudeCode {
+        for (key, value) in &current {
+            if TAKEOVER_OWNED_ENV.contains(&key.as_str()) || HOST_OWNED_ENV.contains(&key.as_str())
+            {
+                continue;
+            }
+            if out.iter().any(|row| row.key == *key) {
+                continue;
+            }
+            out.push(EnvKeyInfo {
+                key: key.clone(),
+                description: "本机已有（官方 env 文档未收录，原样保留）".into(),
+                default: String::new(),
+                current: Some(value.clone()),
+            });
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -339,5 +381,69 @@ mod tests {
         assert_eq!(files.len(), 2, "codex has auth.json + config.toml");
         assert!(files.iter().all(|f| !f.exists && f.body.is_empty()));
         assert_eq!(files[1].format, ConfigFormat::Toml);
+    }
+
+    #[test]
+    fn form_lists_catalog_and_on_disk_extras_but_not_takeover_owned_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = ConfigRoot::sandbox(dir.path().to_path_buf());
+        let path = root.join(".claude/settings.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{
+              "env": {
+                "ANTHROPIC_BASE_URL": "http://127.0.0.1:15722",
+                "ANTHROPIC_AUTH_TOKEN": "secret",
+                "ENABLE_TOOL_SEARCH": "true",
+                "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "48",
+                "SOME_CUSTOM_FLAG": "1"
+              }
+            }"#,
+        )
+        .unwrap();
+        let keys = known_env_keys(&root, CliTarget::ClaudeCode);
+        let by: std::collections::BTreeMap<_, _> =
+            keys.into_iter().map(|k| (k.key.clone(), k)).collect();
+        assert!(by.contains_key("ENABLE_TOOL_SEARCH"));
+        assert_eq!(
+            by["ENABLE_TOOL_SEARCH"].current.as_deref(),
+            Some("true")
+        );
+        assert_eq!(
+            by["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"].current.as_deref(),
+            Some("48")
+        );
+        assert_eq!(
+            by["SOME_CUSTOM_FLAG"].current.as_deref(),
+            Some("1"),
+            "unknown on-disk keys must still appear"
+        );
+        assert!(
+            !by.contains_key("ANTHROPIC_AUTH_TOKEN"),
+            "takeover-owned secrets stay off the advanced list"
+        );
+        assert!(!by.contains_key("ANTHROPIC_BASE_URL"));
+    }
+
+    #[test]
+    fn claude_catalog_covers_official_docs_not_a_short_subset() {
+        let keys: Vec<_> = claude_env_catalog().iter().map(|e| e.key.as_str()).collect();
+        assert!(
+            keys.len() >= 300,
+            "catalog shrank: {} keys",
+            keys.len()
+        );
+        for must in [
+            "ENABLE_TOOL_SEARCH",
+            "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE",
+            "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
+            "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",
+            "DISABLE_TELEMETRY",
+            "API_FORCE_IDLE_TIMEOUT",
+            "CLAUDE_CODE_RETRY_WATCHDOG",
+        ] {
+            assert!(keys.contains(&must), "missing {must}");
+        }
     }
 }

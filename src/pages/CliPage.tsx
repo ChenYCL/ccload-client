@@ -255,6 +255,18 @@ function CliCard({
                     value={options.haiku_model}
                     onChange={(v) => onOptionsChange({ ...options, haiku_model: v })}
                   />
+                  <ModelField
+                    label="Fable tier"
+                    envKey="ANTHROPIC_DEFAULT_FABLE_MODEL"
+                    target={p.target}
+                    value={options.extra_env?.ANTHROPIC_DEFAULT_FABLE_MODEL}
+                    onChange={(v) =>
+                      onOptionsChange({
+                        ...options,
+                        extra_env: { ...options.extra_env, ANTHROPIC_DEFAULT_FABLE_MODEL: v },
+                      })
+                    }
+                  />
                 </div>
               )}
               <KnownKeysEditor
@@ -286,6 +298,7 @@ function KnownKeysEditor({
   options: TakeoverOptions;
   onOptionsChange: (o: TakeoverOptions) => void;
 }) {
+  const [filter, setFilter] = useState("");
   const keys = useQuery({
     queryKey: ["cli-env-keys", target],
     queryFn: () => api.cliEnvKeys(target),
@@ -321,15 +334,32 @@ function KnownKeysEditor({
 
   if (!keys.data?.length) return null;
   // Tier keys render as dedicated inputs above; skip them here.
-  const rows = keys.data.filter((k) => !TIER_KEYS.includes(k.key));
+  const q = filter.trim().toLowerCase();
+  const rows = keys.data.filter((k) => {
+    if (TIER_KEYS.includes(k.key)) return false;
+    if (!q) return true;
+    return (
+      k.key.toLowerCase().includes(q) ||
+      k.description.toLowerCase().includes(q)
+    );
+  });
 
   return (
     <div>
       <div className="mb-2 text-xs text-muted">
-        {isCodex ? "config.toml 配置项" : "环境变量"} · 已读取本机现值，留空的显示建议默认值；
-        只有你改过的项才会写入
+        {isCodex
+          ? "config.toml 配置项 · 已读取本机现值，只有你改过的项才会写入"
+          : `Claude Code 官方 env 全量（${keys.data.filter((k) => !TIER_KEYS.includes(k.key)).length}）· 已读取本机现值；只有你改过的项才会写入`}
       </div>
-      <div className="space-y-1">
+      {!isCodex && (
+        <TextInput
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          placeholder="筛选变量名或说明…"
+          className="mb-2"
+        />
+      )}
+      <div className="max-h-[28rem] space-y-1 overflow-y-auto pr-1">
         {rows.map((k) => {
           const edited = isCodex ? codexValue(k.key) : edits[k.key];
           const shown = edited ?? k.current ?? "";
@@ -447,6 +477,7 @@ const TIER_KEYS = [
   "ANTHROPIC_DEFAULT_SONNET_MODEL",
   "ANTHROPIC_DEFAULT_OPUS_MODEL",
   "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+  "ANTHROPIC_DEFAULT_FABLE_MODEL",
 ];
 
 /// A tier input that echoes what the machine already has. `value` is the
