@@ -18,6 +18,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
+use crate::services::cli_io::write_atomic;
 
 /// One hop in a fallback chain.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,15 +61,12 @@ impl FallbackStore {
     }
 
     pub fn save(&self, path: &std::path::Path) -> Result<(), AppError> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
         let body = serde_json::to_string_pretty(self)
             .map_err(|e| AppError::Config(e.to_string()))?;
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, body)?;
-        std::fs::rename(&tmp, path)?;
-        Ok(())
+        // 走 write_atomic 而不是自己拼一个 `.json.tmp`：那个名字由目标路径推出来，
+        // 两个并发 save 会落在同一个临时文件上互相截断，rename 过去就是两个文档
+        // 首尾相接 —— 也就是 `load` 那句 `fallback store is corrupt` 的来历。
+        write_atomic(path, &format!("{body}\n"))
     }
 
     pub fn upsert(&mut self, chain: FallbackChain) {

@@ -11,10 +11,12 @@
 //! `pristine` — that is the "before ccLoad ever touched this machine" state.
 
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
+use crate::services::cli_io::{copy_atomic, write_atomic};
 use crate::services::cli_types::{CliTarget, ConfigRoot};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,11 +54,32 @@ pub const MAX_SNAPSHOTS_PER_TARGET: usize = 5;
 
 pub struct BackupStore {
     dir: PathBuf,
+    /// 串行化清单的「读—改—写」—— 别删。
+    ///
+    /// 快照/回滚共用一份 `manifest.json`，视觉 MCP 批量装卸会同时给五个 target
+    /// 各发一次写入，而每个公开方法都是 `load()` → 改 entries → `save()`。没有这
+    /// 把锁，两个并发调用会读到同一份清单、各自追加自己那条、后写的把先写的整个
+    /// 盖掉：先写的那次快照文件还在磁盘上，却再也没有回滚入口。
+    ///
+    /// `write_atomic` 挡不住这个。它现在的临时文件名是唯一的（pid + 计数器），
+    /// 所以清单一定是完整的 JSON、不会再出现两个文档首尾相接的
+    /// `trailing characters at line N`；但「谁的 entry 活下来」是它管不着的事。
+    ///
+    /// 边界：只管得住本进程。两个客户端实例同时跑仍然会丢条目 —— 那时清单本身
+    /// 还是合法 JSON，`parse_manifest` 的抢救兜不住，只是没人再引用那份快照。
+    lock: Mutex<()>,
 }
 
 impl BackupStore {
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir }
+        Self {
+            dir,
+            lock: Mutex::new(()),
+        }
+    }
+
+    fn guard(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.lock.lock().unwrap_or_else(|p| p.into_inner())
     }
 
     fn manifest_path(&self) -> PathBuf {
@@ -72,21 +95,70 @@ impl BackupStore {
         if raw.trim().is_empty() {
             return Ok(Manifest::default());
         }
-        serde_json::from_str(&raw)
-            .map_err(|e| AppError::Config(format!("backup manifest is corrupt: {e}")))
+        let (m, healed) = parse_manifest(&raw)?;
+        // A recovered file must be rewritten now: leaving the junk on disk means
+        // every command after this one has to salvage again (and a build without
+        // the salvage path still dies on it).
+        if healed {
+            tracing::warn!(
+                "backup manifest had a concatenated tail (written by an older build); \
+                 salvaged {} entries and rewrote it",
+                m.entries.len()
+            );
+            self.save(&m)?;
+            self.sweep_orphan_dirs(&m);
+        }
+        Ok(m)
     }
 
     fn save(&self, m: &Manifest) -> Result<(), AppError> {
         std::fs::create_dir_all(&self.dir)?;
         let body =
             serde_json::to_string_pretty(m).map_err(|e| AppError::Config(e.to_string()))?;
-        let tmp = self.manifest_path().with_extension("json.tmp");
-        std::fs::write(&tmp, body)?;
-        std::fs::rename(&tmp, self.manifest_path())?;
-        Ok(())
+        // write_atomic 给的是权限保留（rename 换 inode，清单不会从 0600 退回
+        // 0644）+ 唯一的临时文件名。后者保证落地的永远是一份完整 JSON；至于并发
+        // 调用之间谁的 entry 活下来，那是 `lock` 的事，见该字段的注释。
+        write_atomic(&self.manifest_path(), &format!("{body}\n"))
+    }
+
+    /// 抢救之后收掉没人认领的快照目录。
+    ///
+    /// 被丢掉的那截尾巴里的 entry 已经不在清单里了，可它们的 `backups/<id>/`
+    /// 还在磁盘上 —— `prune` 只删自己刚移除的那几条，这批永远等不到人来收。
+    /// 只在抢救成功后调用：正常路径上 `snapshot` 是先 `load` 再建目录，此时扫一遍
+    /// 会把它正要写的目录当成孤儿。
+    ///
+    /// `extra/` 是 `backup_extra` 的地盘、本来就不进清单，必须跳过。
+    fn sweep_orphan_dirs(&self, m: &Manifest) {
+        let Ok(rd) = std::fs::read_dir(&self.dir) else {
+            return;
+        };
+        for e in rd.filter_map(Result::ok) {
+            if !e.file_type().is_ok_and(|t| t.is_dir()) {
+                continue;
+            }
+            let Ok(name) = e.file_name().into_string() else {
+                continue;
+            };
+            if name == "extra" || m.entries.iter().any(|x| x.id == name) {
+                continue;
+            }
+            // 跟 prune 一样：删不掉（权限/已被手动清理）不该让这次读取失败，
+            // 清单已经不指向它了，留下的只是磁盘上的孤儿。
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+
+    /// Rewrite a concatenated leftover tail if present. Safe to call at
+    /// process start; a fully unreadable file is left for the next write
+    /// to report rather than taking the app down with it.
+    pub fn heal(&self) -> Result<(), AppError> {
+        let _g = self.guard();
+        self.load().map(|_| ())
     }
 
     pub fn list(&self, target: Option<CliTarget>) -> Result<Vec<BackupEntry>, AppError> {
+        let _g = self.guard();
         let mut entries = self.load()?.entries;
         if let Some(t) = target {
             entries.retain(|e| e.target == t);
@@ -105,6 +177,7 @@ impl BackupStore {
         id: &str,
         reason: &str,
     ) -> Result<BackupEntry, AppError> {
+        let _g = self.guard();
         let mut manifest = self.load()?;
         // The first snapshot of a target captures the user's original setup.
         let pristine = !manifest.entries.iter().any(|e| e.target == target);
@@ -200,6 +273,7 @@ impl BackupStore {
         stamp: &str,
         reason: &str,
     ) -> Result<(), AppError> {
+        let _g = self.guard();
         let src = root.join(rel);
         let mut manifest = self.load()?;
         let snap_dir = self.dir.join(stamp);
@@ -231,6 +305,7 @@ impl BackupStore {
 
     /// 纯拷贝、不进清单的旧接口。只剩测试在用；新代码一律走 `snapshot_extra`。
     pub fn backup_extra(&self, path: &std::path::Path, stamp: &str) -> Result<(), AppError> {
+        let _g = self.guard();
         if !path.exists() {
             return Ok(());
         }
@@ -247,6 +322,7 @@ impl BackupStore {
 
     /// Put the files back exactly as the snapshot found them.
     pub fn restore(&self, root: &ConfigRoot, id: &str) -> Result<Vec<String>, AppError> {
+        let _g = self.guard();
         let manifest = self.load()?;
         let entry = manifest
             .entries
@@ -271,9 +347,7 @@ impl BackupStore {
                         std::fs::create_dir_all(parent)?;
                     }
                     // Same-dir temp + rename keeps the restore atomic too.
-                    let tmp = dest.with_extension("ccload-restore-tmp");
-                    std::fs::copy(&src, &tmp)?;
-                    std::fs::rename(&tmp, &dest)?;
+                    copy_atomic(&src, &dest)?;
                     touched.push(dest.display().to_string());
                 }
                 _ => {
@@ -286,6 +360,34 @@ impl BackupStore {
             }
         }
         Ok(touched)
+    }
+}
+
+/// Parse the manifest, salvaging a concatenated leftover tail.
+///
+/// This is now a **repair path for manifests written by older builds**, not a
+/// live failure mode. Those builds shared one tmp file per target path
+/// (`.manifest.json.ccload-tmp`): two writers landing on it left the longer
+/// document's tail after the shorter one's closing `}`, and serde_json died
+/// with `trailing characters at line N`, which blocked every later snapshot.
+/// `cli_io::write_atomic` now gives each writer a unique tmp, so we no longer
+/// produce this — but a machine that ran an older build still has the broken
+/// file on disk, and it must survive the upgrade.
+///
+/// The leading value is whichever writer's bytes won at offset 0: a complete,
+/// self-consistent snapshot list, though not necessarily the newest one. We
+/// take it and let `load` rewrite the file — entries only in the discarded tail
+/// are gone, so `load` also sweeps the snapshot dirs they left behind.
+fn parse_manifest(raw: &str) -> Result<(Manifest, bool), AppError> {
+    match serde_json::from_str::<Manifest>(raw) {
+        Ok(m) => Ok((m, false)),
+        Err(e) => {
+            let mut de = serde_json::Deserializer::from_str(raw);
+            match Manifest::deserialize(&mut de) {
+                Ok(m) => Ok((m, true)),
+                Err(_) => Err(AppError::Config(format!("backup manifest is corrupt: {e}"))),
+            }
+        }
     }
 }
 
@@ -407,5 +509,112 @@ mod tests {
         }
         let n = std::fs::read_dir(store.dir.join("extra")).unwrap().count();
         assert_eq!(n, MAX_SNAPSHOTS_PER_TARGET);
+    }
+
+    /// A short overwrite that didn't truncate leaves the previous document's
+    /// tail after the new `}`. Vision MCP install used to die on this and
+    /// block every later snapshot.
+    #[test]
+    fn load_salvages_trailing_characters_and_rewrites_clean() {
+        let (_d, store, _root) = store();
+        let clean = r#"{
+  "entries": [
+    {
+      "id": "s0",
+      "target": "claude-code",
+      "created_at": 1,
+      "reason": "takeover",
+      "pristine": true,
+      "files": [
+        { "rel": ".claude/settings.json", "stored": ".claude__settings.json", "existed": true }
+      ]
+    }
+  ]
+}"#;
+        let leftover = r#"    "rel": ".codex/config.toml",
+          "stored": ".codex__config.toml",
+          "existed": true
+        }
+      ]
+    }
+  ]
+}"#;
+        std::fs::create_dir_all(&store.dir).unwrap();
+        std::fs::write(store.manifest_path(), format!("{clean}{leftover}")).unwrap();
+        let listed = store.list(None).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "s0");
+        let rewritten = std::fs::read_to_string(store.manifest_path()).unwrap();
+        serde_json::from_str::<Manifest>(&rewritten).unwrap();
+        assert!(
+            !rewritten.contains(".codex/config.toml"),
+            "leftover tail must be dropped: {rewritten}"
+        );
+    }
+
+    /// 抢救丢掉的尾巴里那些 entry 的快照目录没人会再来收 —— `prune` 只管自己
+    /// 移除的那几条。`extra/` 不进清单，扫的时候不能连它一起端了。
+    #[test]
+    fn salvaging_the_manifest_sweeps_the_orphaned_snapshot_dirs() {
+        let (_d, store, _root) = store();
+        let clean = r#"{
+  "entries": [
+    {
+      "id": "s0",
+      "target": "claude-code",
+      "created_at": 1,
+      "reason": "takeover",
+      "pristine": true,
+      "files": [
+        { "rel": ".claude/settings.json", "stored": ".claude__settings.json", "existed": true }
+      ]
+    }
+  ]
+}"#;
+        let leftover = r#"    "rel": ".codex/config.toml",
+          "stored": ".codex__config.toml",
+          "existed": true
+        }
+      ]
+    }
+  ]
+}"#;
+        std::fs::create_dir_all(&store.dir).unwrap();
+        std::fs::write(store.manifest_path(), format!("{clean}{leftover}")).unwrap();
+        // s1 只出现在被丢掉的尾巴里；extra/ 从来就不在清单里。
+        for d in ["s0", "s1", "extra"] {
+            std::fs::create_dir_all(store.dir.join(d)).unwrap();
+            std::fs::write(store.dir.join(d).join("keep"), "x").unwrap();
+        }
+
+        store.list(None).unwrap();
+
+        assert!(store.dir.join("s0").exists(), "surviving entry must keep it");
+        assert!(!store.dir.join("s1").exists(), "orphan must be swept");
+        assert!(
+            store.dir.join("extra").join("keep").exists(),
+            "extra/ is backup_extra's, not an orphan"
+        );
+    }
+
+    #[test]
+    fn concurrent_snapshots_do_not_leave_trailing_characters() {
+        let (_d, store, root) = store();
+        let store = std::sync::Arc::new(store);
+        let root = std::sync::Arc::new(root);
+        std::thread::scope(|scope| {
+            for i in 0..16 {
+                let store = std::sync::Arc::clone(&store);
+                let root = std::sync::Arc::clone(&root);
+                scope.spawn(move || {
+                    store
+                        .snapshot(root.as_ref(), CliTarget::ClaudeCode, &format!("c{i}"), "test")
+                        .unwrap();
+                });
+            }
+        });
+        let raw = std::fs::read_to_string(store.manifest_path()).unwrap();
+        serde_json::from_str::<Manifest>(&raw).expect("manifest must stay valid JSON");
+        assert!(store.list(Some(CliTarget::ClaudeCode)).unwrap().len() <= MAX_SNAPSHOTS_PER_TARGET);
     }
 }

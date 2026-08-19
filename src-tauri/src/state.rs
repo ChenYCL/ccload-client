@@ -103,11 +103,15 @@ impl AppState {
 
         let kernel = Kernel::new();
         let admin = AdminClient::new(Arc::clone(&kernel));
+        let backups = BackupStore::new(dir.join("backups"));
+        // 启动时就把损坏的清单救回来。否则用户点「移除」才会撞上
+        // `trailing characters`，而那次写入本身又会把尾巴踩得更乱。
+        let _ = backups.heal();
         Ok(Self {
             kernel,
             admin,
             embed_proxy: RwLock::new(None),
-            backups: BackupStore::new(dir.join("backups")),
+            backups,
             settings: RwLock::new(settings),
             settings_path,
         })

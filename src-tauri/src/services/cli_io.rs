@@ -1,6 +1,7 @@
 //! Atomic writes and JSON helpers used by every CLI writer.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::{Map, Value};
 
@@ -10,6 +11,39 @@ use crate::error::AppError;
 /// 只应该属主可读。
 #[cfg(unix)]
 const PRIVATE_MODE: u32 = 0o600;
+
+/// 每个 writer 一个独一无二的临时文件名。
+///
+/// 以前是 `.{filename}.ccload-tmp`，完全由目标路径推出来 —— 两个并发 writer 拿到
+/// 的是**同一个**文件，各自持有独立的写偏移：短的那份把长的那份前半段盖掉，长的
+/// 那份的尾巴留在后面，rename 过去就成了两个文档首尾相接。备份清单那个
+/// `trailing characters at line N` 就是这么来的。
+///
+/// pid 挡跨进程（两个客户端实例），计数器挡同进程内。
+fn unique_tmp(path: &Path, parent: &Path) -> PathBuf {
+    static N: AtomicU64 = AtomicU64::new(0);
+    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("config");
+    parent.join(format!(
+        ".{name}.{}.{}.ccload-tmp",
+        std::process::id(),
+        N.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
+/// 临时文件的清道夫。
+///
+/// 名字唯一之后，任何一条提前返回的路径漏掉 remove，都会在用户的配置目录里留下
+/// 一个永远没人清理的 `.xxx.ccload-tmp`（以前名字固定，下一次写入会顺手覆盖掉，
+/// 漏了也看不出来）。交给 Drop 就不用每个出错分支各自记得删。
+///
+/// rename 成功之后 tmp 已经不在了，那次 remove 是个无害的空操作。
+struct TmpFile(PathBuf);
+
+impl Drop for TmpFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
 
 /// Sibling temp file + rename, so readers never see a truncated document.
 ///
@@ -23,18 +57,28 @@ pub fn write_atomic(path: &Path, contents: &str) -> Result<(), AppError> {
         .parent()
         .ok_or_else(|| AppError::Config(format!("{} has no parent dir", path.display())))?;
     std::fs::create_dir_all(parent)?;
-    let tmp = parent.join(format!(
-        ".{}.ccload-tmp",
-        path.file_name().and_then(|s| s.to_str()).unwrap_or("config")
-    ));
-    std::fs::write(&tmp, contents)?;
-    if let Err(e) = carry_permissions(path, &tmp) {
-        // 权限贴不回去就别把文件换过去：宁可这次写入失败，也不要让一个带凭据的
-        // 文件以比原来宽松的权限落地。
-        let _ = std::fs::remove_file(&tmp);
-        return Err(e);
-    }
-    std::fs::rename(&tmp, path)?;
+    let tmp = TmpFile(unique_tmp(path, parent));
+    std::fs::write(&tmp.0, contents)?;
+    // 权限贴不回去就别把文件换过去：宁可这次写入失败，也不要让一个带凭据的
+    // 文件以比原来宽松的权限落地。失败时的清理由 TmpFile 的 Drop 负责。
+    carry_permissions(path, &tmp.0)?;
+    std::fs::rename(&tmp.0, path)?;
+    Ok(())
+}
+
+/// 同样的换 inode 语义，但内容是从另一个文件拷过来的（快照回滚用）。
+///
+/// **不**调 `carry_permissions`：`fs::copy` 会把 src 的权限一起带过来，而 src 是
+/// 快照里那份拷贝，它的权限又是当初从用户原文件拷来的 —— 那正是「按快照原样放
+/// 回去」要的东西。贴 dest 现在的权限反而会把我们自己写过的 mode 固化下来。
+pub fn copy_atomic(src: &Path, dest: &Path) -> Result<(), AppError> {
+    let parent = dest
+        .parent()
+        .ok_or_else(|| AppError::Config(format!("{} has no parent dir", dest.display())))?;
+    std::fs::create_dir_all(parent)?;
+    let tmp = TmpFile(unique_tmp(dest, parent));
+    std::fs::copy(src, &tmp.0)?;
+    std::fs::rename(&tmp.0, dest)?;
     Ok(())
 }
 
@@ -140,5 +184,79 @@ mod tests {
         let mut doc: Value = serde_json::from_str(r#"{"mcpServers": 3}"#).unwrap();
         object_at(&mut doc, "mcpServers").unwrap().insert("a".into(), Value::Bool(true));
         assert_eq!(doc.pointer("/mcpServers/a").unwrap(), &Value::Bool(true));
+    }
+
+    fn leftover_tmps(dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".ccload-tmp"))
+            .collect()
+    }
+
+    /// 共享的临时文件名是备份清单 `trailing characters at line N` 的根因：两个
+    /// writer 落在同一个 tmp 上，各自持有独立的写偏移，短的那份盖掉长的那份前半
+    /// 段、长的那份的尾巴留在后面，rename 过去就是两个文档首尾相接。
+    ///
+    /// 长度差得越大越容易撞出来，所以两种内容一长一短。
+    #[test]
+    fn concurrent_writes_to_one_path_never_concatenate() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let long = format!(r#"{{"who":"long","pad":"{}"}}"#, "x".repeat(20_000));
+        let short = r#"{"who":"short"}"#.to_string();
+
+        std::thread::scope(|scope| {
+            for i in 0..32 {
+                let path = &path;
+                let body = if i % 2 == 0 { &long } else { &short };
+                scope.spawn(move || write_atomic(path, body).unwrap());
+            }
+        });
+
+        // 每一次 rename 都是原子的，所以落地的必须是**某一次**完整的写入，
+        // 不能是两次写入拼起来的东西。
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let v: Value = serde_json::from_str(&raw).expect("must be one whole document");
+        assert!(matches!(v["who"].as_str(), Some("long" | "short")), "{raw}");
+        assert!(leftover_tmps(dir.path()).is_empty(), "tmp files leaked");
+    }
+
+    /// 名字唯一之后就没有「下一次写入顺手覆盖掉」这回事了 —— 出错路径漏删一次，
+    /// 用户的配置目录里就永久多一个 `.xxx.ccload-tmp`。
+    #[test]
+    fn a_failed_write_leaves_no_tmp_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        // rename 一个普通文件到已存在的目录上必然失败。
+        let path = dir.path().join("occupied");
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("child"), "x").unwrap();
+
+        assert!(write_atomic(&path, "{}").is_err());
+        assert!(leftover_tmps(dir.path()).is_empty(), "tmp survived the failure");
+    }
+
+    /// 回滚要把文件按快照原样放回去，包括权限 —— 那是用户原本的 mode，不是我们
+    /// 写过之后的 mode。
+    #[cfg(unix)]
+    #[test]
+    fn copy_atomic_carries_the_snapshots_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("snapshot");
+        std::fs::write(&src, "restored").unwrap();
+        std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o640)).unwrap();
+        let dest = dir.path().join("nested").join("config.json");
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::write(&dest, "ours").unwrap();
+        std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        copy_atomic(&src, &dest).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "restored");
+        let mode = std::fs::metadata(&dest).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o640, "snapshot's mode wins, not the one we had written");
+        assert!(leftover_tmps(dest.parent().unwrap()).is_empty());
     }
 }
