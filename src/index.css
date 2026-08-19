@@ -1,0 +1,339 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---------------------------------------------------------------------------
+   ccLoad design system.
+
+   Built on Apple's interface principles (WWDC "Designing Fluid Interfaces",
+   "The Details of UI Typography", "Principles of Great Design"):
+     · response lives on pointer-DOWN, never on release
+     · spring-shaped easing, no linear/ease-in-out mush
+     · translucent chrome that content scrolls under, not opaque strips
+     · tracking is size-specific — tighten large text, body near 0
+     · reduced-motion / -transparency / more-contrast are first-class
+
+   This is a configuration UI with no drag gestures, so CSS transitions are
+   the right tool. The skill's "avoid CSS transitions" rule targets grabbable,
+   mid-flight-reversible motion, which nothing here has. If a draggable
+   surface ever lands, that piece needs a real spring library.
+--------------------------------------------------------------------------- */
+
+:root {
+  /* Surfaces, light to heavy. `surface-2` is the single hover/fill token —
+     the old dark theme leaned on translucent white, invisible on white. */
+  --surface: 247 248 250;
+  --surface-raised: 255 255 255;
+  --surface-2: 240 242 246;
+  --border: 221 225 233;
+  --content: 20 22 32;
+  --muted: 104 112 132;
+  --accent: 79 82 221;
+
+  /* Spring-shaped easing. `snap` overshoots slightly (damping ~0.8) and is
+     reserved for momentum-ish moments; `standard` is critically damped
+     (damping 1.0) and is the default for everything else. */
+  --ease-standard: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-snap: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --dur-fast: 120ms;
+  --dur-base: 220ms;
+
+  /* Elevation scales with surface size: bigger surfaces read as thicker. */
+  --shadow-card: 0 1px 2px rgb(16 20 40 / 0.04), 0 1px 3px rgb(16 20 40 / 0.06);
+  --shadow-raised: 0 2px 8px rgb(16 20 40 / 0.06), 0 8px 24px rgb(16 20 40 / 0.08);
+  --shadow-modal: 0 12px 32px rgb(16 20 40 / 0.14), 0 32px 64px rgb(16 20 40 / 0.16);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+/* Base up from 16px: the config tables are dense and were reported as too
+   small. Everything is sized in rem-based Tailwind steps, so this one knob
+   scales the whole UI — including spacing, which keeps the layout intact. */
+html {
+  font-size: 17px;
+}
+
+body {
+  background: rgb(var(--surface));
+  color: rgb(var(--content));
+  font-family: system-ui, -apple-system, "SF Pro Text", sans-serif;
+  /* Body copy sits near zero tracking; headings tighten below. */
+  letter-spacing: 0;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* --- Typography: tracking and leading are size-specific, never one value --- */
+h1,
+.t-display {
+  font-size: 1.5rem;
+  line-height: 1.2;
+  letter-spacing: -0.021em; /* large text reads too loose without negative tracking */
+  font-weight: 640;
+}
+h2,
+.t-title {
+  font-size: 1.0625rem;
+  line-height: 1.35;
+  letter-spacing: -0.012em;
+  font-weight: 600;
+}
+/* Small text needs slightly POSITIVE tracking to stay legible. */
+.text-xs,
+.text-\[11px\],
+.text-\[10px\] {
+  letter-spacing: 0.006em;
+}
+
+/* Monospace: tabular figures so numeric columns align down the table. */
+code,
+.font-mono {
+  font-family: ui-monospace, "SF Mono", "JetBrains Mono", monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+input[type="number"] {
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Response: feedback on press, not on release ------------------------- */
+button,
+[role="button"] {
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard),
+    scale var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-standard);
+}
+/* The instant the pointer goes down — waiting for click feels dead. */
+/* 用独立的 `scale` 属性，不要写 `transform: scale(...)`。后者会把元素原有的
+   transform **整体替换**掉 —— Tailwind 的 translate-* 也走 transform，于是靠
+   `translate-x-1/2` 定位的按钮（侧栏那个骑在分隔线上的收起把手）一按下去就
+   往左下跳半个身位、跑出指针底下，松手时 pointerup 落在别的元素上，click
+   根本不成立，表现就是「要连点好几次才有反应」。
+   `scale` 是独立变换属性，与 transform 叠加而不是覆盖。 */
+button:not(:disabled):active,
+[role="button"]:not([aria-disabled="true"]):active {
+  scale: 0.975;
+}
+button:disabled {
+  cursor: not-allowed;
+}
+
+/* Focus is a visible, single, consistent ring everywhere. */
+:where(button, a, input, select, textarea):focus-visible {
+  outline: 2px solid rgb(var(--accent));
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+input,
+select,
+textarea {
+  transition:
+    border-color var(--dur-fast) var(--ease-standard),
+    background-color var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-standard);
+}
+input:focus,
+textarea:focus,
+select:focus {
+  border-color: rgb(var(--accent) / 0.55);
+  box-shadow: 0 0 0 3px rgb(var(--accent) / 0.12);
+}
+::placeholder {
+  color: rgb(var(--muted) / 0.62);
+}
+
+/* --- Fields: one shape for every text control ---------------------------- */
+/* 必须放进 @layer components：Tailwind 把 components 排在 utilities 之前，
+   这样调用点上的 `pl-8` / `w-56` 这类工具类才压得过 `.field` 自己的 padding。
+   直接写在文件里（在 @tailwind utilities 之后）会因为「同优先级、后来居上」
+   反过来压掉工具类 —— 搜索框的左内边距就是这么被吃掉、文字压到图标上的。 */
+@layer components {
+  /* 之前每个调用点自己拼 class，结果同一个界面里有四种圆角和三种内边距。全部收
+     到这里：`.field` 是唯一的输入外观，尺寸差异只由 `.field-sm` / `.field-mono`
+     这两个修饰符表达。焦点环走上面的全局规则，这里不再重复。 */
+  .field {
+    width: 100%;
+    border-radius: 0.625rem;
+    border: 1px solid rgb(var(--border));
+    background: rgb(var(--surface-raised));
+    padding: 0.375rem 0.625rem;
+    font-size: 0.875rem;
+    line-height: 1.45;
+    color: rgb(var(--content));
+    outline: none;
+  }
+  /* 静止时边框已经够淡，再靠 hover 抬一档告诉指针「这里可以打字」。 */
+  .field:hover:not(:disabled):not(:focus) {
+    border-color: rgb(var(--muted) / 0.42);
+  }
+  .field:disabled {
+    background: rgb(var(--surface-2));
+    color: rgb(var(--muted));
+    cursor: not-allowed;
+  }
+  .field-sm {
+    border-radius: 0.5rem;
+    padding: 0.2rem 0.45rem;
+    font-size: 0.75rem;
+  }
+  .field-mono {
+    font-family: ui-monospace, "SF Mono", "JetBrains Mono", monospace;
+    font-variant-numeric: tabular-nums;
+    font-size: 0.8125rem;
+    letter-spacing: 0;
+  }
+  /* select 的原生箭头在 macOS 上是一对上下三角，和这套界面的线性图标不是一路货；
+     关掉原生外观后由组件画一个 chevron，右侧内边距给它让位。 */
+  select.field {
+    appearance: none;
+    -webkit-appearance: none;
+    padding-right: 1.85rem;
+    cursor: pointer;
+  }
+  textarea.field {
+    resize: vertical;
+  }
+}
+
+/* 复选框跟随主题色，默认那个蓝不是我们的蓝。 */
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: rgb(var(--accent));
+}
+
+/* --- Materials: translucent chrome, content scrolls underneath ----------- */
+.material-chrome {
+  background: rgb(var(--surface-raised) / 0.72);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+}
+.material-modal {
+  background: rgb(var(--surface-raised) / 0.92);
+  backdrop-filter: blur(30px) saturate(180%);
+  -webkit-backdrop-filter: blur(30px) saturate(180%);
+  box-shadow: var(--shadow-modal);
+}
+
+/* Scroll edge effect: a fade where content meets floating chrome, instead of
+   a hard 1px divider that's always on whether or not anything is under it. */
+.scroll-edge {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
+}
+
+.card {
+  background: rgb(var(--surface-raised));
+  border: 1px solid rgb(var(--border));
+  border-radius: 12px;
+  box-shadow: var(--shadow-card);
+  transition:
+    box-shadow var(--dur-base) var(--ease-standard),
+    border-color var(--dur-base) var(--ease-standard);
+}
+.card:hover {
+  box-shadow: var(--shadow-raised);
+}
+
+/* Modals materialize — blur and scale arrive together, so the surface reads
+   as a real material rather than a flat opacity fade. */
+@keyframes materialize {
+  from {
+    opacity: 0;
+    transform: scale(0.97) translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+@keyframes scrim-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.animate-materialize {
+  animation: materialize var(--dur-base) var(--ease-standard);
+}
+.animate-scrim {
+  animation: scrim-in var(--dur-base) var(--ease-standard);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgb(var(--border));
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--muted) / 0.5);
+  background-clip: content-box;
+}
+
+/* --- Accessibility: three independent signals, each handled -------------- */
+
+/* Reduced motion is not "no feedback" — keep the instant colour/opacity
+   response, drop the travel and the overshoot. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  button:not(:disabled):active,
+  [role="button"]:active {
+    transform: none;
+  }
+  .animate-materialize {
+    animation: scrim-in 150ms ease;
+  }
+}
+
+/* Frostier, not translucent. */
+@media (prefers-reduced-transparency: reduce) {
+  .material-chrome,
+  .material-modal {
+    background: rgb(var(--surface-raised));
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+
+/* Near-solid backgrounds with defined, contrasting borders. */
+@media (prefers-contrast: more) {
+  :root {
+    --border: 140 148 168;
+    --muted: 64 72 92;
+    --content: 0 0 0;
+  }
+  .material-chrome,
+  .material-modal {
+    background: rgb(var(--surface-raised));
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .card {
+    box-shadow: none;
+  }
+}

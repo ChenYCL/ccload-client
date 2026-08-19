@@ -1,0 +1,260 @@
+name: Beta Release
+
+# beta 包：三平台安装包 + prerelease。正式版由人推 v* tag（release.yml），
+# 两条线互不干扰。
+#
+# 目前是**手动触发**：Actions → Beta Release → Run workflow，填分支即可。
+# 等 ci.yml 在真实 CI 上跑绿、确认这条流水线本身没问题之后，把下面注释掉的
+# `push: branches: [main]` 放开，就变成「合进 main 自动出 beta」。
+#
+# 为什么不绑 PR：三平台全量打包一次 25–40 分钟，每个 PR 跑一次既烧配额也没人
+# 下载。PR 的质量门在 ci.yml（typecheck / clippy / test）。
+#
+# 版本号 = package.json 的 version + 当天日期 + 该日第 N 次（v0.1.0-beta.20260819.1）。
+# beta 包只发 prerelease，永远不会被「latest」指到。
+
+on:
+  # push:
+  #   branches: [main]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: '要打包的分支 / commit（默认 main）'
+        required: false
+        default: 'main'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: beta-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bump:
+    name: Compute beta tag
+    runs-on: ubuntu-22.04
+    outputs:
+      tag: ${{ steps.ver.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # workflow_dispatch 时按输入的 ref 检出
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
+          fetch-depth: 0
+
+      - id: ver
+        run: |
+          set -euo pipefail
+          BASE=$(node -p "require('./package.json').version")
+          TODAY=$(date -u +%Y%m%d)
+          # 当天已有的 beta 数 = 同前缀的 tag 个数，下一个就是 +1。有并发达 main
+          # 的极端情况可能撞号，撞了 release 会失败，重跑一次即可。
+          N=$(( $(git tag -l "v${BASE}-beta.${TODAY}.*" | wc -l | tr -d ' ') + 1 ))
+          echo "tag=v${BASE}-beta.${TODAY}.${N}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: bump
+    runs-on: ${{ matrix.os }}
+    # secrets 不能直接出现在 step 的 if 里，先在 job 级别落成 env。
+    env:
+      HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS 必须出 universal：壳体和内核架构不一致时，Apple Silicon 上被
+          # Rosetta 翻译的 WebKit 会 SIGBUS（表现为白屏/闪退）。
+          - os: macos-14
+            label: macos-universal
+            tauri_args: --target universal-apple-darwin
+          - os: ubuntu-22.04
+            label: linux-x86_64
+            tauri_args: --bundles appimage,deb
+          # beta 的 Windows 只出 NSIS，不出 MSI。MSI 的 ProductVersion 要求
+          # 预发布标识「纯数字且 ≤65535」，`beta.20260819.1` 直接被拒：
+          #   optional pre-release identifier in app version must be
+          #   numeric-only and cannot be greater than 65535 for msi target
+          # 硬塞一个纯数字序号也不划算 —— MSI 比较版本时忽略第四段，两个 beta
+          # 会被当成同一版本，覆盖安装报 1638。NSIS 用的是
+          # nsis_tauri_utils::SemverCompare，认完整 semver，升级顺序天然正确。
+          # MSI 由 release.yml 覆盖：正式 tag 是干净的 v0.1.0，本来就合法。
+          - os: windows-2022
+            label: windows-x86_64
+            tauri_args: --bundles nsis
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      # 内核是 Go 写的，要现编进包里。
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Add macOS targets
+        if: runner.os == 'macOS'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Linux system deps
+        if: runner.os == 'Linux'
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libssl-dev patchelf file wget \
+            libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libsoup-3.0-dev
+
+      # 用 npm ci：仓库里只有 package-lock.json，多引入一份 pnpm 锁文件就是
+      # 两份真相，迟早对不上。本地用 pnpm 不受影响。
+      - run: npm ci
+
+      # 把上游内核拉到 KERNEL_VERSION 钉住的 tag。源码不进本仓库（硬约束是
+      # 不改它），但版本要可复现。
+      - name: Fetch pinned ccLoad kernel
+        run: npm run kernel:fetch
+
+      # ---- 代码签名（可选）------------------------------------------------
+      # 没配 secret 就出未签名包：一个刚开源的项目不该因为缺 Apple 开发者账号
+      # 而整条流水线红掉。配上之后同一份 workflow 自动开始签名 + 公证。
+      - name: Import Apple signing certificate
+        if: runner.os == 'macOS' && env.HAS_APPLE_CERT == 'true'
+        run: |
+          set -euo pipefail
+          CERT_PATH="$RUNNER_TEMP/certificate.p12"
+          printf '%s' "${{ secrets.APPLE_CERTIFICATE }}" | base64 --decode > "$CERT_PATH"
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          security create-keychain -p "${{ secrets.KEYCHAIN_PASSWORD }}" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security default-keychain -s "$KEYCHAIN_PATH"
+          security unlock-keychain -p "${{ secrets.KEYCHAIN_PASSWORD }}" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" \
+            -P "${{ secrets.APPLE_CERTIFICATE_PASSWORD }}" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "${{ secrets.KEYCHAIN_PASSWORD }}" "$KEYCHAIN_PATH"
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+            | grep "Developer ID Application" | grep -oE '"[^"]+"' | head -1 | tr -d '"')
+          [ -n "$IDENTITY" ] || { echo "::error::找不到 Developer ID Application 证书"; exit 1; }
+          echo "APPLE_SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+          # 公证凭据同理，只在三个都齐的时候才写。缺一个就整组不写：
+          # Tauri 看到空的 APPLE_ID 一样会当成「要公证」，然后拿空账号失败。
+          if [ -n "${{ secrets.APPLE_ID }}" ] \
+            && [ -n "${{ secrets.APPLE_PASSWORD }}" ] \
+            && [ -n "${{ secrets.APPLE_TEAM_ID }}" ]; then
+            {
+              echo "APPLE_ID=${{ secrets.APPLE_ID }}"
+              echo "APPLE_PASSWORD=${{ secrets.APPLE_PASSWORD }}"
+              echo "APPLE_TEAM_ID=${{ secrets.APPLE_TEAM_ID }}"
+            } >> "$GITHUB_ENV"
+          fi
+          rm -f "$CERT_PATH"
+
+      # beta 版本号打进包体：tauri.conf.json 的 version 就是「关于」页里显示的。
+      # build.rs / updater 之外没人依赖这个文件是干净的，checkout 后改写即可，
+      # 不需要回写 git。
+      - name: Stamp beta version
+        shell: bash
+        run: |
+          node -e '
+            const fs = require("fs"), p = "src-tauri/tauri.conf.json";
+            const doc = JSON.parse(fs.readFileSync(p, "utf8"));
+            doc.version = process.env.BETA_TAG.slice(1);  // v0.1.0-beta.… → 0.1.0-beta.…
+            fs.writeFileSync(p, JSON.stringify(doc, null, 2) + "\n");
+          '
+        env:
+          BETA_TAG: ${{ needs.bump.outputs.tag }}
+
+      - name: Build
+        shell: bash
+        # 这里**不能**写 `APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}`：
+        # 没配证书时它渲染成空字符串，而「变量存在且为空」在 Tauri 眼里就等于
+        # 「要签名」，于是拿着空身份去 keychain 里找，报
+        # `error: The specified item could not be found in the keychain`，
+        # 整条流水线红在最后一步。签名相关的变量一律只由上面那个 step 在真的
+        # 导入了证书之后写进 $GITHUB_ENV —— 没配就压根不存在，Tauri 直接跳过。
+        run: npx tauri build ${{ matrix.tauri_args }}
+
+      - name: Collect assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          TAG="${{ needs.bump.outputs.tag }}"
+          KERNEL="$(tr -d '\r\n' < KERNEL_VERSION)"
+          NAME="ccLoad-${TAG}-kernel-${KERNEL}-${{ matrix.label }}"
+
+          # 各平台的产物散在不同的 bundle 子目录，统一按后缀捞。
+          find src-tauri/target -type f \
+            \( -name '*.dmg' -o -name '*.msi' -o -name '*-setup.exe' \
+               -o -name '*.AppImage' -o -name '*.deb' \) \
+            -not -path '*/deps/*' -print0 |
+          while IFS= read -r -d '' f; do
+            ext="${f##*.}"
+            cp "$f" "release-assets/${NAME}.${ext}"
+            echo "collected: ${NAME}.${ext}"
+          done
+
+          # macOS 另外压一份 .app：DMG 之外给不想挂载磁盘映像的人一个选择。
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            APP=$(find src-tauri/target -maxdepth 6 -name '*.app' -type d | head -1)
+            [ -n "$APP" ] && ditto -c -k --sequesterRsrc --keepParent "$APP" "release-assets/${NAME}.zip"
+          fi
+
+          ls -lh release-assets
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.label }}
+          path: release-assets/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish beta release
+    needs: [bump, build]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-assets
+
+      - name: Flatten + checksums
+        run: |
+          mkdir -p release-assets
+          find dist-assets -type f -exec mv {} release-assets/ \;
+          cd release-assets
+          sha256sum * > checksums.txt
+          ls -lh
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          # prerelease：GitHub 不会把「latest」指到它，Release 列表里也标 beta，
+          # 想要尝鲜的人自己点进去下。
+          tag_name: ${{ needs.bump.outputs.tag }}
+          name: Beta ${{ needs.bump.outputs.tag }}
+          prerelease: true
+          draft: false
+          body: |
+            自动构建：`main` 分支每次合入都会出一个 beta 包。
+
+            - 对应提交：${{ github.sha }}
+            - 打进本版的 ccLoad 内核：仓库根目录 `KERNEL_VERSION`
+
+            macOS 包是 universal（arm64 + x86_64）。壳体与内核架构必须一致，
+            否则 Apple Silicon 上 Rosetta 翻译的 WebKit 会 SIGBUS 白屏。
+          files: release-assets/*

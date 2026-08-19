@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>ccLoad flow</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width: 1600px; height: 900px; overflow: hidden; }
+    body {
+      font-family: -apple-system, "SF Pro Display", "SF Pro Text", "Helvetica Neue", sans-serif;
+      color: #eef0ff;
+      background: #070814 url("./hero-bg.jpg") center / cover no-repeat;
+    }
+    .veil {
+      width: 1600px; height: 900px;
+      background: linear-gradient(180deg, rgba(6,7,16,.86), rgba(6,7,16,.9));
+      padding: 44px 56px 40px;
+      display: flex; flex-direction: column; gap: 22px;
+    }
+    h1 { font-size: 34px; letter-spacing: -.03em; font-weight: 670; }
+    .sub { font-size: 15px; color: #a7add4; margin-top: 6px; }
+    .lane {
+      display: grid; grid-template-columns: 1fr 56px 1fr 56px 1fr;
+      align-items: stretch;
+    }
+    .box {
+      border-radius: 16px;
+      border: 1px solid rgba(255,255,255,.12);
+      background: rgba(255,255,255,.05);
+      backdrop-filter: blur(16px);
+      padding: 18px 18px 16px;
+    }
+    .box.accent {
+      border-color: rgba(79,82,221,.5);
+      background: linear-gradient(180deg, rgba(79,82,221,.28), rgba(255,255,255,.05));
+      box-shadow: 0 0 40px rgba(79,82,221,.18);
+    }
+    .tag {
+      font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+      color: #9aa0c8; font-weight: 600;
+    }
+    .box h2 { margin-top: 6px; font-size: 20px; letter-spacing: -.02em; }
+    .box p { margin-top: 6px; font-size: 13px; color: #b7bcd9; line-height: 1.45; }
+    .pills { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px; }
+    .pill {
+      font-size: 12px; padding: 5px 9px; border-radius: 8px;
+      background: rgba(0,0,0,.28); border: 1px solid rgba(255,255,255,.08);
+    }
+    .arrow {
+      display: grid; place-items: center; color: #8b93d6; font-size: 28px; font-weight: 300;
+    }
+    .pains { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+    .pain {
+      border-radius: 16px;
+      border: 1px solid rgba(255,255,255,.1);
+      background: rgba(255,255,255,.04);
+      padding: 18px 20px 20px;
+    }
+    .was { font-size: 13px; color: #f0a8a8; line-height: 1.45; }
+    .was b { display: block; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; margin-bottom: 4px; color: #e07a7a; }
+    .now {
+      font-size: 14px; color: #d7f5e6; line-height: 1.45;
+      padding-top: 10px; border-top: 1px solid rgba(255,255,255,.08);
+    }
+    .now b { display: block; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; margin-bottom: 4px; color: #5ee9a0; }
+    .foot {
+      margin-top: auto;
+      display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center;
+      padding-top: 8px;
+    }
+    .foot .label {
+      font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+      color: #8b91b8; font-weight: 600; margin-right: 6px;
+    }
+    .foot span {
+      font-size: 12.5px; padding: 6px 10px; border-radius: 8px;
+      border: 1px solid rgba(255,255,255,.1);
+      background: rgba(255,255,255,.04); color: #d5d8f0;
+    }
+  </style>
+</head>
+<body>
+  <div class="veil">
+    <header>
+      <h1>You already have the CLIs. ccLoad is the gateway.</h1>
+      <p class="sub">This window is how they meet — when you change endpoints, on this Mac or a remote box, without rewriting the setup you already tuned.</p>
+    </header>
+    <section class="lane">
+      <div class="box">
+        <div class="tag">You already have these</div>
+        <h2>Five coding CLIs</h2>
+        <p>Each one has its own “where do requests go” setting. Easy to drift, easy to miss one.</p>
+        <div class="pills">
+          <span class="pill">Claude Code</span>
+          <span class="pill">Codex</span>
+          <span class="pill">Gemini CLI</span>
+          <span class="pill">Grok Build</span>
+          <span class="pill">OpenCode</span>
+        </div>
+      </div>
+      <div class="arrow">→</div>
+      <div class="box accent">
+        <div class="tag">This app</div>
+        <h2>ccLoad Desktop</h2>
+        <p>Start a local gateway, or connect to one that’s already running. Click takeover. Watch usage from one window.</p>
+        <div class="pills">
+          <span class="pill">this Mac</span>
+          <span class="pill">or a remote instance</span>
+          <span class="pill">sandbox first</span>
+        </div>
+      </div>
+      <div class="arrow">→</div>
+      <div class="box">
+        <div class="tag">Then they all talk to</div>
+        <h2>Your ccLoad</h2>
+        <p>Channels, keys, which model goes where — the same admin you already know, plus a desktop overview.</p>
+        <div class="pills">
+          <span class="pill">Claude</span>
+          <span class="pill">GPT</span>
+          <span class="pill">Gemini</span>
+          <span class="pill">others you added</span>
+        </div>
+      </div>
+    </section>
+    <section class="pains">
+      <article class="pain">
+        <div class="was"><b>Before</b>You paste the base URL into five apps. One is still on the old endpoint. That session just dies mid-turn.</div>
+        <div class="now"><b>Now</b>Takeover once. All five point at the same gateway. You can see which ones are live.</div>
+      </article>
+      <article class="pain">
+        <div class="was"><b>Before</b>A switcher rewrote the whole file. MCP servers vanished. The model you were using was gone.</div>
+        <div class="now"><b>Now</b>We only add what we must. Your MCP, custom models, and the model you already selected stay put. Import appends, it does not replace.</div>
+      </article>
+      <article class="pain">
+        <div class="was"><b>Before</b>You pointed a CLI at the wrong place and there was no way back except Time Machine — or memory.</div>
+        <div class="now"><b>Now</b>Every write is snapshotted first. Roll back one CLI without touching the others. The original copy is never thrown away.</div>
+      </article>
+    </section>
+    <footer class="foot">
+      <div class="label">On purpose</div>
+      <span>sandbox won’t touch live files</span>
+      <span>undo per CLI</span>
+      <span>your MCP stays</span>
+      <span>models you picked stay</span>
+      <span>one Mac build, Intel and Apple Silicon</span>
+    </footer>
+  </div>
+</body>
+</html>

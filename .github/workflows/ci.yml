@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # 前端与 Rust 的静态检查。不构建内核 —— 那要下 Go 依赖、编 128 MB 二进制，
+  # 对「这次改动有没有把类型/测试搞坏」这个问题毫无帮助。
+  check:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      # README 里的 logo / 宣传图必须是仓库里的真文件。不依赖 npm。
+      - name: Check README images
+        run: |
+          node scripts/check-readme-images.mjs
+          node --test scripts/check-readme-images.test.mjs
+
+      # 用 npm ci：仓库里只有 package-lock.json，多引入一份 pnpm 锁文件就是
+      # 两份真相，迟早对不上。本地用 pnpm 不受影响。
+      - run: npm ci
+
+      - name: Typecheck + build renderer
+        run: npm run build:renderer
+
+      - name: Install Linux system deps
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libssl-dev patchelf \
+            libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libsoup-3.0-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # Rust 侧 include_str! 了 kernel-version.txt。它平时由 kernel:build 生成，
+      # 而这个 job 故意不编内核，所以这里按 KERNEL_VERSION 直接落一份。
+      - name: Materialize kernel-version.txt
+        run: tr -d '\r\n' < KERNEL_VERSION > src-tauri/kernel-version.txt
+
+      # tauri-build 的 build.rs 会校验 bundle.resources 都存在。这个 job 不编
+      # 128 MB 的内核，落一个 0 字节占位让校验通过 —— release/beta 流水线里会被
+      # kernel:build 的真二进制盖掉。
+      # binaries/ 整个目录都被 .gitignore 挡着，checkout 出来是没有的，要先建。
+      - name: Stub kernel binary for build.rs
+        run: |
+          mkdir -p src-tauri/binaries
+          touch src-tauri/binaries/ccload
+
+      # 校验而不是覆盖：仓库里提交的 kernel-version.txt 就是 KERNEL_VERSION 的
+      # 落盘件，两者漂移说明有人改了钉子没跑 kernel:build —— 静默覆盖会把这种
+      # 真实错误吞掉。
+      - name: Check kernel-version.txt matches KERNEL_VERSION
+        run: |
+          diff <(tr -d '\r\n' < KERNEL_VERSION) \
+               <(tr -d '\r\n' < src-tauri/kernel-version.txt)
+
+      - name: Clippy
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        working-directory: src-tauri
+        run: cargo test

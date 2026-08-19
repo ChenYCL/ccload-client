@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>ccLoad Desktop</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width: 1600px; height: 900px; overflow: hidden; }
+    body {
+      font-family: -apple-system, "SF Pro Display", "SF Pro Text", "Helvetica Neue", sans-serif;
+      color: #f4f6ff;
+      background: #070814 url("./hero-bg.jpg") center / cover no-repeat;
+    }
+    .veil {
+      width: 1600px; height: 900px;
+      background:
+        linear-gradient(105deg, rgba(6,7,16,.88) 0%, rgba(6,7,16,.62) 42%, rgba(6,7,16,.28) 100%),
+        radial-gradient(700px 420px at 78% 70%, rgba(79,82,221,.18), transparent 70%);
+      padding: 56px 64px 48px;
+      display: grid;
+      grid-template-columns: 1fr 720px;
+      gap: 48px;
+      align-items: center;
+    }
+    .mark {
+      width: 52px; height: 52px; border-radius: 14px;
+      background: #4F52DD;
+      display: grid; place-items: center;
+      box-shadow: 0 0 0 1px rgba(255,255,255,.12), 0 12px 32px rgba(79,82,221,.45);
+    }
+    .eyebrow {
+      display: flex; align-items: center; gap: 12px;
+      font-size: 13px; letter-spacing: .16em; text-transform: uppercase;
+      color: #b8bce8; font-weight: 600;
+    }
+    h1 {
+      margin-top: 18px;
+      font-size: 64px; line-height: .98; font-weight: 670;
+      letter-spacing: -.038em;
+    }
+    h1 em { font-style: normal; color: #9ea3ff; }
+    .lead {
+      margin-top: 18px; max-width: 560px;
+      font-size: 20px; line-height: 1.4; color: #c9cdee; letter-spacing: -.015em;
+    }
+    .chips { margin-top: 26px; display: flex; flex-wrap: wrap; gap: 8px; }
+    .chip {
+      padding: 7px 12px; border-radius: 999px;
+      border: 1px solid rgba(255,255,255,.14);
+      background: rgba(255,255,255,.06);
+      backdrop-filter: blur(10px);
+      font-size: 13px; color: #e7e9ff; font-weight: 530;
+    }
+    .chip strong { color: #fff; font-weight: 640; }
+    .stats {
+      margin-top: 34px; display: grid; grid-template-columns: repeat(3, auto);
+      gap: 28px; width: max-content;
+    }
+    .stat b { display: block; font-size: 22px; letter-spacing: -.03em; }
+    .stat span { font-size: 12px; color: #9aa0c8; letter-spacing: .04em; text-transform: uppercase; }
+    .window {
+      border-radius: 20px;
+      background: rgba(16,18,32,.72);
+      border: 1px solid rgba(255,255,255,.12);
+      box-shadow:
+        0 0 0 1px rgba(79,82,221,.18),
+        0 24px 64px rgba(0,0,0,.45),
+        0 0 80px rgba(79,82,221,.18);
+      backdrop-filter: blur(22px);
+      overflow: hidden;
+    }
+    .chrome {
+      height: 38px; display: flex; align-items: center; gap: 8px;
+      padding: 0 14px; border-bottom: 1px solid rgba(255,255,255,.08);
+      background: rgba(255,255,255,.03);
+    }
+    .dot { width: 10px; height: 10px; border-radius: 50%; }
+    .r { background: #ff5f57; } .y { background: #febc2e; } .go { background: #28c840; }
+    .chrome span { font-size: 12px; color: #9aa0c8; margin-left: 6px; }
+    .body { display: grid; grid-template-columns: 196px 1fr; min-height: 430px; }
+    .side { padding: 16px 12px; border-right: 1px solid rgba(255,255,255,.08); }
+    .brand { display: flex; gap: 8px; align-items: center; padding: 2px 8px 14px; }
+    .brand b { font-size: 14px; letter-spacing: -.02em; }
+    .brand small { display: block; font-size: 10px; color: #8b91b8; font-weight: 400; }
+    .grp { margin-top: 8px; }
+    .gt {
+      font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
+      color: #7d84b0; padding: 6px 10px 4px;
+    }
+    .it { padding: 7px 10px; border-radius: 8px; font-size: 13px; color: #d5d8f0; }
+    .it.on { background: rgba(79,82,221,.28); color: #fff; font-weight: 600; }
+    .main { padding: 20px 22px 18px; }
+    .h { font-size: 20px; letter-spacing: -.025em; font-weight: 640; }
+    .p { margin-top: 4px; font-size: 12px; color: #9aa0c8; }
+    .cards { margin-top: 16px; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+    .card {
+      border: 1px solid rgba(255,255,255,.08);
+      background: rgba(255,255,255,.04);
+      border-radius: 10px; padding: 10px 12px;
+    }
+    .k { font-size: 10px; color: #8b91b8; text-transform: uppercase; letter-spacing: .06em; }
+    .v { margin-top: 5px; font-size: 14px; font-weight: 620; letter-spacing: -.02em; }
+    .ok { color: #5ee9a0; display: inline-flex; align-items: center; gap: 6px; }
+    .ok i { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 8px #22c55e; }
+    .row {
+      margin-top: 12px; border: 1px solid rgba(255,255,255,.08);
+      border-radius: 10px; overflow: hidden;
+    }
+    .rh { padding: 8px 12px; font-size: 11px; color: #8b91b8; border-bottom: 1px solid rgba(255,255,255,.06); }
+    .cli {
+      display: grid; grid-template-columns: 132px 1fr auto;
+      padding: 8px 12px; font-size: 12.5px; align-items: center;
+      border-top: 1px solid rgba(255,255,255,.05);
+    }
+    .cli:first-of-type { border-top: 0; }
+    .cli b { font-weight: 600; }
+    .cli em { font-style: normal; color: #8b91b8; }
+    .rdy { color: #5ee9a0; font-size: 11px; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <div class="veil">
+    <section>
+      <div class="eyebrow">
+        <div class="mark" aria-hidden="true">
+          <svg width="32" height="32" viewBox="0 0 512 512">
+            <g fill="none" stroke="#fff" stroke-width="52" stroke-linecap="round">
+              <path d="M228 168c-68 0-112 48-112 88s44 88 112 88"/>
+              <path d="M396 168c-68 0-112 48-112 88s44 88 112 88"/>
+            </g>
+          </svg>
+        </div>
+        For Claude Code, Codex, Gemini, Grok, OpenCode
+      </div>
+      <h1>One gateway.<br><em>Every CLI.</em></h1>
+      <p class="lead">ccLoad already runs the routing. This app is the switchboard on your machine: start or connect to that gateway, point the CLIs you actually use, keep the MCP and model you already picked.</p>
+      <div class="chips">
+        <span class="chip">one switch for five CLIs</span>
+        <span class="chip">undo a takeover</span>
+        <span class="chip">try in a sandbox first</span>
+        <span class="chip">Intel and Apple Silicon</span>
+      </div>
+      <div class="stats">
+        <div class="stat"><b>5 CLIs</b><span>one click</span></div>
+        <div class="stat"><b>Undo</b><span>per CLI</span></div>
+        <div class="stat"><b>Sandbox</b><span>won’t touch live files</span></div>
+      </div>
+    </section>
+    <aside class="window" aria-label="ccLoad Desktop">
+      <div class="chrome">
+        <i class="dot r"></i><i class="dot y"></i><i class="dot go"></i>
+        <span>ccLoad Desktop</span>
+      </div>
+      <div class="body">
+        <nav class="side">
+          <div class="brand">
+            <div class="mark" style="width:26px;height:26px;border-radius:7px;box-shadow:none">
+              <svg width="16" height="16" viewBox="0 0 512 512">
+                <g fill="none" stroke="#fff" stroke-width="52" stroke-linecap="round">
+                  <path d="M228 168c-68 0-112 48-112 88s44 88 112 88"/>
+                  <path d="M396 168c-68 0-112 48-112 88s44 88 112 88"/>
+                </g>
+              </svg>
+            </div>
+            <div><b>ccLoad</b><small>desktop client</small></div>
+          </div>
+          <div class="grp"><div class="gt">Monitor</div>
+            <div class="it on">Overview</div><div class="it">Live logs</div></div>
+          <div class="grp"><div class="gt">Configure</div>
+            <div class="it">CLI takeover</div><div class="it">Dispatch graph</div>
+            <div class="it">Model import</div><div class="it">Extensions</div></div>
+          <div class="grp"><div class="gt">System</div>
+            <div class="it">Kernel admin</div><div class="it">Settings</div></div>
+        </nav>
+        <main class="main">
+          <div class="h">Overview</div>
+          <div class="p">Local kernel, or the one you already run. Your CLIs talk to it.</div>
+          <div class="cards">
+            <div class="card"><div class="k">Kernel</div><div class="v"><span class="ok"><i></i>running</span></div></div>
+            <div class="card"><div class="k">Where</div><div class="v">this Mac · or remote</div></div>
+            <div class="card"><div class="k">Pointed</div><div class="v">5 CLIs</div></div>
+          </div>
+          <div class="row">
+            <div class="rh">These now go through ccLoad · snapshots kept</div>
+            <div class="cli"><b>Claude Code</b><em>kept your MCP</em><span class="rdy">ready</span></div>
+            <div class="cli"><b>Codex</b><em>profiles untouched</em><span class="rdy">ready</span></div>
+            <div class="cli"><b>Gemini CLI</b><em>settings merged</em><span class="rdy">ready</span></div>
+            <div class="cli"><b>Grok Build</b><em>still your setup</em><span class="rdy">ready</span></div>
+            <div class="cli"><b>OpenCode</b><em>models appended</em><span class="rdy">ready</span></div>
+          </div>
+        </main>
+      </div>
+    </aside>
+  </div>
+</body>
+</html>

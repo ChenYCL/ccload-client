@@ -1,0 +1,69 @@
+node_modules/
+dist/
+target/
+src-tauri/target/
+src-tauri/gen/
+
+# 打包进壳体的 ccLoad 内核（约 128 MB）。由 `pnpm kernel:build` 从 vendor/ccLoad
+# 现编，不进版本库 —— 二进制既撑爆仓库也没法 review。
+src-tauri/binaries/ccload
+src-tauri/binaries/ccload.exe
+src-tauri/binaries/ccload-*
+
+# 上游内核源码。由 `scripts/fetch-kernel.mjs` clone 到这个目录（不是 git
+# submodule，仓库里没有 .gitmodules），不把它的文件铺进本仓库。
+vendor/ccLoad/
+
+# 有人在 binaries/ 里直接跑过内核时留下的 SQLite。resources 已经收窄到
+# ccload / ccload.exe，但 git add . 仍可能把它收进去。
+src-tauri/binaries/data/
+
+# 内核在 cwd 里建的 SQLite。正常应该待在 ~/.ccload-client/data；出现在仓库根目录
+# 说明有人直接在这里跑了内核二进制。
+/data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# 打包产物与签名材料。误提交 .p12 / .provisionprofile 等于把签名身份公开。
+release-assets/
+*.dmg
+*.msi
+*.AppImage
+*.deb
+*.p12
+*.pem
+*.key
+*.mobileprovision
+*.provisionprofile
+
+# 真实配置与凭据。本仓库的沙箱写入落在 ~/.ccload-client/sandbox，但开发时常有人
+# 顺手把自己的 settings.json 拷进来对照，这类文件里带 token。
+.env
+.env.*
+!.env.example
+settings.local.json
+*.local.json
+sandbox/
+
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+.vscode/
+.playwright-mcp/
+
+# 开发期随手存的截图，以及冒烟探针留下的真实 Admin API 响应（里面有令牌）。
+/*.jpeg
+/*.jpg
+/*.png
+/*.webp
+src/__probe*
+
+# CodeGraph 索引（本地生成，几十 MB，重建即可）
+.codegraph/
+
+# 内部竞品调研（含本机路径与兄弟仓库名），不随仓库公开
+docs/competitor-research.md

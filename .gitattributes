@@ -1,0 +1,10 @@
+# 全仓库默认 LF。Windows 上 git 的 autocrlf 会把 KERNEL_VERSION 变成 CRLF，
+# 然后 `tr -d '\n'` 留下一个 CR 塞进产物文件名。这里从源头掐掉。
+* text=auto eol=lf
+
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.ico  binary
+*.icns binary
+*.webp binary

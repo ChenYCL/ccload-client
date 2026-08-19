@@ -1,0 +1,213 @@
+name: Release
+
+# 打 tag 触发。tag 形如 v0.1.0 —— 它只标客户端（壳体）的版本；打进包里的 ccLoad
+# 内核版本由仓库根目录的 KERNEL_VERSION 单独钉住，两者互不牵连。
+on:
+  push:
+    tags:
+      - 'v*'
+  # 手动跑一遍看看能不能过，不发布。
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  # 发布被中途取消会留下半截草稿 Release，宁可让旧的跑完。
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    # secrets 不能直接出现在 step 的 if 里，先在 job 级别落成 env。
+    env:
+      HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS 必须出 universal：壳体和内核架构不一致时，Apple Silicon 上被
+          # Rosetta 翻译的 WebKit 会 SIGBUS（表现为白屏/闪退）。
+          - os: macos-14
+            label: macos-universal
+            tauri_args: --target universal-apple-darwin
+          - os: ubuntu-22.04
+            label: linux-x86_64
+            tauri_args: --bundles appimage,deb
+          - os: windows-2022
+            label: windows-x86_64
+            tauri_args: --bundles msi,nsis
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      # 内核是 Go 写的，要现编进包里。
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Add macOS targets
+        if: runner.os == 'macOS'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Linux system deps
+        if: runner.os == 'Linux'
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libssl-dev patchelf file wget \
+            libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libsoup-3.0-dev
+
+      # 用 npm ci：仓库里只有 package-lock.json，多引入一份 pnpm 锁文件就是
+      # 两份真相，迟早对不上。本地用 pnpm 不受影响。
+      - run: npm ci
+
+      # tag 必须和包里的版本号对得上，否则 MSI 的 ProductVersion 不变、覆盖安装
+      # 不升级，文件名上的 v0.2.0 也只是个谎言。
+      - name: Verify tag matches app version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          CONF=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          PKG=$(node -p "require('./package.json').version")
+          TAG="${GITHUB_REF_NAME#v}"
+          for pair in "tauri.conf.json:$CONF" "package.json:$PKG"; do
+            [ "${pair#*:}" = "$TAG" ] || {
+              echo "::error::${pair%%:*} = ${pair#*:}，但 tag 是 $TAG"
+              exit 1
+            }
+          done
+
+      # 把上游内核拉到 KERNEL_VERSION 钉住的 tag。源码不进本仓库（硬约束是
+      # 不改它），但版本要可复现。
+      - name: Fetch pinned ccLoad kernel
+        run: npm run kernel:fetch
+
+      # ---- 代码签名（可选）------------------------------------------------
+      # 没配 secret 就出未签名包：一个刚开源的项目不该因为缺 Apple 开发者账号
+      # 而整条流水线红掉。配上之后同一份 workflow 自动开始签名 + 公证。
+      - name: Import Apple signing certificate
+        if: runner.os == 'macOS' && env.HAS_APPLE_CERT == 'true'
+        run: |
+          set -euo pipefail
+          CERT_PATH="$RUNNER_TEMP/certificate.p12"
+          printf '%s' "${{ secrets.APPLE_CERTIFICATE }}" | base64 --decode > "$CERT_PATH"
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          security create-keychain -p "${{ secrets.KEYCHAIN_PASSWORD }}" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security default-keychain -s "$KEYCHAIN_PATH"
+          security unlock-keychain -p "${{ secrets.KEYCHAIN_PASSWORD }}" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" \
+            -P "${{ secrets.APPLE_CERTIFICATE_PASSWORD }}" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "${{ secrets.KEYCHAIN_PASSWORD }}" "$KEYCHAIN_PATH"
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+            | grep "Developer ID Application" | grep -oE '"[^"]+"' | head -1 | tr -d '"')
+          [ -n "$IDENTITY" ] || { echo "::error::找不到 Developer ID Application 证书"; exit 1; }
+          echo "APPLE_SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+          # 公证凭据同理，只在三个都齐的时候才写。缺一个就整组不写：
+          # Tauri 看到空的 APPLE_ID 一样会当成「要公证」，然后拿空账号失败。
+          if [ -n "${{ secrets.APPLE_ID }}" ] \
+            && [ -n "${{ secrets.APPLE_PASSWORD }}" ] \
+            && [ -n "${{ secrets.APPLE_TEAM_ID }}" ]; then
+            {
+              echo "APPLE_ID=${{ secrets.APPLE_ID }}"
+              echo "APPLE_PASSWORD=${{ secrets.APPLE_PASSWORD }}"
+              echo "APPLE_TEAM_ID=${{ secrets.APPLE_TEAM_ID }}"
+            } >> "$GITHUB_ENV"
+          fi
+          rm -f "$CERT_PATH"
+
+      - name: Build
+        shell: bash
+        # 这里**不能**写 `APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}`：
+        # 没配证书时它渲染成空字符串，而「变量存在且为空」在 Tauri 眼里就等于
+        # 「要签名」，于是拿着空身份去 keychain 里找，报
+        # `error: The specified item could not be found in the keychain`，
+        # 整条流水线红在最后一步。签名相关的变量一律只由上面那个 step 在真的
+        # 导入了证书之后写进 $GITHUB_ENV —— 没配就压根不存在，Tauri 直接跳过。
+        run: npx tauri build ${{ matrix.tauri_args }}
+
+      - name: Collect assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          VERSION="${GITHUB_REF_NAME:-dev}"
+          KERNEL="$(tr -d '\r\n' < KERNEL_VERSION)"
+          NAME="ccLoad-${VERSION}-kernel-${KERNEL}-${{ matrix.label }}"
+
+          # 各平台的产物散在不同的 bundle 子目录，统一按后缀捞。
+          find src-tauri/target -type f \
+            \( -name '*.dmg' -o -name '*.msi' -o -name '*-setup.exe' \
+               -o -name '*.AppImage' -o -name '*.deb' \) \
+            -not -path '*/deps/*' -print0 |
+          while IFS= read -r -d '' f; do
+            ext="${f##*.}"
+            cp "$f" "release-assets/${NAME}.${ext}"
+            echo "collected: ${NAME}.${ext}"
+          done
+
+          # macOS 另外压一份 .app：DMG 之外给不想挂载磁盘映像的人一个选择。
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            APP=$(find src-tauri/target -maxdepth 6 -name '*.app' -type d | head -1)
+            [ -n "$APP" ] && ditto -c -k --sequesterRsrc --keepParent "$APP" "release-assets/${NAME}.zip"
+          fi
+
+          ls -lh release-assets
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.label }}
+          path: release-assets/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-22.04
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-assets
+
+      - name: Flatten + checksums
+        run: |
+          mkdir -p release-assets
+          find dist-assets -type f -exec mv {} release-assets/ \;
+          cd release-assets
+          sha256sum * > checksums.txt
+          ls -lh
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true
+          # 先发草稿：包体上百 MB，发出去之前值得人眼看一下产物齐不齐。
+          draft: true
+          body: |
+            打进本版的 ccLoad 内核：见仓库根目录 `KERNEL_VERSION`。
+
+            macOS 包是 universal（arm64 + x86_64）。壳体与内核架构必须一致，
+            否则 Apple Silicon 上 Rosetta 翻译的 WebKit 会 SIGBUS 白屏。
