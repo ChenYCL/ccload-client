@@ -1,6 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { ArrowDown, GripVertical, Plus, Trash2, X, Zap } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowDown,
+  CheckCircle2,
+  GripVertical,
+  Plus,
+  Radar,
+  Trash2,
+  X,
+  XCircle,
+  Zap,
+} from "lucide-react";
 import { api } from "../lib/api";
 import { cn } from "../lib/cn";
 import type { FallbackChain, FallbackHop } from "../types";
@@ -18,6 +29,51 @@ import { Select, TextInput } from "../components/ui/Input";
 /// 保存**之前**就看见每一层会被写成什么优先级 —— 这个值会改到渠道上，不该等
 /// 应用完了再从日志里发现。两边任何一处改了，另一处必须跟着改。
 const hopPriority = (i: number) => 100 - i * 10;
+
+/// 编辑器里用得到的渠道字段。`enabled` 是关键：被禁用的渠道内核根本不会选，
+/// 绑在上面的那一层等于不存在。
+type ChannelLite = { id: number; name: string; enabled?: boolean };
+
+/// `GET /admin/channels/:id/models/fetch` 的响应。内核按渠道声明的协议去问上游
+/// 要真实清单，客户端不自己实现拉取。
+type FetchModelsResponse = { models?: { model?: string }[] };
+
+/// 一个渠道的上游清单探测结果。
+type Probe = { models: string[]; err: string };
+
+/// 一层的体检结论。
+///
+/// 存在的理由：这条链的每一层都只在**主力挂掉的那一刻**才会被用到，而那正是最不
+/// 适合发现「渠道早就禁用了」「模型名拼错了」的时刻。这些数据内核本来就给得出，
+/// 没道理留到运行时才炸。
+type HopVerdict = { level: "error" | "warn" | "ok" | "idle"; text: string };
+
+function hopVerdict(
+  hop: FallbackHop,
+  channel: ChannelLite | undefined,
+  probe: Probe | undefined,
+): HopVerdict {
+  if (hop.channel_id == null) {
+    return { level: "warn", text: "没绑渠道 · 应用时这一层会被跳过" };
+  }
+  if (!channel) {
+    return { level: "error", text: `渠道 #${hop.channel_id} 已不存在` };
+  }
+  if (channel.enabled === false) {
+    return { level: "error", text: "渠道已禁用 · 这一层永远不会被选中" };
+  }
+  if (!hop.upstream.trim()) return { level: "idle", text: "" };
+  if (!probe) return { level: "idle", text: "" };
+  if (probe.err) {
+    return { level: "warn", text: `上游清单拉不到，无法校验：${probe.err}` };
+  }
+  return probe.models.includes(hop.upstream.trim())
+    ? { level: "ok", text: "上游清单里有这个模型" }
+    : {
+        level: "error",
+        text: `上游清单里没有 ${hop.upstream.trim()} · 请求打到这一层会直接失败`,
+      };
+}
 
 export function FallbackPage() {
   const qc = useQueryClient();
@@ -40,6 +96,9 @@ export function FallbackPage() {
   });
 
   const [editing, setEditing] = useState<FallbackChain | null>(null);
+  const channelList = ((channels.data?.data ?? []) as ChannelLite[]).filter(
+    (c) => c.id !== undefined,
+  );
 
   return (
     <div>
@@ -74,7 +133,7 @@ export function FallbackPage() {
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0">
                 <div className="font-medium">{c.alias}</div>
-                <ChainStrip hops={c.hops} />
+                <ChainStrip hops={c.hops} channels={channelList} />
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 <button
@@ -113,7 +172,7 @@ export function FallbackPage() {
       {editing && (
         <ChainEditor
           chain={editing}
-          channels={channels.data?.data ?? []}
+          channels={channelList}
           onClose={() => setEditing(null)}
           onSave={(c) => save.mutate(c)}
         />
@@ -124,26 +183,70 @@ export function FallbackPage() {
 
 /// 列表页上的链摘要。以前是 `a → b → c` 一串纯文本，节点和箭头一样重，长一点
 /// 就读不出「有几层、哪层在前」。这里用和编辑器同一套节点造型，横向排布、可换行。
-function ChainStrip({ hops }: { hops: FallbackHop[] }) {
+function ChainStrip({ hops, channels }: { hops: FallbackHop[]; channels: ChannelLite[] }) {
   return (
     <ol className="mt-1.5 flex flex-wrap items-center gap-x-1 gap-y-1.5">
-      {hops.map((h, i) => (
-        <li key={i} className="flex items-center gap-1">
-          {i > 0 && <span className="text-muted/60">→</span>}
-          <span
-            className="flex items-center gap-1.5 rounded-lg border border-border bg-surface-2/60 px-2 py-0.5"
-            title={`第 ${i + 1} 层 · 优先级 ${hopPriority(i)}${
-              h.channel_name ? ` · 渠道 ${h.channel_name}` : ""
-            }`}
-          >
-            <span className="font-mono text-[11px]">{h.upstream || "（未填）"}</span>
-            {h.channel_name && (
-              <span className="text-[10px] text-muted">{h.channel_name}</span>
-            )}
-          </span>
-        </li>
-      ))}
+      {hops.map((h, i) => {
+        // 「渠道被禁用」不用问上游就能知道，所以列表页也标出来 —— 这一层是死的，
+        // 而链的性质决定了你不主动看就要等主力挂掉那天才发现。
+        const ch = h.channel_id == null ? undefined : channels.find((c) => c.id === h.channel_id);
+        const dead = ch?.enabled === false;
+        return (
+          <li key={i} className="flex items-center gap-1">
+            {i > 0 && <span className="text-muted/60">→</span>}
+            <span
+              className={cn(
+                "flex items-center gap-1.5 rounded-lg border px-2 py-0.5",
+                dead
+                  ? "border-red-500/40 bg-red-500/10"
+                  : "border-border bg-surface-2/60",
+              )}
+              title={`第 ${i + 1} 层 · 优先级 ${hopPriority(i)}${
+                h.channel_name ? ` · 渠道 ${h.channel_name}` : ""
+              }${dead ? " · 渠道已禁用，这一层不会被选中" : ""}`}
+            >
+              {dead && <XCircle className="h-3 w-3 shrink-0 text-red-600" />}
+              <span
+                className={cn(
+                  "font-mono text-[11px]",
+                  dead && "text-red-700 line-through decoration-red-500/50",
+                )}
+              >
+                {h.upstream || "（未填）"}
+              </span>
+              {h.channel_name && (
+                <span className={cn("text-[10px]", dead ? "text-red-700/80" : "text-muted")}>
+                  {h.channel_name}
+                </span>
+              )}
+            </span>
+          </li>
+        );
+      })}
     </ol>
+  );
+}
+
+/// 一层的体检结果条。只在有话说的时候占位置 —— 一切正常且没校验过时不显示，
+/// 免得四层各挂一条「暂无问题」把编辑器撑长。
+function HopStatus({ verdict }: { verdict: HopVerdict }) {
+  if (verdict.level === "idle" || !verdict.text) return null;
+  const Icon =
+    verdict.level === "ok" ? CheckCircle2 : verdict.level === "warn" ? AlertTriangle : XCircle;
+  return (
+    <div
+      className={cn(
+        "mt-1 flex items-center gap-1 pl-[3.4rem] text-[11px]",
+        verdict.level === "ok"
+          ? "text-emerald-700"
+          : verdict.level === "warn"
+            ? "text-amber-700"
+            : "text-red-600",
+      )}
+    >
+      <Icon className="h-3 w-3 shrink-0" />
+      {verdict.text}
+    </div>
   );
 }
 
@@ -154,7 +257,7 @@ function ChainEditor({
   onSave,
 }: {
   chain: FallbackChain;
-  channels: unknown[];
+  channels: ChannelLite[];
   onClose: () => void;
   onSave: (c: FallbackChain) => void;
 }) {
@@ -170,9 +273,34 @@ function ChainEditor({
     setHops([...draft.hops, { upstream: "", channel_id: null, channel_name: null }]);
   const removeHop = (i: number) => setHops(draft.hops.filter((_, j) => j !== i));
 
-  const channelList = (channels as { id: number; name: string }[]).filter(
-    (c) => c.id !== undefined,
-  );
+  const channelList = channels;
+  const channelOf = (id: number | null | undefined) =>
+    id == null ? undefined : channelList.find((c) => c.id === id);
+
+  // 上游探测按需触发，不在打开编辑器时自动跑：每个渠道一次真实的上游请求，
+  // 有的要好几秒、有的按次计费，不该因为用户点了「编辑」就替他花掉。
+  const [probes, setProbes] = useState<Record<number, Probe>>({});
+  const check = useMutation({
+    mutationFn: async () => {
+      const ids = [...new Set(draft.hops.map((h) => h.channel_id).filter((id): id is number => id != null))];
+      const pairs = await Promise.all(
+        ids.map(async (id) => {
+          try {
+            const r = await api.admin<FetchModelsResponse>("GET", `channels/${id}/models/fetch`);
+            const models = (r.data?.models ?? []).map((m) => m.model ?? "").filter(Boolean);
+            // 内核对拉取失败是返回 200 + success=false 的（上游报错属预期内），
+            // 所以「拿到 0 个」要当成「没给出清单」，不能当成空集去判定「都不存在」——
+            // 那会把每一层都误报成红的。
+            return [id, models.length ? { models, err: "" } : { models: [], err: "上游没有返回任何模型" }] as const;
+          } catch (e) {
+            return [id, { models: [], err: errText(e) }] as const;
+          }
+        }),
+      );
+      return Object.fromEntries(pairs) as Record<number, Probe>;
+    },
+    onSuccess: setProbes,
+  });
 
   const reorder = useReorder(draft.hops, setHops);
 
@@ -281,17 +409,41 @@ function ChainEditor({
                   应用后会把该渠道的优先级写成 {hopPriority(i)}
                   <span className="text-muted/70">（影响该渠道服务的所有模型）</span>
                 </div>
+                <HopStatus
+                  verdict={hopVerdict(
+                    hop,
+                    channelOf(hop.channel_id),
+                    hop.channel_id == null ? undefined : probes[hop.channel_id],
+                  )}
+                />
               </li>
             );
           })}
         </ol>
 
-        <button
-          onClick={addHop}
-          className="mt-3 flex items-center gap-1 rounded-lg border border-border bg-surface-raised px-2.5 py-1.5 text-xs hover:bg-surface-2"
-        >
-          <Plus className="h-3.5 w-3.5" /> 添加一层
-        </button>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <button
+            onClick={addHop}
+            className="flex items-center gap-1 rounded-lg border border-border bg-surface-raised px-2.5 py-1.5 text-xs hover:bg-surface-2"
+          >
+            <Plus className="h-3.5 w-3.5" /> 添加一层
+          </button>
+          {/* 上游校验。内核已经能「按渠道声明的协议去问上游要模型清单」
+              （GET /admin/channels/:id/models/fetch），这里只负责把它拉回来、
+              和每一层的 redirect 目标对一下。 */}
+          <button
+            onClick={() => check.mutate()}
+            disabled={check.isPending}
+            title="逐个渠道去问上游要真实模型清单，核对每一层的模型名"
+            className="flex items-center gap-1 rounded-lg border border-border bg-surface-raised px-2.5 py-1.5 text-xs hover:bg-surface-2 disabled:opacity-40"
+          >
+            <Radar className="h-3.5 w-3.5" />
+            {check.isPending ? "校验中…" : "校验上游模型"}
+          </button>
+          {check.isError && (
+            <span className="text-[11px] text-red-600">{errText(check.error)}</span>
+          )}
+        </div>
 
         <div className="mt-5 flex items-center justify-end gap-2">
           <button
