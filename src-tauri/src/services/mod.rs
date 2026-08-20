@@ -13,6 +13,7 @@ pub mod fallback;
 pub mod kernel;
 pub mod mcp_usage;
 pub mod model_import;
+pub mod system_inject;
 pub mod vision_mcp;
 
 #[cfg(test)]

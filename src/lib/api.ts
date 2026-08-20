@@ -21,6 +21,9 @@ import type {
   ImportEntry,
   ImportPreview,
   ImportResult,
+  InjectOutcome,
+  InjectSpec,
+  InjectState,
   KernelConfig,
   KernelStatus,
   McpUsage,
@@ -129,6 +132,15 @@ export const api = {
   /** 自带 MCP 工具（ccload-vision）的调用次数与耗时。别家 MCP 不在口径内。 */
   mcpUsageStats: () => invoke<McpUsage>("mcp_usage_stats"),
   mcpUsageClear: () => invoke<void>("mcp_usage_clear"),
+
+  /* --- 系统注入：写进各 CLI 的全局指令文件 ------------------------------- */
+
+  injectState: () => invoke<InjectState[]>("inject_state"),
+  /** 预览块内容。视觉那段的工具名由后端生成，前端不另抄一份（抄了必漂）。 */
+  injectPreview: (spec: InjectSpec) => invoke<string>("inject_preview", { spec }),
+  /** spec 全空即移除。逐目标独立成败。 */
+  injectApply: (targets: CliTarget[], spec: InjectSpec) =>
+    invoke<InjectOutcome[]>("inject_apply", { targets, spec }),
 
   /* --- 扩展管理：MCP / Skill / Agent / Hook 跨 5 个 CLI ------------------ */
 

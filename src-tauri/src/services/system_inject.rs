@@ -1,0 +1,355 @@
+//! 系统注入：把一段受管的说明写进每个 CLI 的**全局指令文件**。
+//!
+//! # 要解决什么
+//!
+//! 我们给 CLI 装了 `ccload-vision` 这个 MCP，可是装了不等于会被用。宿主模型
+//! 只看得到工具名和一句 description，遇到「用户贴了张图」时会不会想起来调它，
+//! 全看运气 —— 尤其是本来就不支持多模态的模型，它甚至不知道自己"看不见"。
+//! 一句写在系统提示里的规则比工具描述强得多：**你看不见图片，凡是遇到图片
+//! 就调这几个工具**。
+//!
+//! 每个 CLI 都有一个「全局 markdown 指令文件」，启动时无条件读进系统提示：
+//!
+//! | CLI         | 文件                            |
+//! |-------------|---------------------------------|
+//! | Claude Code | `~/.claude/CLAUDE.md`           |
+//! | Codex       | `~/.codex/AGENTS.md`            |
+//! | Gemini CLI  | `~/.gemini/GEMINI.md`           |
+//! | Grok Build  | `~/.grok/AGENTS.md`             |
+//! | OpenCode    | `~/.config/opencode/AGENTS.md`  |
+//!
+//! 这几条路径不是猜的：Grok 的 `~/.grok/README.md` 明写了它按
+//! `~/.grok/` → repo root → cwd 的顺序找 `AGENTS.md` 一类文件并追加进系统提示，
+//! 其余四家在本机的配置目录里都能直接看到对应文件。
+//!
+//! # 为什么是「标记块」而不是整份文件
+//!
+//! 这些文件是用户自己的地盘 —— `~/.claude/CLAUDE.md` 里往往是攒了几个月的
+//! 个人规则。整块覆盖会把它们抹掉，而那是不可逆的（不像 settings.json，
+//! 用户心里有数它是工具在管）。所以只认我们自己那对标记之间的内容：
+//!
+//! ```text
+//! <!-- ccload:begin --> … <!-- ccload:end -->
+//! ```
+//!
+//! 重复写入替换块内，块外一个字节都不动；移除只删这一段。这条不变量由
+//! `replace_block` 保证，也是这个模块最需要被测试盯住的地方。
+
+use serde::{Deserialize, Serialize};
+
+use crate::error::AppError;
+use crate::services::cli_backup::BackupStore;
+use crate::services::cli_io::write_atomic;
+use crate::services::cli_types::{CliTarget, ConfigRoot};
+
+/// 标记用 HTML 注释：五家读的都是 markdown，注释在渲染和阅读时都不碍事，
+/// 而且模型看到它也知道这段是工具生成的。
+const BEGIN: &str = "<!-- ccload:begin 由 ccLoad 客户端管理，块内改动会在下次写入时被覆盖 -->";
+const END: &str = "<!-- ccload:end -->";
+
+/// Grok 明写每个规则文件截断到 10000 字符。别家没写上限，但按最严的那个提醒，
+/// 免得用户在 Grok 上被静默截断还不知道。
+pub const SOFT_MAX_CHARS: usize = 10_000;
+
+/// 各 CLI 的全局指令文件（相对 home）。
+pub fn instructions_path(target: CliTarget) -> &'static str {
+    match target {
+        CliTarget::ClaudeCode => ".claude/CLAUDE.md",
+        CliTarget::Codex => ".codex/AGENTS.md",
+        CliTarget::GeminiCli => ".gemini/GEMINI.md",
+        CliTarget::GrokBuild => ".grok/AGENTS.md",
+        CliTarget::OpenCode => ".config/opencode/AGENTS.md",
+    }
+}
+
+/// 要注入哪些内容。每一项都是用户可关的 —— 注入进系统提示的东西会花掉每一次
+/// 请求的 token，不该由我们替用户决定全都要。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InjectSpec {
+    /// 视觉工具用法。装了 `ccload-vision` 却没人告诉模型该用，是这个功能的由来。
+    pub vision: bool,
+    /// 用户自己的规则，原样写进块里。
+    pub custom: String,
+}
+
+impl InjectSpec {
+    pub fn is_empty(&self) -> bool {
+        !self.vision && self.custom.trim().is_empty()
+    }
+}
+
+/// 一个 CLI 的当前注入状态。
+#[derive(Debug, Clone, Serialize)]
+pub struct InjectState {
+    pub target: CliTarget,
+    pub label: &'static str,
+    /// 全局指令文件的绝对路径，界面上要显示 —— 用户得知道我们在改哪个文件。
+    pub path: String,
+    pub exists: bool,
+    /// 已经注入过（文件里有我们那对标记）。
+    pub injected: bool,
+    /// 块内现有内容，用来回显。
+    pub block: Option<String>,
+    /// 整个文件的字符数。Grok 到 10000 会截断，界面上据此提醒。
+    pub chars: usize,
+}
+
+/// 视觉工具那一段。
+///
+/// 措辞上刻意用「你看不见图片」这种绝对句式而不是「如果你看不见」：让模型
+/// 自己判断有没有视觉能力是不可靠的 —— 它经常以为自己能看。这段只有在用户
+/// 确实装了视觉 MCP 且当前模型不是多模态时才该开，所以由界面负责把话说清楚，
+/// 这里就按「已经确认需要」来写。
+///
+/// 工具名和 `vision_mcp::tool_specs` 必须一致；对不上就是让模型去调一个不存在
+/// 的工具，比不写还糟。
+fn vision_section() -> String {
+    format!(
+        "\
+## 图片处理（ccLoad 视觉辅助）
+
+你**看不见图片**。本机装了 MCP 服务器 `{server}`，它把图片交给一个多模态模型
+再把文字结果给你。凡是遇到图片，必须调用下面的工具，不要猜测图片内容，也不要
+让用户改用文字描述：
+
+- `describe_image` —— 看懂一张图（截图、照片、示意图、图表）。参数 `path`（绝对
+  路径）或 `url` 二选一。
+- `read_image_text` —— 逐字抄下图上的文字。报错截图、终端输出、日志、代码、
+  表单一律用它，`describe_image` 会概括，而这些场景要的是原文。
+- `compare_images` —— 比对两张图的差异。改动前后、视觉回归用它，参数是
+  `before_path`/`before_url` 与 `after_path`/`after_url`。
+- `describe_screen` —— 直接截取当前屏幕再描述。用户说「看看这个」「这个弹窗写
+  的什么」却没给文件时用它（仅 macOS）。
+
+用户贴来的图片通常是本地文件路径。拿不到路径时先问用户要，不要跳过。",
+        server = crate::services::vision_mcp::MCP_NAME,
+    )
+}
+
+/// 拼出块内内容（不含标记本身）。
+pub fn render_block(spec: &InjectSpec) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if spec.vision {
+        parts.push(vision_section());
+    }
+    let custom = spec.custom.trim();
+    if !custom.is_empty() {
+        parts.push(custom.to_string());
+    }
+    parts.join("\n\n")
+}
+
+/// 把 `block` 放进 `doc` 的标记之间；`None` 表示删除这一段。
+///
+/// **块外一个字节都不动**是这个函数的全部意义，改它之前先看测试。
+fn replace_block(doc: &str, block: Option<&str>) -> String {
+    let wrapped = block.map(|b| format!("{BEGIN}\n\n{b}\n\n{END}"));
+
+    // 已有块：原地换掉。找不到 END 时按「没有块」处理 —— 半个标记多半是用户
+    // 手工删了一半，此时贸然从 BEGIN 删到文件尾会吃掉他后面写的所有东西。
+    if let Some(start) = doc.find(BEGIN) {
+        if let Some(rel_end) = doc[start..].find(END) {
+            let end = start + rel_end + END.len();
+            let before = &doc[..start];
+            let after = &doc[end..];
+            return match wrapped {
+                Some(w) => format!("{before}{w}{after}"),
+                // 删除时把块两边多余的空行也收一收，免得反复装卸攒出一堆空行。
+                None => {
+                    let joined = format!("{}\n{}", before.trim_end(), after.trim_start());
+                    let t = joined.trim();
+                    if t.is_empty() {
+                        String::new()
+                    } else {
+                        format!("{t}\n")
+                    }
+                }
+            };
+        }
+    }
+
+    // 没有块。删除是空操作；新增追加到文件末尾，不动用户原有内容的顺序。
+    let Some(w) = wrapped else {
+        return doc.to_string();
+    };
+    if doc.trim().is_empty() {
+        return format!("{w}\n");
+    }
+    format!("{}\n\n{w}\n", doc.trim_end())
+}
+
+/// 读回一个 CLI 的注入状态。读不动的文件算「没注入」而不是报错 —— 这一格只是
+/// 用来点亮界面的。
+pub fn state(root: &ConfigRoot, target: CliTarget) -> InjectState {
+    let rel = instructions_path(target);
+    let path = root.join(rel);
+    let doc = std::fs::read_to_string(&path).unwrap_or_default();
+    let block = extract_block(&doc);
+    InjectState {
+        target,
+        label: target.label(),
+        path: path.display().to_string(),
+        exists: path.exists(),
+        injected: block.is_some(),
+        block,
+        chars: doc.chars().count(),
+    }
+}
+
+/// 取出标记之间的内容。同样要求 BEGIN/END 成对，理由见 `replace_block`。
+fn extract_block(doc: &str) -> Option<String> {
+    let start = doc.find(BEGIN)? + BEGIN.len();
+    let rel_end = doc[start..].find(END)?;
+    Some(doc[start..start + rel_end].trim().to_string())
+}
+
+pub fn states(root: &ConfigRoot, targets: &[CliTarget]) -> Vec<InjectState> {
+    targets.iter().copied().map(|t| state(root, t)).collect()
+}
+
+/// 写入（或移除）一个 CLI 的注入块，返回被写的文件路径。
+///
+/// 先快照后写：这些文件是用户攒出来的，必须能一键还原。走 `snapshot_extra`
+/// 而不是 `snapshot`，因为它们不在 `CliTarget::relative_paths()` 里
+/// （那份清单是「接管会改的配置」，指令文件不属于接管）。
+pub fn apply(
+    root: &ConfigRoot,
+    target: CliTarget,
+    spec: &InjectSpec,
+    stamp: &str,
+    backups: &BackupStore,
+) -> Result<String, AppError> {
+    let rel = instructions_path(target);
+    let path = root.join(rel);
+    let doc = std::fs::read_to_string(&path).unwrap_or_default();
+
+    let rendered = render_block(spec);
+    let block = if spec.is_empty() { None } else { Some(rendered.as_str()) };
+    let next = replace_block(&doc, block);
+
+    // 内容没变就别写：一次无谓的写入会占掉一份快照额度（上限 5 份），
+    // 把用户真正需要的那份原始快照挤出去。
+    if next == doc {
+        return Ok(path.display().to_string());
+    }
+
+    backups.snapshot_extra(root, target, rel, stamp, "system-inject")?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    write_atomic(&path, &next)?;
+    Ok(path.display().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sandbox() -> (tempfile::TempDir, ConfigRoot, BackupStore) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = ConfigRoot::sandbox(dir.path().to_path_buf());
+        let bk = BackupStore::new(dir.path().join("bk"));
+        (dir, root, bk)
+    }
+
+    fn spec() -> InjectSpec {
+        InjectSpec {
+            vision: true,
+            custom: "永远说中文。".into(),
+        }
+    }
+
+    /// 这个模块的全部承诺：块外一个字节都不动。
+    #[test]
+    fn user_content_outside_the_block_survives_everything() {
+        let (_keep, root, bk) = sandbox();
+        let rel = instructions_path(CliTarget::ClaudeCode);
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mine = "# 我的规则\n\n攒了三个月的东西，一个字都不能丢。\n";
+        std::fs::write(&path, mine).unwrap();
+
+        apply(&root, CliTarget::ClaudeCode, &spec(), "s1", &bk).unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.starts_with(mine.trim_end()), "{after}");
+        assert!(after.contains("describe_image"), "{after}");
+        assert!(after.contains("永远说中文。"), "{after}");
+
+        // 再写一次不该长出第二个块。
+        apply(&root, CliTarget::ClaudeCode, &spec(), "s2", &bk).unwrap();
+        let twice = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(twice.matches(BEGIN).count(), 1, "{twice}");
+
+        // 移除后回到原样。
+        apply(&root, CliTarget::ClaudeCode, &InjectSpec::default(), "s3", &bk).unwrap();
+        let removed = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(removed.trim(), mine.trim(), "{removed}");
+    }
+
+    /// 装卸反复来回不该攒出一堆空行 —— 那是「原地替换」没做干净的典型症状。
+    #[test]
+    fn repeated_install_remove_does_not_grow_blank_lines() {
+        let (_keep, root, bk) = sandbox();
+        let path = root.join(instructions_path(CliTarget::Codex));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "原始内容\n").unwrap();
+
+        for i in 0..4 {
+            apply(&root, CliTarget::Codex, &spec(), &format!("a{i}"), &bk).unwrap();
+            apply(&root, CliTarget::Codex, &InjectSpec::default(), &format!("b{i}"), &bk).unwrap();
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "原始内容\n");
+    }
+
+    /// 用户手工删掉半个标记时，不能从 BEGIN 一路删到文件尾 —— 那会吃掉他后面
+    /// 写的所有东西。找不到 END 就当没有块，追加一个新的。
+    #[test]
+    fn half_a_marker_does_not_eat_the_rest_of_the_file() {
+        let doc = format!("{BEGIN}\n旧内容\n\n# 后面还有我的东西\n重要\n");
+        let out = replace_block(&doc, Some("新内容"));
+        assert!(out.contains("# 后面还有我的东西"), "{out}");
+        assert!(out.contains("重要"), "{out}");
+        assert!(out.contains("新内容"), "{out}");
+    }
+
+    /// 五家的路径都要能建出来（父目录可能还不存在）。
+    #[test]
+    fn writes_to_every_cli_creating_missing_dirs() {
+        let (_keep, root, bk) = sandbox();
+        for target in crate::services::cli_extensions::ALL_TARGETS {
+            let written = apply(&root, target, &spec(), "s1", &bk).unwrap();
+            let body = std::fs::read_to_string(&written)
+                .unwrap_or_else(|e| panic!("{target:?}: {e}"));
+            assert!(body.contains("describe_image"), "{target:?}");
+
+            let st = state(&root, target);
+            assert!(st.injected, "{target:?} 写完应当读得回来");
+            assert!(st.block.unwrap().contains("read_image_text"), "{target:?}");
+        }
+    }
+
+    /// 空 spec 写进一个从没存在过的文件时，不该凭空造出一个空文件。
+    #[test]
+    fn empty_spec_on_missing_file_creates_nothing() {
+        let (_keep, root, bk) = sandbox();
+        apply(&root, CliTarget::GeminiCli, &InjectSpec::default(), "s1", &bk).unwrap();
+        assert!(!root.join(instructions_path(CliTarget::GeminiCli)).exists());
+    }
+
+    /// 提示里的工具名必须和 MCP 真正暴露的一致，否则等于教模型调一个不存在的
+    /// 工具 —— 比不写还糟。
+    #[test]
+    fn advertised_tool_names_match_the_mcp_server() {
+        let text = vision_section();
+        for name in [
+            "describe_image",
+            "read_image_text",
+            "compare_images",
+            "describe_screen",
+        ] {
+            assert!(text.contains(name), "缺少 {name}");
+        }
+        assert!(text.contains(crate::services::vision_mcp::MCP_NAME));
+    }
+}

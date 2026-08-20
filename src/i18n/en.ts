@@ -17,6 +17,7 @@ registerDict("en", {
   调度图: "Dispatch graph",
   模型链: "Model chain",
   模型导入: "Model import",
+  系统注入: "System injection",
   扩展管理: "Extensions",
   内核后台: "Kernel admin",
   设置: "Settings",
@@ -220,4 +221,38 @@ registerDict("en", {
   "统计自 {at}。": "Since {at}.",
   "更早的记录已被丢弃（流水有大小上限）。":
     "Older records were dropped (the log has a size cap).",
+
+  // ---- 系统注入 ----
+  "把一段受管的说明写进每个 CLI 的全局指令文件（CLAUDE.md / AGENTS.md / GEMINI.md），启动时无条件进系统提示。只替换我们自己那对标记之间的内容，块外一个字节都不动 —— 你原有的规则不会被覆盖。":
+    "Writes a managed block into each CLI's global instructions file (CLAUDE.md / AGENTS.md / GEMINI.md), which is loaded into the system prompt on every launch. Only the content between our own markers is replaced — not a byte outside the block is touched, so your existing rules stay intact.",
+  "告诉 CLI 怎么用视觉辅助 MCP": "Tell the CLI how to use the vision-assist MCP",
+  "装上 ccload-vision 不等于模型会用它 —— 它只看得见工具名和一句描述，遇到图片会不会想起来调全看运气，而文本模型甚至不知道自己「看不见」。这段会明确告诉它：你看不见图片，遇到图片必须调这四个工具，并说清各自的分工（看图 / 逐字抄 / 比对 / 截屏）。":
+    "Installing ccload-vision does not mean the model will use it — all it sees is a tool name and one line of description, so whether it remembers to call the tool on an image is luck, and a text-only model does not even know it is blind. This block says it plainly: you cannot see images, you must call these four tools, and here is what each one is for (describe / transcribe / compare / capture screen).",
+  你自己的规则: "Your own rules",
+  "原样写进块里，五个 CLI 共用同一份。留空则只写上面勾选的内容。":
+    "Written into the block verbatim and shared by all five CLIs. Leave empty to inject only what is ticked above.",
+  "例如：永远用中文回答；提交前必须跑一遍测试。":
+    "e.g. Always answer in English; always run the tests before committing.",
+  预览将写入的内容: "Preview what will be written",
+  "{n} 字符": "{n} chars",
+  已注入: "Injected",
+  未注入: "Not injected",
+  文件不存在: "File does not exist",
+  可能超长: "May overflow",
+  "Grok Build 会把规则文件截断到 10000 字符，超出的部分静默丢失":
+    "Grok Build truncates rule files at 10,000 characters and silently drops the rest",
+  写入: "Write",
+  更新: "Update",
+  "用上面的内容重写这一段": "Rewrite this block with the content above",
+  "先勾选或填写要注入的内容": "Tick or type something to inject first",
+  批量写入: "Write to selected",
+  批量移除: "Remove from selected",
+  "已选 {n} 个": "{n} selected",
+  取消选择: "Clear selection",
+  选中: "Select",
+  已写入: "Written",
+  已移除: "Removed",
+  失败: "failed",
+  "写入前会自动快照原文件，在「CLI 接管」页的备份列表里可以一键还原。注入的内容每次请求都会占 token，不需要的项就别勾。":
+    "The original file is snapshotted before every write; restore it in one click from the backup list on the “CLI takeover” page. Injected content costs tokens on every request, so leave anything you do not need unticked.",
 });

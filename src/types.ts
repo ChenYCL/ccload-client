@@ -177,9 +177,46 @@ export type Page =
   | "cli"
   | "fallback"
   | "models"
+  | "inject"
   | "extensions"
   | "graph"
   | "settings";
+
+/* ---------------------------------------------------------------------------
+   系统注入：把受管的说明块写进各 CLI 的全局指令文件
+   （CLAUDE.md / AGENTS.md / GEMINI.md）。
+
+   装了 ccload-vision 不等于模型会用它 —— 工具描述只是一句话，写进系统提示的
+   规则才管用。块用 `<!-- ccload:begin -->` 标记，块外内容一个字节都不动。
+--------------------------------------------------------------------------- */
+
+export type InjectSpec = {
+  /** 视觉工具用法。文本模型不知道自己「看不见」，得明说。 */
+  vision: boolean;
+  /** 用户自己的规则，原样写进块里。 */
+  custom: string;
+};
+
+export type InjectState = {
+  target: CliTarget;
+  label: string;
+  /** 全局指令文件的绝对路径 —— 用户得知道我们在改哪个文件。 */
+  path: string;
+  exists: boolean;
+  injected: boolean;
+  /** 块内现有内容，用来回显。 */
+  block: string | null;
+  /** 整个文件的字符数。Grok 到 10000 会截断。 */
+  chars: number;
+};
+
+export type InjectOutcome = {
+  target: CliTarget;
+  label: string;
+  ok: boolean;
+  path: string | null;
+  error: string | null;
+};
 
 /* ---------------------------------------------------------------------------
    视觉辅助 MCP。

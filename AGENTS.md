@@ -49,6 +49,21 @@ Any 路由（内核**本身就是**本地 OpenAI/Anthropic 出口代理），
 `POST /admin/channels/models/refresh-batch` 已经支持 `merge|replace`。
 重复实现一遍只会多一份要维护的、行为还不一致的代码。
 
+具体到几个反复有人想在壳体里重写的：
+
+* **改上游请求的 header / body** —— 内核的 `channels.custom_request_rules`
+  已经做了（`internal/app/custom_rules.go`）：`headers[]` 支持
+  `remove | override | append`（`remove` 还能按逗号 token 精确剔除，比如从
+  `anthropic-beta` 里只去掉一个 flag），`body[]` 支持按点分路径
+  `remove | override`。认证头（`authorization` / `x-api-key` /
+  `x-goog-api-key`）有黑名单，规则会被静默忽略并打 warn。壳体要做的是把它
+  包装成界面，不是再写一个转发层。
+* **强制某个模型** —— 渠道模型条目上的 `redirect_model` 是 1:1 重定向
+  （`resolveActualModel`）；想「不管请求什么都发 X」用 `custom_request_rules`
+  的 body override（路径 `model`），它在协议转换之后、发出之前生效。
+* **多层 fallback** —— 内核只做一跳，客户端的「模型链」把链拆成 N 个同别名、
+  优先级递减的渠道来实现，见 `services/fallback.rs`。
+
 ### 3. 写用户配置文件的三条规矩
 
 这部分踩过的坑最多，改 `src-tauri/src/services/cli_*.rs` 之前务必看完：
@@ -67,6 +82,28 @@ Any 路由（内核**本身就是**本地 OpenAI/Anthropic 出口代理），
 
 开发期请在设置里打开「CLI 写入走沙箱」，写入会落到
 `~/.ccload-client/sandbox/`，不碰真实配置。
+
+#### 3b. 写用户的 markdown 指令文件：只碰标记块
+
+「系统注入」（`services/system_inject.rs`）往这五个文件里写东西：
+
+| CLI | 全局指令文件 |
+| --- | --- |
+| Claude Code | `~/.claude/CLAUDE.md` |
+| Codex | `~/.codex/AGENTS.md` |
+| Gemini CLI | `~/.gemini/GEMINI.md` |
+| Grok Build | `~/.grok/AGENTS.md`（Grok 截断到 10000 字符，静默） |
+| OpenCode | `~/.config/opencode/AGENTS.md` |
+
+它们和 settings.json 不是一类东西：**用户不认为这是工具在管的文件**，
+`~/.claude/CLAUDE.md` 里往往是攒了几个月的个人规则，抹掉不可逆。所以只认
+`<!-- ccload:begin -->` / `<!-- ccload:end -->` 之间的内容，块外一个字节都不动。
+
+两个已经写进测试、别退回去的细节：
+
+* 只有 BEGIN 没有 END 时**按「没有块」处理**，不能从 BEGIN 删到文件尾 ——
+  半个标记多半是用户手工删了一半，贸然删到尾会吃掉他后面写的所有东西。
+* 装了卸、卸了装反复来回，不能攒出越来越多的空行。
 
 ### 4. macOS 包必须是 universal
 

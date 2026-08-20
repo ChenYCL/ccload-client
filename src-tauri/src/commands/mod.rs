@@ -5,5 +5,6 @@ pub mod admin;
 pub mod cli;
 pub mod extensions;
 pub mod fallback;
+pub mod inject;
 pub mod models;
 pub mod settings;

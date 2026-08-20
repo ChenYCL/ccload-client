@@ -11,6 +11,7 @@ import { SettingsPage } from "./pages/SettingsPage";
 import { CliPage } from "./pages/CliPage";
 import { FallbackPage } from "./pages/FallbackPage";
 import { ModelsPage } from "./pages/ModelsPage";
+import { InjectPage } from "./pages/InjectPage";
 import { ExtensionsPage } from "./pages/ExtensionsPage";
 import { GraphPage } from "./pages/GraphPage";
 import { errText } from "./lib/err";
@@ -25,6 +26,7 @@ const PAGES: Record<Page, () => JSX.Element> = {
   cli: CliPage,
   fallback: FallbackPage,
   models: ModelsPage,
+  inject: InjectPage,
   extensions: ExtensionsPage,
   graph: GraphPage,
 };
