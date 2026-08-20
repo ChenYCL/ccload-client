@@ -11,6 +11,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { ExternalLink, RefreshCw } from "lucide-react";
 import { api } from "../lib/api";
+import { CopyButton } from "../components/ui/CopyButton";
 
 type Page = { id: string; label: string; file: string; desc: string };
 
@@ -92,13 +93,27 @@ export function WebAdminPage() {
         </p>
       )}
 
-      {settings.data?.kernel.mode === "managed" && (
-        <p className="mt-4 rounded-md border border-border bg-surface-2 px-3 py-2 text-xs">
-          首次进入需要登录。管理密码（本机生成）：
-          <code className="ml-1 select-all font-mono text-accent">
-            {settings.data.kernel.admin_password}
-          </code>
-        </p>
+      {/* 这段提示原来被 `mode === "managed"` 挡着，远端模式下整段不显示 ——
+          于是用户对着一个登录框，既不知道为什么要登、也不知道密码是什么。
+          两种模式都要给，只是密码的来历不同。 */}
+      {settings.data && (
+        <div className="mt-4 rounded-md border border-border bg-surface-2 px-3 py-2 text-xs">
+          <div className="flex items-center gap-2">
+            <span className="text-muted">
+              {settings.data.kernel.mode === "managed"
+                ? "管理密码（本机生成）"
+                : "管理密码（你在设置里填的 CCLOAD_PASS）"}
+            </span>
+            <code className="min-w-0 flex-1 truncate select-all font-mono text-accent">
+              {settings.data.kernel.admin_password || "—"}
+            </code>
+            <CopyButton value={settings.data.kernel.admin_password ?? ""} />
+          </div>
+          <p className="mt-1.5 text-muted">
+            打开管理窗口时会自动登录，正常情况下你看不到登录框。会话有效期 24
+            小时，过期或密码不对时会退回登录页 —— 那时用上面这个密码手动登一次。
+          </p>
+        </div>
       )}
 
       <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">

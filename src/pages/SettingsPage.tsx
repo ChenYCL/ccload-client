@@ -5,6 +5,7 @@ import type { ImportPreview, KernelConfig, KernelMode, SettingItem } from "../ty
 import { cn } from "../lib/cn";
 import { errText } from "../lib/err";
 import { TextInput } from "../components/ui/Input";
+import { CopyButton } from "../components/ui/CopyButton";
 import { Download, Upload } from "lucide-react";
 
 
@@ -110,6 +111,7 @@ export function SettingsPage() {
 function ConnectionForm({ current }: { current: KernelConfig }) {
   const qc = useQueryClient();
   const [draft, setDraft] = useState<KernelConfig>(current);
+  const [showPassword, setShowPassword] = useState(false);
   const dirty = JSON.stringify(draft) !== JSON.stringify(current);
 
   const save = useMutation({
@@ -180,11 +182,24 @@ function ConnectionForm({ current }: { current: KernelConfig }) {
       )}
 
       <Field label="管理密码" hint="远端模式填该实例的 CCLOAD_PASS">
-        <TextInput
-          type="password"
-          value={draft.admin_password}
-          onChange={(e) => set({ admin_password: e.target.value })}
-        />
+        <div className="flex items-center gap-2">
+          <TextInput
+            type={showPassword ? "text" : "password"}
+            value={draft.admin_password}
+            onChange={(e) => set({ admin_password: e.target.value })}
+            className="min-w-0 flex-1"
+          />
+          {/* 内核后台会自动登录，但会话过期或密码填错时还是要手输一次；
+              密码框看不见内容，粘贴完也没法核对，所以这两个都得有。 */}
+          <button
+            type="button"
+            onClick={() => setShowPassword((v) => !v)}
+            className="shrink-0 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:bg-surface-2"
+          >
+            {showPassword ? "隐藏" : "显示"}
+          </button>
+          <CopyButton value={draft.admin_password} />
+        </div>
       </Field>
 
       <div className="mt-3 flex items-center gap-2">
@@ -333,7 +348,6 @@ function CopyRow({
   value: string;
   secret?: boolean;
 }) {
-  const [copied, setCopied] = useState(false);
   const [shown, setShown] = useState(false);
   // 令牌默认打码：这一页可能出现在截图和录屏里。
   const display = !value ? "—" : secret && !shown ? "•".repeat(24) : value;
@@ -355,23 +369,7 @@ function CopyRow({
           {shown ? "隐藏" : "显示"}
         </button>
       )}
-      <button
-        disabled={!value}
-        onClick={() => {
-          navigator.clipboard.writeText(value).then(() => {
-            setCopied(true);
-            window.setTimeout(() => setCopied(false), 1200);
-          });
-        }}
-        className={cn(
-          "shrink-0 rounded-md border px-2 py-1 text-[11px]",
-          copied
-            ? "border-emerald-500/40 bg-emerald-50 text-emerald-700"
-            : "border-border hover:bg-surface-2 disabled:opacity-40",
-        )}
-      >
-        {copied ? "已复制" : "复制"}
-      </button>
+      <CopyButton value={value} />
     </div>
   );
 }
