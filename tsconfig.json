@@ -16,7 +16,10 @@
     "allowImportingTsExtensions": false,
     "types": ["node", "vite/client"],
     "baseUrl": ".",
-    "paths": { "@/*": ["src/*"] }
+    "paths": {
+      "@/*": ["src/*"],
+      "@icons/*": ["src-tauri/icons/*"]
+    }
   },
   "include": ["src"]
 }

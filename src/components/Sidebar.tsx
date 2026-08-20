@@ -18,6 +18,8 @@ import { cn } from "../lib/cn";
 import { useI18n, useT } from "../i18n";
 import { Languages } from "lucide-react";
 import type { KernelStatus, Page } from "../types";
+// 应用图标即产品 logo；`@icons` 指向 src-tauri/icons，见 vite.config.ts。
+import logoUrl from "@icons/128x128.png";
 
 // 渠道/令牌 的增删改都在「内核后台」里，用的是 ccLoad 自带的界面，所以这里不再
 // 单列 —— 自绘表单只会是个字段更少的弱化版。只读的观测（总览/日志）才自绘。
@@ -117,10 +119,26 @@ export function Sidebar(props: {
       </button>
 
       <div className={cn("flex items-center py-4", collapsed ? "justify-center px-2" : "gap-2.5 px-4")}>
-        <Activity className="h-5 w-5 shrink-0 text-accent" />
+        <img
+          src={logoUrl}
+          alt=""
+          aria-hidden
+          className="h-5 w-5 shrink-0 rounded-[5px]"
+        />
         {!collapsed && (
           <div className="min-w-0">
-            <div className="t-title">ccLoad</div>
+            <div className="flex items-baseline gap-1.5">
+              <span className="t-title">ccLoad</span>
+              {/* 壳体自己的版本。底部那行显示的是**内核**版本，两者互不牵连
+                  （内核版本由 KERNEL_VERSION 单独钉住），所以必须分开显示，
+                  否则用户没法回答「我装的是哪个客户端 beta」。 */}
+              <span
+                title={t("客户端版本")}
+                className="rounded bg-surface-2 px-1 py-px font-mono text-[10px] leading-normal text-muted"
+              >
+                v{__CLIENT_VERSION__}
+              </span>
+            </div>
             <div className="text-[11px] text-muted">desktop client</div>
           </div>
         )}

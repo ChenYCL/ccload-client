@@ -27,6 +27,7 @@ registerDict("en", {
   展开侧栏: "Expand sidebar",
   收起侧栏: "Collapse sidebar",
   语言: "Language",
+  客户端版本: "Client version",
 
   // ---- 通用动作 ----
   保存: "Save",
