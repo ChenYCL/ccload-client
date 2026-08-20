@@ -22,6 +22,23 @@ use crate::services::kernel::Kernel;
 /// Admin sessions last 24h server-side; refresh well before that.
 const SESSION_TTL: Duration = Duration::from_secs(20 * 60 * 60);
 
+/// 内核自带 Web UI 的那条会话，跟下面 `Session` 不是一回事。
+///
+/// 内核后台是内核自己的页面，它的登录态是**浏览器侧**的三个 localStorage 键
+/// （`ccload_token` / `ccload_token_expiry` / `ccload_web_role`，见
+/// `vendor/ccLoad/web/assets/js/web-auth.js` 的 `storeWebSession`）。而
+/// `AdminClient` 缓存的是 Rust 侧 reqwest 用的 bearer —— 两者各持一份，互不知道
+/// 对方存在。所以「客户端连着内核」并不意味着「管理窗口登录了」，这也是用户会在
+/// 远端模式下对着一个登录框发懵的原因。
+pub struct WebSession {
+    pub token: String,
+    /// 内核回的 `expiresIn`（秒）。拿不到就是 0 —— 调用方**不要**在这种情况下
+    /// 预置会话：Web UI 算的是 `now + expiresIn * 1000`，0 等于「刚建好就过期」，
+    /// 用户开窗即被踢回登录页，比不预置更糟。
+    pub expires_in_secs: u64,
+    pub role: String,
+}
+
 struct Session {
     token: String,
     obtained: tokio::time::Instant,
@@ -61,6 +78,28 @@ impl AdminClient {
 
     /// Log in as admin and cache the bearer token.
     pub async fn login(&self, base_url: &str, password: &str) -> Result<String, AppError> {
+        let session = self.post_login(base_url, password).await?;
+        *self.session.write().await = Some(Session {
+            token: session.token.clone(),
+            obtained: tokio::time::Instant::now(),
+        });
+        Ok(session.token)
+    }
+
+    /// 单独登一次，**不碰缓存** —— 给管理窗口预置登录态用。
+    ///
+    /// 不复用 `cached_token()`：那里只留了 token，没留 `expiresIn` / `role`，而 Web UI
+    /// 三个键都要；而且缓存那条可能只剩几分钟寿命，塞进窗口等于让用户开窗即掉线。
+    /// 多一次 `/login` 的代价远小于此。
+    pub async fn web_session(
+        &self,
+        base_url: &str,
+        password: &str,
+    ) -> Result<WebSession, AppError> {
+        self.post_login(base_url, password).await
+    }
+
+    async fn post_login(&self, base_url: &str, password: &str) -> Result<WebSession, AppError> {
         let resp = self
             .kernel
             .http()
@@ -80,9 +119,9 @@ impl AdminClient {
             });
         }
 
-        let token = body
-            .pointer("/data/token")
-            .or_else(|| body.get("token"))
+        let pick = |key: &str| body.pointer(&format!("/data/{key}")).or_else(|| body.get(key));
+
+        let token = pick("token")
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
                 AppError::Upstream {
@@ -92,11 +131,14 @@ impl AdminClient {
             })?
             .to_string();
 
-        *self.session.write().await = Some(Session {
-            token: token.clone(),
-            obtained: tokio::time::Instant::now(),
-        });
-        Ok(token)
+        Ok(WebSession {
+            expires_in_secs: pick("expiresIn").and_then(|v| v.as_u64()).unwrap_or(0),
+            role: pick("role")
+                .and_then(|v| v.as_str())
+                .unwrap_or("admin")
+                .to_string(),
+            token,
+        })
     }
 
     async fn token_for(&self, base_url: &str, password: &str) -> Result<String, AppError> {

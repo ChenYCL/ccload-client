@@ -134,6 +134,9 @@ pub async fn open_admin_window(
         return Ok(());
     }
 
+    // 只在真要新建窗口时才登 —— 复用那条路上窗口里已经有会话了，白登一次没意义。
+    let session = admin_web_session(&state).await;
+
     tauri::WebviewWindowBuilder::new(
         &app,
         "admin",
@@ -144,9 +147,68 @@ pub async fn open_admin_window(
     .title("ccLoad 管理后台")
     .inner_size(1180.0, 800.0)
     .min_inner_size(880.0, 560.0)
+    .initialization_script(admin_session_script(session.as_ref()))
     .build()
     .map_err(terr)?;
     Ok(())
+}
+
+/// 开窗前替用户登一次，把内核 Web UI 的会话预置好。
+///
+/// 失败不算错：拿不到会话就照常开窗，用户手动登录即可（设置页和「内核后台」页都
+/// 摆着可复制的管理密码）。为了省一次登录把整个管理后台打不开，不划算。
+async fn admin_web_session(state: &AppState) -> Option<crate::services::admin::WebSession> {
+    let (base_url, password) = {
+        let s = state.settings.read().await;
+        (s.kernel.base_url(), s.kernel.admin_password.clone())
+    };
+    if password.is_empty() {
+        return None;
+    }
+    match state.admin.web_session(&base_url, &password).await {
+        Ok(s) if s.expires_in_secs > 0 => Some(s),
+        Ok(_) => {
+            tracing::warn!("kernel /login returned no expiresIn; leaving the admin window to log in manually");
+            None
+        }
+        Err(e) => {
+            tracing::warn!("admin auto-login failed, falling back to the login page: {e}");
+            None
+        }
+    }
+}
+
+/// 把会话写进管理窗口的 localStorage，键名与内核 Web UI 的 `storeWebSession`
+/// 一致（`vendor/ccLoad/web/assets/js/web-auth.js`）。
+///
+/// 两个刻意的选择：
+///
+/// 1. **值一律用 `serde_json` 编码再拼进脚本**，不做字符串插值。这个窗口持有活的
+///    管理会话，能调内核全部 admin API —— 往它的 JS 字面量里拼东西正是下面
+///    `navigate` 那段注释修掉的注入口子，别在这里重新开一个。
+/// 2. **一个窗口只预置一次**（sessionStorage 上打标记）。`initialization_script`
+///    每次导航都会跑；不打标记的话，用户在后台点了「退出登录」，下一次导航又被我们
+///    悄悄登回去，等于用户的退出按钮失灵。
+fn admin_session_script(session: Option<&crate::services::admin::WebSession>) -> String {
+    let Some(s) = session else {
+        return String::new();
+    };
+    let token = serde_json::Value::String(s.token.clone());
+    let role = serde_json::Value::String(s.role.clone());
+    format!(
+        r#"(function () {{
+  try {{
+    if (sessionStorage.getItem('ccload_desktop_seeded')) return;
+    sessionStorage.setItem('ccload_desktop_seeded', '1');
+    localStorage.setItem('ccload_token', {token});
+    localStorage.setItem('ccload_token_expiry', String(Date.now() + {expires} * 1000));
+    localStorage.setItem('ccload_web_role', {role});
+  }} catch (e) {{}}
+}})();"#,
+        token = token,
+        role = role,
+        expires = s.expires_in_secs,
+    )
 }
 
 /// Mint a dedicated API token the first time the kernel comes up, so CLI
@@ -264,5 +326,61 @@ mod tests {
         // Timeout / refused connection / DNS failure — says nothing about the
         // token, and must not trigger a re-mint.
         assert!(token_verdict(None), "unreachable kernel must not re-mint");
+    }
+
+    fn session(token: &str) -> crate::services::admin::WebSession {
+        crate::services::admin::WebSession {
+            token: token.to_string(),
+            expires_in_secs: 86_400,
+            role: "admin".into(),
+        }
+    }
+
+    /// 这个窗口持有活的管理会话，token 能调内核全部 admin API。token 里带引号/
+    /// 反斜杠时必须还是一个字符串字面量，不能闭合它跑出去执行 —— 跟 `navigate`
+    /// 那条注释讲的是同一个口子。
+    #[test]
+    fn a_quote_in_the_token_cannot_break_out_of_the_script() {
+        let nasty = r#"a'b"c\d");alert(1);//"#;
+        let script = admin_session_script(Some(&session(nasty)));
+
+        // 子串匹配分不清「转义后的 \");」和「真的闭合了字面量的 ");」，所以判据
+        // 不能是「有没有出现某段文本」—— payload 本来就会作为**数据**待在字面量
+        // 里。把实参原样抠出来反解析：能还原成原文，就说明它自始至终是一个完整
+        // 的字符串字面量，没有多出任何一个字符跑到代码位置上去。
+        let line = script
+            .lines()
+            .find(|l| l.contains("'ccload_token'"))
+            .expect("token line missing");
+        let arg = line
+            .trim_end()
+            .strip_suffix(");")
+            .and_then(|l| l.split_once("'ccload_token', "))
+            .map(|(_, arg)| arg)
+            .expect("could not isolate the setItem argument");
+
+        assert_eq!(
+            serde_json::from_str::<String>(arg).expect("argument is not one JSON string"),
+            nasty,
+            "argument did not round-trip — something escaped the literal:\n{script}"
+        );
+    }
+
+    /// 没会话就别产出脚本 —— 用户手动登录，别往窗口里塞半截东西。
+    #[test]
+    fn no_session_means_no_script() {
+        assert!(admin_session_script(None).is_empty());
+    }
+
+    /// `initialization_script` 每次导航都跑。不打标记的话，用户在后台点「退出
+    /// 登录」，下一次导航又被我们悄悄登回去，退出按钮等于失灵。
+    #[test]
+    fn the_session_is_seeded_once_per_window_not_per_navigation() {
+        let script = admin_session_script(Some(&session("t")));
+        assert!(script.contains("ccload_desktop_seeded"), "{script}");
+        // 三个键名必须和内核 web-auth.js 的 storeWebSession 对得上。
+        for key in ["ccload_token", "ccload_token_expiry", "ccload_web_role"] {
+            assert!(script.contains(key), "missing {key}:\n{script}");
+        }
     }
 }
