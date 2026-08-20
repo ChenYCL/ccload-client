@@ -399,3 +399,138 @@ fn takeover_id(root: &ConfigRoot, bk: &BackupStore, target: CliTarget, id: &str)
         .unwrap()
         .backup_id
 }
+
+// ---------------------------------------------------------------------------
+// 强制 fallback 模型
+//
+// `fallbackModel` / `switchModelsOnFlag` 是 settings.json 的**顶层**键，不是
+// env。写错层级的话 Claude Code 一个字都不会读，而配置看起来完全正常 ——
+// 这类错误只有测试抓得住。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn claude_fallback_chain_lands_at_top_level_not_env() {
+    let (_keep, root, bk) = sandbox();
+    apply_takeover(
+        &root,
+        CliTarget::ClaudeCode,
+        "http://127.0.0.1:15722",
+        "tok",
+        "f1",
+        &bk,
+        TakeoverOptions {
+            fallback_models: Some(vec!["fable-5".into(), "kimi-k3".into()]),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let raw = read(&root, ".claude/settings.json");
+    let doc: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(
+        doc.pointer("/fallbackModel").unwrap(),
+        &serde_json::json!(["fable-5", "kimi-k3"]),
+        "{raw}"
+    );
+    assert!(
+        doc.pointer("/env/fallbackModel").is_none(),
+        "顶层键写进 env 等于没写：{raw}"
+    );
+}
+
+/// Claude Code 去重后只认 3 个。界面上能排 5 个，但写进去必须是它真会用的
+/// 那 3 个，否则用户以为后两个也在生效。
+#[test]
+fn claude_fallback_chain_is_deduped_then_capped() {
+    let (_keep, root, bk) = sandbox();
+    apply_takeover(
+        &root,
+        CliTarget::ClaudeCode,
+        "http://127.0.0.1:15722",
+        "tok",
+        "f2",
+        &bk,
+        TakeoverOptions {
+            fallback_models: Some(vec![
+                "  fable-5 ".into(),
+                "fable-5".into(), // 重复
+                "".into(),        // 空槽
+                "kimi-k3".into(),
+                "glm-5.3".into(),
+                "opus-5".into(), // 第 4 个，被截掉
+            ]),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let doc: serde_json::Value =
+        serde_json::from_str(&read(&root, ".claude/settings.json")).unwrap();
+    assert_eq!(
+        doc.pointer("/fallbackModel").unwrap(),
+        &serde_json::json!(["fable-5", "kimi-k3", "glm-5.3"]),
+    );
+}
+
+/// 留空 = 不改。和其它每个可选项一条规矩：接管不该把用户手写的链清掉。
+#[test]
+fn claude_empty_fallback_leaves_existing_chain_alone() {
+    let (_keep, root, bk) = sandbox();
+    write(
+        &root,
+        ".claude/settings.json",
+        r#"{"fallbackModel":["mine"],"switchModelsOnFlag":false}"#,
+    );
+    takeover(&root, &bk, CliTarget::ClaudeCode);
+
+    let doc: serde_json::Value =
+        serde_json::from_str(&read(&root, ".claude/settings.json")).unwrap();
+    assert_eq!(doc.pointer("/fallbackModel").unwrap(), &serde_json::json!(["mine"]));
+    assert_eq!(doc.pointer("/switchModelsOnFlag").unwrap(), &serde_json::json!(false));
+}
+
+/// 全是空串时也不写 —— 三个输入框都留空和「没填」是同一件事，不该产出
+/// 一个空数组把 Claude Code 的默认行为关掉。
+#[test]
+fn claude_all_blank_fallback_writes_nothing() {
+    let (_keep, root, bk) = sandbox();
+    apply_takeover(
+        &root,
+        CliTarget::ClaudeCode,
+        "http://127.0.0.1:15722",
+        "tok",
+        "f3",
+        &bk,
+        TakeoverOptions {
+            fallback_models: Some(vec!["".into(), "  ".into()]),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let doc: serde_json::Value =
+        serde_json::from_str(&read(&root, ".claude/settings.json")).unwrap();
+    assert!(doc.pointer("/fallbackModel").is_none());
+}
+
+#[test]
+fn claude_switch_models_on_flag_is_written() {
+    let (_keep, root, bk) = sandbox();
+    apply_takeover(
+        &root,
+        CliTarget::ClaudeCode,
+        "http://127.0.0.1:15722",
+        "tok",
+        "f4",
+        &bk,
+        TakeoverOptions {
+            switch_models_on_flag: Some(false),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let doc: serde_json::Value =
+        serde_json::from_str(&read(&root, ".claude/settings.json")).unwrap();
+    assert_eq!(doc.pointer("/switchModelsOnFlag").unwrap(), &serde_json::json!(false));
+}

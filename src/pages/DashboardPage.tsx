@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Radio } from "lucide-react";
 import { api } from "../lib/api";
 import { cn } from "../lib/cn";
+import { useT } from "../i18n";
 import type {
   ActiveRequest,
   HealthPoint,
@@ -16,6 +17,7 @@ import { StatCards } from "../components/dashboard/StatCards";
 import { AnomalyPanel } from "../components/dashboard/AnomalyPanel";
 import { ModelBreakdown, ModelTable } from "../components/dashboard/ModelBreakdown";
 import { ChannelHealthPanel } from "../components/dashboard/ChannelHealthPanel";
+import { McpToolPanel } from "../components/dashboard/McpToolPanel";
 import { anomaliesOf, byModel, totalsOf } from "../components/dashboard/derive";
 
 /// 总览页。页面本身只做三件事：取数、选时间范围、摆放面板。
@@ -41,6 +43,7 @@ const BUCKET_MIN: Record<StatsRange, number> = {
 };
 
 export function DashboardPage() {
+  const t = useT();
   const [range, setRange] = useState<StatsRange>("today");
 
   const kernel = useQuery({ queryKey: ["kernel"], queryFn: api.kernelStatus });
@@ -185,6 +188,13 @@ export function DashboardPage() {
           </Panel>
         </>
       )}
+
+      {/* MCP 工具统计不挂在 `running` 里面：流水是各 MCP 进程自己写的文件，
+          内核停着也读得到，而且这正是「内核关了为什么工具还在动」最该被看见
+          的时候。时间范围开关同样管不到它 —— 那三个范围是内核日志的口径。 */}
+      <Panel title={t("MCP 工具调用")} hint="ccload-vision · 本地流水">
+        <McpToolPanel />
+      </Panel>
     </div>
   );
 }

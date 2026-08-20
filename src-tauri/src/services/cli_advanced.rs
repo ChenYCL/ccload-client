@@ -133,6 +133,17 @@ pub struct TakeoverOptions {
     pub sonnet_model: Option<String>,
     pub opus_model: Option<String>,
     pub haiku_model: Option<String>,
+    /// Claude Code 的**可用性** fallback 链：主力过载 / 不可用时按顺序换人。
+    /// 落在 settings.json 顶层的 `fallbackModel` 数组（不是 env）。Claude Code
+    /// 去重后最多取 3 个，多余的忽略；`"default"` 展开成默认模型。
+    ///
+    /// 注意它治不了「总是跳到 claude-opus-4-8」那个症状 —— 那是**内容分类器**
+    /// fallback，走的是另一条路，见 `MODEL_TIER_NOTE`。
+    pub fallback_models: Option<Vec<String>>,
+    /// `switchModelsOnFlag`：请求被安全分类器标记时，`false` 表示先停下来问一句
+    /// 而不是自动换模型。第三方供应商上「自动换」多半换到一个不存在的模型名，
+    /// 停下来问反而是能用的那个选项。
+    pub switch_models_on_flag: Option<bool>,
     /// Free-form extra env entries merged into Claude/Gemini `env`.
     /// Also how the timeout/retry knobs get set — see `RESILIENT_ENV`.
     pub extra_env: Option<std::collections::BTreeMap<String, String>>,
@@ -140,6 +151,44 @@ pub struct TakeoverOptions {
     pub codex_model: Option<String>,
     pub codex_reasoning_effort: Option<String>,
     pub codex_context_window: Option<i64>,
+}
+
+/// Claude Code 有**两种**换模型的机制，配错格子的人都在同一个坑里：
+///
+/// 1. **可用性 fallback** —— 主力过载 / 不可用 / 服务端错误时换人。归
+///    `fallbackModel` 管（settings.json 顶层数组，最多 3 个）。
+/// 2. **内容分类器 fallback** —— Fable 5 / Opus 5 的请求被安全分类器标记时
+///    换人。它**根本不看** `fallbackModel`：Fable 5 被 cybersecurity 标记就跳
+///    Opus 4.8，被 biology 标记就跳 Opus 5，写死在 Claude Code 里。
+///
+/// 第三方供应商（也就是走 ccLoad 的所有人）上没有 `claude-opus-4-8` 这个模型
+/// 名，于是第 2 种每次都跳进一个不存在的模型 —— 这就是「总是自动跳到
+/// claude-opus-4-8」的来历。唯一的改法是把 `ANTHROPIC_DEFAULT_OPUS_MODEL`
+/// 钉成你自己有的模型：官方文档明确说，设了它之后**所有**有 fallback 的分类
+/// 都改跑这个钉住的模型。想干脆不自动换，就把 `switchModelsOnFlag` 关掉。
+pub const MODEL_TIER_NOTE: &str = "\
+Claude Code 的 fallback 分两种：过载/不可用走 fallbackModel 链；\
+被安全分类器标记走的是写死的 Opus 4.8 / Opus 5，只认 ANTHROPIC_DEFAULT_OPUS_MODEL。";
+
+/// Claude Code 去重后最多认 3 个 fallback，多余的直接忽略。写之前就截断，
+/// 免得用户在界面上排了 5 个、以为后两个也在生效。
+pub const MAX_FALLBACK_MODELS: usize = 3;
+
+/// 规范化 fallback 链：去空白、丢空串、去重、截断到 3 个。
+///
+/// 去重必须在截断**之前**：Claude Code 就是这个顺序，先截断会让
+/// `[a, a, b]` 只剩 `[a]` 而不是 `[a, b]`。
+pub fn normalize_fallback_models(raw: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for m in raw {
+        let m = m.trim();
+        if m.is_empty() || out.iter().any(|seen| seen == m) {
+            continue;
+        }
+        out.push(m.to_string());
+    }
+    out.truncate(MAX_FALLBACK_MODELS);
+    out
 }
 
 /// cc-switch's "resilient preset": long timeouts and retries for slow upstreams.

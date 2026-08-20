@@ -5,6 +5,7 @@ import type { Page } from "./types";
 import { Sidebar } from "./components/Sidebar";
 import { DashboardPage } from "./pages/DashboardPage";
 import { LogsPage } from "./pages/LogsPage";
+import { UsagePage } from "./pages/UsagePage";
 import { WebAdminPage } from "./pages/WebAdminPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { CliPage } from "./pages/CliPage";
@@ -18,6 +19,7 @@ import { useT } from "./i18n";
 const PAGES: Record<Page, () => JSX.Element> = {
   dashboard: DashboardPage,
   logs: LogsPage,
+  usage: UsagePage,
   "web-admin": WebAdminPage,
   settings: SettingsPage,
   cli: CliPage,
@@ -73,11 +75,23 @@ export function App() {
     mutationFn: api.kernelStart,
     onSuccess: () => qc.invalidateQueries({ queryKey: ["kernel"] }),
   });
+  const stop = useMutation({
+    mutationFn: api.kernelStop,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["kernel"] }),
+  });
 
   const View = PAGES[page];
   return (
     <div className="flex h-full">
-      <Sidebar page={page} onNavigate={setPage} status={status.data} onStart={() => start.mutate()} starting={start.isPending} />
+      <Sidebar
+        page={page}
+        onNavigate={setPage}
+        status={status.data}
+        onStart={() => start.mutate()}
+        onStop={() => stop.mutate()}
+        starting={start.isPending}
+        stopping={stop.isPending}
+      />
       {/* scroll-edge fades content into the chrome instead of a hard divider
           that is drawn whether or not anything is actually underneath it.
           左右各 20px：这些页面主体是宽表格，居中窄栏会在两侧留下两条什么都不

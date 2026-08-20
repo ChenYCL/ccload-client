@@ -7,7 +7,8 @@ use serde_json::Value;
 
 use crate::error::AppError;
 use crate::services::cli_advanced::{
-    blocked_for_user, merge_extra_json, merge_extra_toml, TakeoverOptions,
+    blocked_for_user, merge_extra_json, merge_extra_toml, normalize_fallback_models,
+    TakeoverOptions,
 };
 use crate::services::cli_grok;
 use crate::services::cli_io::{
@@ -183,6 +184,29 @@ pub fn apply_takeover(
                         env.insert(k.clone(), Value::String(v.clone()));
                     }
                 }
+            }
+            // 顶层键，不是 env —— `fallbackModel` 和 `switchModelsOnFlag` 都是
+            // settings.json 的设置项，Claude Code 不从环境变量读它们。
+            //
+            // 只在用户给了值时才写：空链沿用「留空 = 不改」的老规矩，要清空
+            // 请去配置编辑器删那一行（和其它每个可选项一致）。
+            if let Some(models) = opts.fallback_models.as_deref() {
+                let models = normalize_fallback_models(models);
+                if !models.is_empty() {
+                    let obj = doc
+                        .as_object_mut()
+                        .ok_or_else(|| AppError::Config("settings.json 顶层不是对象".into()))?;
+                    obj.insert(
+                        "fallbackModel".into(),
+                        Value::Array(models.into_iter().map(Value::String).collect()),
+                    );
+                }
+            }
+            if let Some(on) = opts.switch_models_on_flag {
+                let obj = doc
+                    .as_object_mut()
+                    .ok_or_else(|| AppError::Config("settings.json 顶层不是对象".into()))?;
+                obj.insert("switchModelsOnFlag".into(), Value::Bool(on));
             }
             write_pretty_json(&path, &doc)?;
             written.push(path.display().to_string());

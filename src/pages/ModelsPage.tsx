@@ -8,7 +8,7 @@ import { fetchCatalog, lookupMeta } from "../lib/modelCatalog";
 import { ALL_TARGETS, TARGET_LABELS } from "../lib/targets";
 import { buildUpstreamIndex, matchAlias, type MatchLevel } from "../lib/modelMatch";
 import { Select, TextInput } from "../components/ui/Input";
-import type { CliTarget, ImportEntry } from "../types";
+import type { CliTarget, ImportEntry, VisionTargetState } from "../types";
 import { errText } from "../lib/err";
 
 /// One-click model catalog import. The kernel can serve every alias that any
@@ -76,9 +76,6 @@ function guessTierFromName(alias: string): (typeof TIERS)[number] | null {
   if (n.includes("haiku")) return "haiku";
   return null;
 }
-
-/** 视觉 MCP 的服务器名，与后端 `vision_mcp::MCP_NAME` 一致。 */
-const VISION_MCP_ID = "ccload-vision";
 
 /// 一个目标的写入结果。`skipped` 必须和 `ok` 分开：跳过等于**没写**，塞进
 /// `ok` 再靠 `text` 解释，回显模板套出来就是「已写入 跳过（…）」这种自相矛盾的
@@ -185,7 +182,6 @@ export function ModelsPage() {
     setTargets((prev) =>
       prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t],
     );
-  const [visionModel, setVisionModel] = useState<string>("");
   const [visionPicked, setVisionPicked] = useState<CliTarget[]>([]);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -287,31 +283,47 @@ export function ModelsPage() {
     onError: (e) => setMessage(errText(e)),
   });
 
-  // 视觉 MCP 装没装，读回各 CLI 的真实配置 —— 按钮不该凭记忆显示状态，用户可能
-  // 在别处删过，也可能上一版客户端根本没写成功（opencode 目标名曾经就是错的）。
+  // 视觉 MCP 装没装、用的哪个模型，读回各 CLI 的真实配置 —— 按钮和下拉都不该
+  // 凭记忆显示状态：用户可能在别处删过，也可能上一版客户端根本没写成功
+  //（opencode 目标名曾经就是错的）。模型这一项以前只活在下面那个 useState 里，
+  // 切走再回来就回到「选择多模态模型」，看起来就是「选了没保存上」。
   const visionState = useQuery({
     queryKey: ["vision-mcp-state"],
-    queryFn: async () => {
-      const pairs = await Promise.all(
-        VISION_TARGETS.map(async (t) => {
-          try {
-            const items = await api.extensionsList(t, "mcp");
-            return [t, items.some((i) => i.id === VISION_MCP_ID)] as const;
-          } catch {
-            // 配置文件不存在/读不动都算「没装」，不该让整块状态变成错误。
-            return [t, false] as const;
-          }
-        }),
-      );
-      return Object.fromEntries(pairs) as Record<CliTarget, boolean>;
-    },
+    queryFn: api.visionMcpState,
   });
+  const visionByTarget = useMemo(() => {
+    const m = new Map<CliTarget, VisionTargetState>();
+    for (const s of visionState.data ?? []) m.set(s.target, s);
+    return m;
+  }, [visionState.data]);
+
+  // 已装的那些用的是哪个模型。多数情况五家一致，取第一个即可；不一致时下面
+  // 会单独提示，因为「改一次全改」是这个下拉给人的印象，不说就是骗人。
+  const installedModels = useMemo(
+    () => [
+      ...new Set(
+        (visionState.data ?? [])
+          .filter((s) => s.installed && s.model)
+          .map((s) => s.model as string),
+      ),
+    ],
+    [visionState.data],
+  );
+
+  // 用户改过就以用户的为准；没改过就跟着磁盘上的值走（含刚装完的回显）。
+  // 用 null 而不是 "" 表示「还没动过」—— "" 是一个合法的用户选择（清空）。
+  const [visionPick, setVisionPick] = useState<string | null>(null);
+  const visionModel = visionPick ?? installedModels[0] ?? "";
 
   const vision = useMutation({
     mutationFn: (ts: CliTarget[]) => visionBatch(ts, true, visionModel || undefined),
-    onSuccess: (rs) => {
+    onSuccess: async (rs) => {
       setMessage(summarize(rs, "已安装", "安装失败"));
-      visionState.refetch();
+      // 先把磁盘上的新值取回来，**再**把选择权交还给它。顺序反了的话中间那一
+      // 帧读到的还是旧数据（首次安装时是「什么都没装」），下拉会闪回占位符
+      // ——正好是这次要修的那个 bug 的样子。
+      await visionState.refetch();
+      setVisionPick(null);
     },
     onError: (e) => setMessage(errText(e)),
   });
@@ -361,6 +373,14 @@ export function ModelsPage() {
   // Tier 只有 Claude Code 用得上；多选里只要它在，这一列就要能编辑。
   const showTier = targets.includes("claude-code");
   const visionCandidates = aliases.filter((a) => row(a).vision);
+  // 下拉里必须包含**当前已装的那个模型**，哪怕目录判它不是多模态、或者它已经
+  // 不在渠道清单里了。受控 <select> 的 value 找不到对应 option 时浏览器渲染成
+  // 空白 —— 那正是「明明装着模型，界面却显示占位符」的另一种成因。
+  const visionOptions = useMemo(
+    () => [...new Set([...visionCandidates, ...installedModels])].sort(),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [visionCandidates.join("\u0000"), installedModels.join("\u0000")],
+  );
   // 含 Claude Code 且一个槽位都没选时，后端必然报错。只选了 Claude 才禁用
   // 按钮；和 Codex/OpenCode 一起选时仍可导入其它家，Claude 那路会跳过。
   const claudeNeedsSlot =
@@ -683,8 +703,11 @@ export function ModelsPage() {
           <Eye className="h-4 w-4 text-accent" /> 视觉辅助 MCP
         </div>
         <p className="mt-1 text-sm text-muted">
-          给文本模型装上「眼睛」：本客户端自带一个 MCP 服务器（describe_image），
-          把图片交给一个多模态模型描述，再把文字交给当前模型。已支持多模态的模型不需要。
+          给文本模型装上「眼睛」：本客户端自带一个 MCP 服务器，把图片交给一个多模态模型
+          描述，再把文字交给当前模型。已支持多模态的模型不需要。四个工具：
+          <code>describe_image</code>（看图）、<code>read_image_text</code>（逐字抄下图上的文字，
+          报错截图用它）、<code>compare_images</code>（比对改动前后）、
+          <code>describe_screen</code>（直接截当前屏幕，仅 macOS）。
         </p>
 
         <label className="mt-3 flex flex-wrap items-center gap-2 text-sm">
@@ -692,16 +715,33 @@ export function ModelsPage() {
           <Select
             className="w-64"
             value={visionModel}
-            onChange={(e) => setVisionModel(e.target.value)}
+            onChange={(e) => setVisionPick(e.target.value)}
           >
             <option value="">选择多模态模型</option>
-            {visionCandidates.map((a) => (
+            {visionOptions.map((a) => (
               <option key={a} value={a}>
                 {a}
               </option>
             ))}
           </Select>
+          {/* 已装的模型必须能被看见、而且要看得出是「已经在用的」而不是刚选的。
+              没有这一句，用户改完模型不点安装就走，界面会显示新值、磁盘上却是
+              旧值 —— 又变成一次「以为保存了」。 */}
+          {installedModels.length > 0 && (
+            <span className="text-xs text-muted">
+              已装：{installedModels.join("、")}
+              {visionPick !== null && visionPick !== installedModels[0] && (
+                <span className="ml-1 text-amber-700">（改动尚未写入，点下面的安装才生效）</span>
+              )}
+            </span>
+          )}
         </label>
+        {installedModels.length > 1 && (
+          <p className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-900">
+            这几个 CLI 用的看图模型不一致（{installedModels.join("、")}）。上面的下拉只显示
+            其中一个；要统一就选好模型后对每个 CLI 重新点一次「安装」。
+          </p>
+        )}
 
         {/* 一行一个 CLI，左边是它现在装没装（读回真实配置，不是按钮的记忆），
             右边只有一个按钮 —— 装了就显示「移除」，没装才显示「安装」。之前
@@ -709,7 +749,8 @@ export function ModelsPage() {
             最左侧的复选框用于批量：五家都要装时不必点五次。 */}
         <ul className="mt-3 divide-y divide-border/60 rounded-xl border border-border">
           {VISION_TARGETS.map((t) => {
-            const on = visionState.data?.[t] === true;
+            const st = visionByTarget.get(t);
+            const on = st?.installed === true;
             return (
               <li key={t} className="flex items-center gap-3 px-3 py-2">
                 <input
@@ -726,13 +767,27 @@ export function ModelsPage() {
                 <span
                   className={cn(
                     "h-1.5 w-1.5 shrink-0 rounded-full",
-                    on ? "bg-emerald-500" : "bg-border",
+                    !on ? "bg-border" : st?.stale ? "bg-amber-500" : "bg-emerald-500",
                   )}
                 />
                 <span className="text-sm">{TARGET_LABELS[t]}</span>
                 <span className="text-xs text-muted">
-                  {visionState.isPending ? "读取中…" : on ? "已安装" : "未安装"}
+                  {visionState.isPending
+                    ? "读取中…"
+                    : on
+                      ? `已安装${st?.model ? ` · ${st.model}` : ""}`
+                      : "未安装"}
                 </span>
+                {/* 装了但凭证过期，和「没装」是两回事：配置看着是好的，每次
+                    看图却都 401。不点破的话用户只会看到工具莫名其妙不工作。 */}
+                {on && st?.stale && (
+                  <span
+                    className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-700"
+                    title="里面存的内核地址或令牌已经不是当前这个内核的了，重新安装即可修好"
+                  >
+                    凭证过期
+                  </span>
+                )}
                 <button
                   onClick={() => (on ? visionOff.mutate([t]) : vision.mutate([t]))}
                   disabled={
@@ -748,6 +803,21 @@ export function ModelsPage() {
                 >
                   {on ? "移除" : "安装"}
                 </button>
+                {/* 已装的也要能改模型/修凭证，否则只能先移除再装一遍。 */}
+                {on && (
+                  <button
+                    onClick={() => vision.mutate([t])}
+                    disabled={vision.isPending || visionOff.isPending || !visionModel}
+                    title={
+                      !visionModel
+                        ? "先在上面选一个多模态模型"
+                        : "用当前选中的模型和内核凭证重写这一条"
+                    }
+                    className="rounded-lg border border-border bg-surface-raised px-2.5 py-1 text-xs hover:bg-surface-2 disabled:opacity-40"
+                  >
+                    重写
+                  </button>
+                )}
               </li>
             );
           })}

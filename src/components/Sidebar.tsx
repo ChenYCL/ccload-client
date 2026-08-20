@@ -1,11 +1,14 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import {
   Activity,
   ChevronLeft,
   ChevronRight,
   Power,
+  PowerOff,
   Blocks,
   Cable,
+  Gauge,
   Globe,
   LayoutDashboard,
   ScrollText,
@@ -21,6 +24,21 @@ import type { KernelStatus, Page } from "../types";
 // 应用图标即产品 logo；`@icons` 指向 src-tauri/icons，见 vite.config.ts。
 import logoUrl from "@icons/128x128.png";
 
+/// 打包后的真实壳体版本。Vite 注入的是 `package.json` 基座（`0.1.0`）；
+/// beta 流水线会把完整 tag 戳进 `tauri.conf.json`，`getVersion()` 读的是那个，
+/// 才能在侧栏看到 `0.1.0-beta.20260820.2` 而不是截成基座。
+function useClientVersion(): string {
+  const [version, setVersion] = useState(__CLIENT_VERSION__);
+  useEffect(() => {
+    void getVersion()
+      .then(setVersion)
+      .catch(() => {
+        /* 纯 vite 预览没有 Tauri，继续用构建期注入值 */
+      });
+  }, []);
+  return version;
+}
+
 // 渠道/令牌 的增删改都在「内核后台」里，用的是 ccLoad 自带的界面，所以这里不再
 // 单列 —— 自绘表单只会是个字段更少的弱化版。只读的观测（总览/日志）才自绘。
 //
@@ -33,6 +51,7 @@ const GROUPS: { title: string; items: { id: Page; label: string; icon: typeof Ac
     items: [
       { id: "dashboard", label: "总览", icon: LayoutDashboard },
       { id: "logs", label: "实时日志", icon: ScrollText },
+      { id: "usage", label: "订阅用量", icon: Gauge },
     ],
   },
   {
@@ -63,10 +82,13 @@ export function Sidebar(props: {
   onNavigate: (p: Page) => void;
   status?: KernelStatus;
   onStart: () => void;
+  onStop: () => void;
   starting: boolean;
+  stopping: boolean;
 }) {
   const t = useT();
   const { lang, setLang } = useI18n();
+  const version = useClientVersion();
   const running = props.status?.state === "running";
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem(COLLAPSE_KEY) === "1",
@@ -124,22 +146,20 @@ export function Sidebar(props: {
           alt=""
           aria-hidden
           className="h-5 w-5 shrink-0 rounded-[5px]"
+          title={collapsed ? `ccLoad v${version}` : undefined}
         />
         {!collapsed && (
           <div className="min-w-0">
-            <div className="flex items-baseline gap-1.5">
-              <span className="t-title">ccLoad</span>
-              {/* 壳体自己的版本。底部那行显示的是**内核**版本，两者互不牵连
-                  （内核版本由 KERNEL_VERSION 单独钉住），所以必须分开显示，
-                  否则用户没法回答「我装的是哪个客户端 beta」。 */}
-              <span
-                title={t("客户端版本")}
-                className="rounded bg-surface-2 px-1 py-px font-mono text-[10px] leading-normal text-muted"
-              >
-                v{__CLIENT_VERSION__}
-              </span>
+            <div className="t-title">ccLoad</div>
+            {/* 完整版本单独一行：beta 形如 0.1.0-beta.20260820.2，跟标题挤同一
+                行会被截成基座 0.1.0，用户就分不清装的是哪一包。底部那行是内核
+                版本，两者互不牵连。 */}
+            <div
+              title={t("客户端版本")}
+              className="mt-0.5 break-all font-mono text-[10px] leading-snug text-muted"
+            >
+              v{version}
             </div>
-            <div className="text-[11px] text-muted">desktop client</div>
           </div>
         )}
       </div>
@@ -194,7 +214,25 @@ export function Sidebar(props: {
           {!collapsed && <span className="text-[11px]">{lang === "zh-CN" ? "中文" : "English"}</span>}
         </button>
         <StatusDot status={props.status} collapsed={collapsed} />
-        {!running && (
+        {running ? (
+          <button
+            onClick={props.onStop}
+            disabled={props.stopping}
+            title={collapsed ? t("停止内核") : undefined}
+            className={cn(
+              "mt-2.5 w-full rounded-lg border border-border py-2 font-medium hover:border-red-300 hover:bg-red-50 hover:text-red-700 disabled:opacity-50",
+              collapsed ? "px-0" : "px-2",
+            )}
+          >
+            {collapsed ? (
+              <PowerOff className="mx-auto h-4 w-4" />
+            ) : props.stopping ? (
+              t("停止中…")
+            ) : (
+              t("停止内核")
+            )}
+          </button>
+        ) : (
           <button
             onClick={props.onStart}
             disabled={props.starting}

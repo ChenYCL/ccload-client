@@ -66,6 +66,16 @@ export type TakeoverOptions = {
   sonnet_model?: string;
   opus_model?: string;
   haiku_model?: string;
+  /**
+   * Claude Code 顶层 `fallbackModel` 数组：主力**过载/不可用**时按顺序换人。
+   * 去重后最多 3 个，`"default"` 展开成默认模型。留空则不写入。
+   *
+   * 注意它管不到「被安全分类器标记后跳 claude-opus-4-8」那种换模型 ——
+   * 那条路只认 `ANTHROPIC_DEFAULT_OPUS_MODEL`（也就是上面的 opus_model）。
+   */
+  fallback_models?: string[];
+  /** `switchModelsOnFlag`：false = 被标记时先问一句，不自动换。 */
+  switch_models_on_flag?: boolean;
   extra_env?: Record<string, string>;
   codex_model?: string;
   codex_reasoning_effort?: string;
@@ -162,6 +172,7 @@ export type GraphValidation = {
 export type Page =
   | "dashboard"
   | "logs"
+  | "usage"
   | "web-admin"
   | "cli"
   | "fallback"
@@ -169,6 +180,95 @@ export type Page =
   | "extensions"
   | "graph"
   | "settings";
+
+/* ---------------------------------------------------------------------------
+   视觉辅助 MCP。
+
+   模型这一项以前只活在 ModelsPage 的 useState 里，切走再回来就回到占位符，
+   看起来像「选了没保存上」。真值一直写在各 CLI 的配置文件里，后端读回来。
+--------------------------------------------------------------------------- */
+
+export type VisionTargetState = {
+  target: CliTarget;
+  label: string;
+  installed: boolean;
+  /** 已装的话，它现在用哪个模型看图。 */
+  model: string | null;
+  /** 装了，但里面存的内核地址/令牌已经过期 —— 每次看图都会 401。 */
+  stale: boolean;
+};
+
+/* ---------------------------------------------------------------------------
+   自带 MCP 工具的调用统计。
+
+   口径只覆盖 `ccload-vision`：别家 MCP 服务器是独立进程，既不经内核也不经
+   我们，客户端没有任何位置能看见它们的调用。
+--------------------------------------------------------------------------- */
+
+export type McpToolStat = {
+  tool: string;
+  calls: number;
+  failed: number;
+  /** 毫秒，只统计成功的调用。 */
+  avg_ms: number;
+  max_ms: number;
+  /** 累计耗时毫秒，含失败。 */
+  total_ms: number;
+  /** unix 秒 */
+  last_at: number;
+};
+
+export type McpUsage = {
+  tools: McpToolStat[];
+  calls: number;
+  failed: number;
+  total_ms: number;
+  /** unix 秒，流水里最早一条；0 表示还没有数据。 */
+  since: number;
+  /** 老记录被丢过，统计口径不是「有史以来」。 */
+  truncated: boolean;
+};
+
+/* ---------------------------------------------------------------------------
+   订阅额度。内核把每个 OAuth 渠道的上游额度采样存进凭证，`GET /admin/channels`
+   原样带出来；`POST /admin/channels/:id/oauth-usage` 触发一次重新采样。
+
+   字段对照 vendor/ccLoad/internal/app/admin_oauth_usage.go 的
+   `oauthUsageSummary` / `oauthUsageWindow`。
+--------------------------------------------------------------------------- */
+
+/** 一个上游额度窗口。身份是 `limit_name|kind`，**不是**窗口时长。 */
+export type OAuthUsageWindow = {
+  limit_name: string;
+  kind: string;
+  /** 0–100 */
+  used_percent: number;
+  remaining_percent: number;
+  /** 窗口时长秒；5 小时窗 = 18000，周窗 = 604800 */
+  limit_window_seconds: number;
+  /** unix 秒，下次重置 */
+  reset_at: number;
+  /** 该窗口累计的标准成本（微美元），内核按日志实时累加 */
+  standard_cost_microusd?: number;
+};
+
+export type OAuthUsageSummary = {
+  provider: string;
+  plan_type?: string;
+  subscription_tier?: string;
+  entitlement_status?: string;
+  windows: OAuthUsageWindow[];
+  warnings?: string[];
+};
+
+/** `GET /admin/channels` 里我们用得上的字段。 */
+export type UsageChannel = {
+  id: number;
+  name: string;
+  enabled?: boolean;
+  auth_type?: string;
+  oauth_usage?: OAuthUsageSummary | null;
+};
 
 /* ---------------------------------------------------------------------------
    扩展管理：MCP / Skill / Agent / Hook 在 5 个 CLI 之间的统一管理。

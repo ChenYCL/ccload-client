@@ -6,9 +6,22 @@ pub mod error;
 pub mod services;
 pub mod state;
 
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
 use tauri::Manager;
 
 use crate::state::AppState;
+
+/// 关窗会把窗口和 Dock 图标一起藏起来，菜单栏那颗图标是唯一回来的路。
+/// 左键 / 双击托盘、菜单「显示窗口」都走这里，免得两处各写一遍漏掉恢复 Dock。
+fn show_main_window(app: &tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -72,7 +85,25 @@ pub fn run() {
             let _tray = tauri::tray::TrayIconBuilder::new()
                 .icon(app.default_window_icon().expect("icon").clone())
                 .menu(&menu)
-                .show_menu_on_left_click(false)
+                // 左键唤起窗口。Linux 不发 tray click 事件（Tauri 标明 Unsupported），
+                // 只能靠左键弹出菜单里的「显示窗口」。
+                .show_menu_on_left_click(cfg!(target_os = "linux"))
+                .on_tray_icon_event(|tray, event| {
+                    let show = matches!(
+                        event,
+                        TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } | TrayIconEvent::DoubleClick {
+                            button: MouseButton::Left,
+                            ..
+                        }
+                    );
+                    if show {
+                        show_main_window(tray.app_handle());
+                    }
+                })
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     // 必须先停内核再退出。`app.exit` 最终走的是
                     // `std::process::exit`，它不跑析构 —— `Child` 的
@@ -90,16 +121,7 @@ pub fn run() {
                             app.exit(0);
                         });
                     }
-                    "show" => {
-                        // Restore the regular app presence (Dock icon + focus).
-                        #[cfg(target_os = "macos")]
-                        let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.unminimize();
-                            let _ = w.set_focus();
-                        }
-                    }
+                    "show" => show_main_window(app),
                     _ => {}
                 })
                 .build(app)?;
@@ -146,6 +168,9 @@ pub fn run() {
             commands::fallback::fallback_apply,
             commands::models::model_import,
             commands::models::vision_mcp_set,
+            commands::models::vision_mcp_state,
+            commands::models::mcp_usage_stats,
+            commands::models::mcp_usage_clear,
             commands::settings::settings_get,
             commands::settings::settings_set_kernel,
             commands::settings::settings_set_sandbox,

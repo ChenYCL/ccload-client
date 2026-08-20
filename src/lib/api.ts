@@ -23,10 +23,12 @@ import type {
   ImportResult,
   KernelConfig,
   KernelStatus,
+  McpUsage,
   SyncOutcome,
   TakeoverOptions,
   TakeoverPreview,
   TakeoverResult,
+  VisionTargetState,
 } from "../types";
 
 export const api = {
@@ -118,6 +120,15 @@ export const api = {
       enabled,
       model: model ?? null,
     }),
+  /**
+   * 五个 CLI 上视觉 MCP 的真实状态（装没装、用哪个模型、凭证还对不对）。
+   * 模型选择读的是磁盘，不是按钮的记忆 —— 切走再回来仍能看到自己选的那个。
+   */
+  visionMcpState: () => invoke<VisionTargetState[]>("vision_mcp_state"),
+
+  /** 自带 MCP 工具（ccload-vision）的调用次数与耗时。别家 MCP 不在口径内。 */
+  mcpUsageStats: () => invoke<McpUsage>("mcp_usage_stats"),
+  mcpUsageClear: () => invoke<void>("mcp_usage_clear"),
 
   /* --- 扩展管理：MCP / Skill / Agent / Hook 跨 5 个 CLI ------------------ */
 

@@ -267,6 +267,9 @@ function CliCard({
                   />
                 </div>
               )}
+              {isClaude && (
+                <FallbackFields options={options} onOptionsChange={onOptionsChange} />
+              )}
             <KnownKeysEditor
               target={p.target}
               options={options}
@@ -494,6 +497,127 @@ const TIER_KEYS = [
 /// pending edit (undefined = untouched); the current on-disk value shows
 /// through when untouched, so the field is a view of reality rather than an
 /// empty box the user has to retype from memory.
+/// Claude Code 的 fallback 配置。
+///
+/// 这里要澄清一件几乎所有人都会搞错的事：Claude Code 有**两种**换模型的机制，
+/// 长得像，但走的是完全不同的路。
+///
+///   1. 主力**过载/不可用** → 按 `fallbackModel` 数组依次换人。去重后最多 3 个。
+///   2. 请求被**安全分类器标记** → Claude Code 自己跳到写死的 Opus 4.8 / Opus 5。
+///      它**根本不看** `fallbackModel`。
+///
+/// 走 ccLoad 的人全都是「第三方供应商」，上游没有 `claude-opus-4-8` 这个名字，
+/// 于是第 2 种每次都跳进一个不存在的模型 —— 这就是「总是自动跳到
+/// claude-opus-4-8」的来历。官方文档给的解法只有一个：把
+/// `ANTHROPIC_DEFAULT_OPUS_MODEL` 钉成你自己有的模型，所有有 fallback 的分类
+/// 都会改跑它。所以这一块和上面的 Opus tier 是一对，必须放在一起说。
+const MAX_FALLBACK = 3;
+
+function FallbackFields({
+  options,
+  onOptionsChange,
+}: {
+  options: TakeoverOptions;
+  onOptionsChange: (o: TakeoverOptions) => void;
+}) {
+  // 读回 settings.json 顶层的现值。`cliEnvKeys` 只覆盖 env，这两个键不在里面。
+  const files = useQuery({
+    queryKey: ["cli-files", "claude-code"],
+    queryFn: () => api.cliReadFiles("claude-code"),
+  });
+  const current = (() => {
+    const body = files.data?.find((f) => f.rel.endsWith("settings.json"))?.body;
+    if (!body?.trim()) return { chain: [] as string[], switchOnFlag: undefined };
+    try {
+      const doc = JSON.parse(body) as {
+        fallbackModel?: unknown;
+        switchModelsOnFlag?: unknown;
+      };
+      // 官方是数组，但手写成字符串的配置在野外确实存在，两种都收。
+      const raw = doc.fallbackModel;
+      const chain = Array.isArray(raw)
+        ? raw.filter((x): x is string => typeof x === "string")
+        : typeof raw === "string"
+          ? [raw]
+          : [];
+      return {
+        chain,
+        switchOnFlag:
+          typeof doc.switchModelsOnFlag === "boolean" ? doc.switchModelsOnFlag : undefined,
+      };
+    } catch {
+      // 配置编辑器允许写坏，但这一格不该因此变成错误提示 —— 它只是回显。
+      return { chain: [] as string[], switchOnFlag: undefined };
+    }
+  })();
+
+  const draft = options.fallback_models;
+  const shown = draft ?? current.chain;
+  const setSlot = (i: number, v: string) => {
+    const next = [...shown];
+    while (next.length <= i) next.push("");
+    next[i] = v;
+    onOptionsChange({ ...options, fallback_models: next });
+  };
+
+  const switchOnFlag = options.switch_models_on_flag ?? current.switchOnFlag ?? true;
+
+  return (
+    <div className="mb-4 rounded-xl border border-border bg-surface-2/40 p-3">
+      <div className="text-xs font-medium">强制 fallback 模型</div>
+      <p className="mt-1 text-[11px] leading-relaxed text-muted">
+        主力<strong>过载或不可用</strong>时，按下面的顺序换人（写进 settings.json 顶层的{" "}
+        <code>fallbackModel</code>）。去重后最多 3 个，多余的 Claude Code 会忽略；
+        填 <code>default</code> 表示默认模型。留空则不写入。
+      </p>
+      <div className="mt-2 grid grid-cols-3 gap-2">
+        {Array.from({ length: MAX_FALLBACK }, (_, i) => (
+          <label key={i} className="block text-xs">
+            <div className="text-muted">第 {i + 1} 顺位</div>
+            <TextInput
+              mono
+              value={shown[i] ?? ""}
+              onChange={(e) => setSlot(i, e.target.value)}
+              placeholder={i === 0 ? "fable-5" : "留空则不写入"}
+              className={cn(
+                "mt-1",
+                draft !== undefined && (draft[i] ?? "") !== (current.chain[i] ?? "") &&
+                  "!border-accent",
+              )}
+            />
+          </label>
+        ))}
+      </div>
+
+      {/* 用户真正抱怨的那个症状在这里解释。放在 fallbackModel 下面是有意的：
+          他们会先在这一格里找，找不到就以为客户端没这个能力。 */}
+      <p className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-[11px] leading-relaxed text-amber-900">
+        <strong>总是跳到 claude-opus-4-8？</strong>那不是上面这条链干的。请求被 Claude Code
+        的安全分类器标记时，它会跳到<strong>写死的</strong> Opus 4.8 / Opus 5，完全不看{" "}
+        <code>fallbackModel</code>。而 ccLoad 上游没有 <code>claude-opus-4-8</code> 这个名字，
+        于是每次都跳进一个不存在的模型。唯一的改法是把上面的{" "}
+        <strong>Opus tier（ANTHROPIC_DEFAULT_OPUS_MODEL）</strong>
+        钉成你自己有的模型 —— 设了它之后，所有有 fallback 的分类都改跑这一个。
+        另外把 Fable tier 填上，Claude Code 才认得出当前模型是 Fable 5。
+      </p>
+
+      <label className="mt-2 flex items-center gap-2 text-[11px]">
+        <input
+          type="checkbox"
+          checked={!switchOnFlag}
+          onChange={(e) =>
+            onOptionsChange({ ...options, switch_models_on_flag: !e.target.checked })
+          }
+          className="h-3.5 w-3.5"
+        />
+        <span>
+          被标记时先问一句，不自动换模型（<code>switchModelsOnFlag: false</code>）
+        </span>
+      </label>
+    </div>
+  );
+}
+
 function ModelField({
   label,
   envKey,

@@ -12,6 +12,7 @@ registerDict("en", {
   系统: "System",
   总览: "Overview",
   实时日志: "Live logs",
+  订阅用量: "Subscription usage",
   "CLI 接管": "CLI takeover",
   调度图: "Dispatch graph",
   模型链: "Model chain",
@@ -21,6 +22,8 @@ registerDict("en", {
   设置: "Settings",
   启动内核: "Start kernel",
   "启动中…": "Starting…",
+  停止内核: "Stop kernel",
+  "停止中…": "Stopping…",
   运行中: "Running",
   已停止: "Stopped",
   "启动中（约 20s）": "Starting (~20s)",
@@ -160,4 +163,61 @@ registerDict("en", {
   显示: "Show",
   隐藏: "Hide",
   "API 令牌": "API token",
+
+  // ---- 订阅用量 ----
+  刷新额度: "Refresh quota",
+  "刷新中…": "Refreshing…",
+  已禁用: "Disabled",
+  "读取渠道中…": "Loading channels…",
+  "各 OAuth 渠道的套餐额度窗口与剩余量。数据由内核在刷新凭证时向上游采样，这里只是读回来 —— 点「刷新额度」会真的去问一次上游。API Key 渠道按量计费、没有套餐窗口，不在这一页。":
+    "Plan quota windows and remaining allowance for each OAuth channel. The kernel samples these from upstream when it refreshes credentials; this page just reads them back — “Refresh quota” actually asks upstream again. API-key channels are pay-as-you-go with no plan window, so they are not listed here.",
+  "还没有 OAuth 订阅渠道。去「内核后台」用 Codex / Anthropic / Antigravity / xAI / Z.ai 登录后，这里才会有额度可看。":
+    "No OAuth subscription channels yet. Sign in with Codex / Anthropic / Antigravity / xAI / Z.ai under “Kernel admin” and quotas will show up here.",
+  "还没采到额度窗口。内核只在刷新凭证或你点「刷新」时才向上游采样；有的套餐本来就不提供额度端点。":
+    "No quota window sampled yet. The kernel only samples upstream when it refreshes credentials or when you hit “Refresh”; some plans expose no quota endpoint at all.",
+  "已刷新 {n} 个渠道的额度": "Refreshed quota for {n} channel(s)",
+  // 窗口时长与重置倒计时
+  额度窗口: "Quota window",
+  每周: "Weekly",
+  每月: "Monthly",
+  "{n} 分钟": "{n} min",
+  "{n} 小时": "{n}h",
+  "{n} 天": "{n}d",
+  即将重置: "Resetting now",
+  "{n} 分钟后重置": "resets in {n} min",
+  "{n} 小时后重置": "resets in {n}h",
+  "{n} 天后重置": "resets in {n}d",
+  "剩余 {n}%": "{n}% left",
+  "已用 {n}%": "{n}% used",
+  本窗口计费: "Billed this window",
+  "本窗口内累计的标准成本，未乘渠道倍率":
+    "Standard cost accumulated in this window; channel multiplier not applied",
+  // 额度名里用来区分同长度窗口的那一点差异
+  额度: "credits",
+  时长: "time",
+  次数: "count",
+
+  // ---- MCP 工具调用 ----
+  "MCP 工具调用": "MCP tool calls",
+  看图: "describe image",
+  抄图上的字: "transcribe text",
+  比对两张图: "compare images",
+  看当前屏幕: "capture screen",
+  "还没有调用记录。装上「模型导入」页里的视觉辅助 MCP 之后，文本模型每次看图都会记一笔。":
+    "No calls recorded yet. Install the vision-assist MCP from the “Model import” page and every image a text-only model looks at gets logged here.",
+  "只统计本客户端自带的 MCP 服务器（ccload-vision）。扩展管理里装的第三方 MCP 由 CLI 直接拉起，不经过内核也不经过客户端，无法计入。":
+    "Covers only this app's own MCP server (ccload-vision). Third-party MCP servers installed under Extensions are spawned directly by the CLI — they pass through neither the kernel nor this client, so they cannot be counted.",
+  "共 {n} 次调用": "{n} calls",
+  "累计耗时 {d}": "{d} total",
+  "失败 {n} 次": "{n} failed",
+  清空统计: "Clear stats",
+  "{n} 次": "{n}×",
+  "均 {d}": "avg {d}",
+  "峰 {d}": "max {d}",
+  "失败 {n}": "{n} failed",
+  "平均耗时（仅成功调用）": "Average duration (successful calls only)",
+  最慢一次: "Slowest call",
+  "统计自 {at}。": "Since {at}.",
+  "更早的记录已被丢弃（流水有大小上限）。":
+    "Older records were dropped (the log has a size cap).",
 });

@@ -29,6 +29,7 @@ use crate::services::cli_extensions::{
     self, ExtensionKind, ExtensionSpec, McpTransport,
 };
 use crate::services::cli_types::{CliTarget, ConfigRoot};
+use crate::services::mcp_usage;
 
 pub const MCP_NAME: &str = "ccload-vision";
 
@@ -40,6 +41,91 @@ pub struct VisionConfig {
     pub base_url: String,
     pub token: String,
     pub model: String,
+}
+
+/// 一个 CLI 上视觉 MCP 的当前状态。
+///
+/// 存在的理由：模型选择以前只活在渲染进程的 `useState` 里，装完再进这一页就
+/// 回到「选择多模态模型」占位符，用户以为没保存上。真相一直写在各 CLI 的配置
+/// 文件里（`CCLOAD_VISION_MODEL`），读回来就是了 —— 和「装没装」用同一条原则：
+/// 状态从磁盘读，不靠按钮的记忆。
+#[derive(Debug, serde::Serialize)]
+pub struct VisionTargetState {
+    pub target: CliTarget,
+    pub label: &'static str,
+    pub installed: bool,
+    /// 已装的话，它现在用哪个模型看图。
+    pub model: Option<String>,
+    /// 装了，但里面存的 base_url / token 已经不是当前内核的了 —— 配置看着
+    /// 是好的，`describe_image` 每次都会 401 或连不上。和 CLI 接管页的
+    /// `token_stale` 是同一类问题，同样要在界面上说出来。
+    pub stale: bool,
+}
+
+/// 读回一个 CLI 里已装的视觉 MCP 配置；没装返回 `None`。
+///
+/// 走 `read_spec` 而不是自己解析：各 CLI 的环境变量键名不统一（OpenCode 是
+/// `environment`，其余是 `env`），那套归一化 `cli_extensions` 已经做过一遍。
+pub fn read_vision_mcp(
+    root: &ConfigRoot,
+    target: CliTarget,
+) -> Result<Option<VisionConfig>, AppError> {
+    let installed = cli_extensions::list(root, target, Some(ExtensionKind::Mcp))?
+        .iter()
+        .any(|i| i.id == MCP_NAME);
+    if !installed {
+        return Ok(None);
+    }
+    let spec = cli_extensions::read_spec(root, target, ExtensionKind::Mcp, MCP_NAME)?;
+    let get = |k: &str| spec.env.get(k).cloned().unwrap_or_default();
+    Ok(Some(VisionConfig {
+        base_url: get(ENV_BASE_URL),
+        token: get(ENV_TOKEN),
+        model: get(ENV_MODEL),
+    }))
+}
+
+/// 五个 CLI 各自的视觉 MCP 状态。
+///
+/// 一个目标读不动（配置文件不存在、被手工编辑成非法 JSON）算「没装」而不是
+/// 整次失败：这一格只是用来点亮界面的，不该因为某家 CLI 的配置坏了就让另外
+/// 四家的状态也消失。
+pub fn vision_states(
+    root: &ConfigRoot,
+    targets: &[CliTarget],
+    kernel_base_url: &str,
+    kernel_token: Option<&str>,
+) -> Vec<VisionTargetState> {
+    targets
+        .iter()
+        .copied()
+        .map(|target| match read_vision_mcp(root, target) {
+            Ok(Some(cfg)) => {
+                let base_ok = same_endpoint(&cfg.base_url, kernel_base_url);
+                let token_ok = kernel_token.is_none_or(|want| cfg.token == want);
+                VisionTargetState {
+                    target,
+                    label: target.label(),
+                    installed: true,
+                    model: Some(cfg.model).filter(|m| !m.is_empty()),
+                    stale: !(base_ok && token_ok),
+                }
+            }
+            _ => VisionTargetState {
+                target,
+                label: target.label(),
+                installed: false,
+                model: None,
+                stale: false,
+            },
+        })
+        .collect()
+}
+
+/// 只比较到「去掉尾斜杠」这一层。写进去的就是我们自己拼的 base_url，不需要
+/// CLI 接管那边那套 host/port 归一。
+fn same_endpoint(a: &str, b: &str) -> bool {
+    a.trim().trim_end_matches('/') == b.trim().trim_end_matches('/')
 }
 
 /// Register (or unregister) the vision MCP server for one CLI.
@@ -134,37 +220,21 @@ pub fn serve_stdio() -> i32 {
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": MCP_NAME, "version": "0.1.0" },
             })),
-            "tools/list" => Ok(json!({
-                "tools": [{
-                    "name": "describe_image",
-                    "description":
-                        "Describe an image file with a vision-capable model. \
-                         Use this whenever the user pastes/mentions an image \
-                         (screenshot, photo, chart) and you cannot see images.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "path": {
-                                "type": "string",
-                                "description": "Absolute path to the image file",
-                            },
-                            "url": {
-                                "type": "string",
-                                "description": "Remote URL of the image",
-                            },
-                            "prompt": {
-                                "type": "string",
-                                "description": "What to look for; default is a detailed description",
-                            },
-                        },
-                    },
-                    "required": [],
-                }],
-            })),
+            "tools/list" => Ok(json!({ "tools": tool_specs() })),
             "tools/call" => {
                 // MCP nests the tool payload under `arguments`.
                 let args = params.get("arguments").unwrap_or(&params);
-                runtime.block_on(call_describe_image(args))
+                let name = params
+                    .get("name")
+                    .and_then(Value::as_str)
+                    // 旧版只有一个工具，`name` 当时可以不看。装过旧版的配置
+                    // 还在磁盘上，缺 name 时按老行为兜底而不是报错。
+                    .unwrap_or("describe_image")
+                    .to_string();
+                let started = std::time::Instant::now();
+                let out = runtime.block_on(dispatch(&name, args));
+                record_call(&name, started, &out);
+                out
             }
             _ => Err("method not found".to_string()),
         };
@@ -186,30 +256,213 @@ pub fn serve_stdio() -> i32 {
     0
 }
 
-async fn call_describe_image(params: &Value) -> Result<Value, String> {
-    let path = params.get("path").and_then(Value::as_str);
-    let url = params.get("url").and_then(Value::as_str);
-    let prompt = params
+/// 工具清单。
+///
+/// 为什么不是「一个 describe_image 加个 prompt 参数就够了」：宿主模型是按
+/// **名字和描述**决定调不调工具的。用户说「帮我看看这个报错截图上写了什么」时，
+/// 一个叫 `read_image_text` 的工具会被叫起来，而一个泛化的 `describe_image`
+/// 经常不会 —— 模型不觉得自己需要「描述」。所以每一种真实意图给一个名字，
+/// 内部再共用同一条实现。
+fn tool_specs() -> Value {
+    // 三种取图方式共用一套参数说明，逐个工具重抄会漂。
+    let source_props = || {
+        json!({
+            "path": {
+                "type": "string",
+                "description": "Absolute path to a local image file (png/jpg/gif/webp)",
+            },
+            "url": { "type": "string", "description": "Remote URL of the image" },
+        })
+    };
+    json!([
+        {
+            "name": "describe_image",
+            "description":
+                "Describe an image with a vision-capable model. Use this whenever the user \
+                 pastes or mentions an image (screenshot, photo, diagram, chart) and you \
+                 cannot see images yourself.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Absolute path to the image file" },
+                    "url": { "type": "string", "description": "Remote URL of the image" },
+                    "prompt": {
+                        "type": "string",
+                        "description": "What to look for; default is a detailed description",
+                    },
+                },
+            },
+            "required": [],
+        },
+        {
+            "name": "read_image_text",
+            "description":
+                "Transcribe every piece of text in an image, verbatim and in reading order. \
+                 Use this for screenshots of errors, stack traces, logs, terminal output, \
+                 code, forms, or any image where the exact characters matter.",
+            "inputSchema": { "type": "object", "properties": source_props() },
+            "required": [],
+        },
+        {
+            "name": "compare_images",
+            "description":
+                "Compare two images and report what changed. Use this for before/after \
+                 screenshots, visual regressions, or 'why does my UI look different' questions.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "before_path": { "type": "string", "description": "Absolute path to the first image" },
+                    "before_url": { "type": "string", "description": "URL of the first image" },
+                    "after_path": { "type": "string", "description": "Absolute path to the second image" },
+                    "after_url": { "type": "string", "description": "URL of the second image" },
+                    "prompt": {
+                        "type": "string",
+                        "description": "What to focus on; default is every visible difference",
+                    },
+                },
+            },
+            "required": [],
+        },
+        {
+            "name": "describe_screen",
+            "description":
+                "Capture the user's screen right now and describe it. Use this when the user \
+                 refers to what is currently on their screen ('look at this', 'what does this \
+                 dialog say') without giving you a file.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "What to look for; default is a detailed description",
+                    },
+                },
+            },
+            "required": [],
+        },
+    ])
+}
+
+/// 默认提示词。抽出来是为了让四个工具的差异只剩「问什么」这一件事。
+const PROMPT_DESCRIBE: &str = "Describe this image in detail: the scene, any visible text \
+     (transcribe it verbatim), UI elements, and chart values.";
+const PROMPT_OCR: &str = "Transcribe ALL text visible in this image, verbatim, in reading order. \
+     Preserve line breaks, indentation, and punctuation exactly. Do not summarise, translate, \
+     correct typos, or add commentary. If a character is genuinely unreadable, write [?].";
+const PROMPT_COMPARE: &str = "These are two versions of the same thing (first = before, \
+     second = after). List every visible difference: layout, spacing, colour, text content, \
+     and anything present in one but not the other. Be specific about where each change is.";
+
+async fn dispatch(name: &str, params: &Value) -> Result<Value, String> {
+    match name {
+        "describe_image" => {
+            let img = load_source(params, "path", "url").await?;
+            ask_vision(&[img], prompt_or(params, PROMPT_DESCRIBE)).await
+        }
+        "read_image_text" => {
+            let img = load_source(params, "path", "url").await?;
+            // OCR 不接受自定义 prompt：这个工具的全部价值就是「一字不改地抄
+            // 下来」，让调用方改写提示词等于把它变回 describe_image。
+            ask_vision(&[img], PROMPT_OCR).await
+        }
+        "compare_images" => {
+            let before = load_source(params, "before_path", "before_url").await?;
+            let after = load_source(params, "after_path", "after_url").await?;
+            ask_vision(&[before, after], prompt_or(params, PROMPT_COMPARE)).await
+        }
+        "describe_screen" => {
+            let shot = capture_screen()?;
+            ask_vision(&[shot], prompt_or(params, PROMPT_DESCRIBE)).await
+        }
+        other => Err(format!("unknown tool: {other}")),
+    }
+}
+
+fn prompt_or<'a>(params: &'a Value, fallback: &'a str) -> &'a str {
+    params
         .get("prompt")
         .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .unwrap_or(
-            "Describe this image in detail: the scene, any visible text \
-             (transcribe it verbatim), UI elements, and chart values.",
-        );
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(fallback)
+}
 
+/// 一张待发送的图。
+struct Image {
+    bytes: Vec<u8>,
+    media_type: &'static str,
+}
+
+async fn load_source(params: &Value, path_key: &str, url_key: &str) -> Result<Image, String> {
+    let path = params.get(path_key).and_then(Value::as_str).filter(|s| !s.is_empty());
+    let url = params.get(url_key).and_then(Value::as_str).filter(|s| !s.is_empty());
+    if let Some(p) = path {
+        let (bytes, media_type) = read_image_file(p)?;
+        return Ok(Image { bytes, media_type });
+    }
+    if let Some(u) = url {
+        let (bytes, media_type) = fetch_image(u).await?;
+        return Ok(Image { bytes, media_type });
+    }
+    Err(format!("provide either {path_key} or {url_key}"))
+}
+
+/// 抓一张全屏截图。
+///
+/// 只在 macOS 上实现：`screencapture` 是系统自带的，不引入依赖。`-x` 关快门
+/// 声（MCP 是后台进程，响一声会吓到人）。第一次调用会弹系统的「录屏权限」
+/// 授权框，没给权限时 screencapture 仍返回 0 但截出一张纯桌面图 —— 这一点
+/// 没法从退出码判断，只能在错误文案里提醒。
+#[cfg(target_os = "macos")]
+fn capture_screen() -> Result<Image, String> {
+    let path = std::env::temp_dir().join(format!("ccload-vision-{}.png", std::process::id()));
+    let status = std::process::Command::new("/usr/sbin/screencapture")
+        .args(["-x", "-t", "png"])
+        .arg(&path)
+        .status()
+        .map_err(|e| format!("screencapture failed to start: {e}"))?;
+    if !status.success() {
+        return Err("screencapture failed — 检查系统设置里本应用的「屏幕录制」权限".into());
+    }
+    let bytes = std::fs::read(&path).map_err(|e| format!("cannot read screenshot: {e}"))?;
+    // 临时文件删不掉不算失败：图已经读进内存了。
+    let _ = std::fs::remove_file(&path);
+    if bytes.is_empty() {
+        return Err("screenshot is empty — 检查系统设置里本应用的「屏幕录制」权限".into());
+    }
+    Ok(Image {
+        bytes,
+        media_type: "image/png",
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn capture_screen() -> Result<Image, String> {
+    Err("describe_screen 目前只在 macOS 上可用；请改用 describe_image 并给出文件路径".into())
+}
+
+/// 把若干张图 + 一句提示交给视觉模型，返回 MCP 的 text 内容块。
+///
+/// 走内核的 `/v1/messages`：模型别名、路由、故障转移都归内核管，这里只负责
+/// 把图装进 Anthropic 的 content 数组。
+async fn ask_vision(images: &[Image], prompt: &str) -> Result<Value, String> {
+    if images.is_empty() {
+        return Err("no image to look at".into());
+    }
     let base = std::env::var(ENV_BASE_URL).map_err(|_| format!("{ENV_BASE_URL} not set"))?;
     let token = std::env::var(ENV_TOKEN).map_err(|_| format!("{ENV_TOKEN} not set"))?;
     let model = std::env::var(ENV_MODEL).map_err(|_| format!("{ENV_MODEL} not set"))?;
 
-    let (bytes, media_type) = if let Some(p) = path {
-        read_image_file(p)?
-    } else if let Some(u) = url {
-        fetch_image(u).await?
-    } else {
-        return Err("provide either path or url".into());
-    };
-    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+    let mut content: Vec<Value> = images
+        .iter()
+        .map(|img| {
+            let encoded =
+                base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &img.bytes);
+            json!({ "type": "image", "source": {
+                "type": "base64", "media_type": img.media_type, "data": encoded,
+            }})
+        })
+        .collect();
+    content.push(json!({ "type": "text", "text": prompt }));
 
     // no_proxy + 长超时，和内核共享客户端同一套理由：这台机器上常年挂着
     // HTTP_PROXY，而这里打的是本机内核；默认客户端会把请求交给代理，直接失败。
@@ -228,15 +481,7 @@ async fn call_describe_image(params: &Value) -> Result<Value, String> {
         .json(&json!({
             "model": model,
             "max_tokens": 4096,
-            "messages": [{
-                "role": "user",
-                "content": [
-                    { "type": "image", "source": {
-                        "type": "base64", "media_type": media_type, "data": encoded,
-                    }},
-                    { "type": "text", "text": prompt },
-                ],
-            }],
+            "messages": [{ "role": "user", "content": content }],
         }))
         .send()
         .await
@@ -266,6 +511,25 @@ async fn call_describe_image(params: &Value) -> Result<Value, String> {
         .unwrap_or_else(|| "(vision model returned no text)".into());
 
     Ok(json!({ "content": [{ "type": "text", "text": text }] }))
+}
+
+/// 记一条调用流水。失败原因截到一行 200 字：流水是 JSONL，一条上游返回的
+/// 多行报错会把文件搅成解析不了的样子。
+fn record_call(tool: &str, started: std::time::Instant, out: &Result<Value, String>) {
+    let err = out.as_ref().err().map(|e| {
+        let one_line: String = e.chars().map(|c| if c == '\n' { ' ' } else { c }).collect();
+        one_line.chars().take(200).collect::<String>()
+    });
+    mcp_usage::record(&mcp_usage::McpCall {
+        tool: tool.to_string(),
+        at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0),
+        ms: started.elapsed().as_millis() as u64,
+        ok: out.is_ok(),
+        err,
+    });
 }
 
 fn read_image_file(path: &str) -> Result<(Vec<u8>, &'static str), String> {
@@ -407,5 +671,168 @@ mod tests {
             serde_json::from_str::<CliTarget>("\"opencode\"").unwrap(),
             CliTarget::OpenCode
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // 读回状态
+    //
+    // 「选了模型但没保存上」的根因是模型只活在渲染进程里。真值一直在配置
+    // 文件里，下面这几条钉住「装完就读得回来」这件事。
+    // -----------------------------------------------------------------------
+
+    fn cfg(model: &str) -> VisionConfig {
+        VisionConfig {
+            base_url: "http://127.0.0.1:8990".into(),
+            token: "tok".into(),
+            model: model.into(),
+        }
+    }
+
+    /// 五家的 env 键名并不统一（OpenCode 是 `environment`），读回必须都认。
+    #[test]
+    fn installed_model_reads_back_on_every_target() {
+        for target in crate::services::cli_extensions::ALL_TARGETS {
+            let dir = tempfile::tempdir().unwrap();
+            let root = ConfigRoot::sandbox(dir.path().to_path_buf());
+            let bk = BackupStore::new(dir.path().join("bk"));
+
+            assert!(
+                read_vision_mcp(&root, target).unwrap().is_none(),
+                "{target:?} 没装时应当是 None"
+            );
+
+            set_vision_mcp(&root, target, true, &cfg("qwen3-vl"), "s1", &bk).unwrap();
+            let got = read_vision_mcp(&root, target)
+                .unwrap()
+                .unwrap_or_else(|| panic!("{target:?} 装完却读不回来"));
+            assert_eq!(got.model, "qwen3-vl", "{target:?}");
+            assert_eq!(got.base_url, "http://127.0.0.1:8990", "{target:?}");
+            assert_eq!(got.token, "tok", "{target:?}");
+        }
+    }
+
+    /// 装着旧内核的地址/令牌，和「没装」是两回事：配置看着好，每次看图都 401。
+    #[test]
+    fn stale_credentials_are_flagged_not_hidden() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = ConfigRoot::sandbox(dir.path().to_path_buf());
+        let bk = BackupStore::new(dir.path().join("bk"));
+        set_vision_mcp(&root, CliTarget::ClaudeCode, true, &cfg("qwen3-vl"), "s1", &bk).unwrap();
+
+        let fresh = vision_states(
+            &root,
+            &[CliTarget::ClaudeCode],
+            "http://127.0.0.1:8990",
+            Some("tok"),
+        );
+        assert!(fresh[0].installed);
+        assert!(!fresh[0].stale, "地址和令牌都对，不该报过期");
+        assert_eq!(fresh[0].model.as_deref(), Some("qwen3-vl"));
+
+        // 令牌换了（内核重启后重新签发）→ 装着，但打不通。
+        let stale = vision_states(
+            &root,
+            &[CliTarget::ClaudeCode],
+            "http://127.0.0.1:8990",
+            Some("another-token"),
+        );
+        assert!(stale[0].installed);
+        assert!(stale[0].stale);
+
+        // 端口换了同理。尾斜杠不算差异。
+        let moved = vision_states(
+            &root,
+            &[CliTarget::ClaudeCode],
+            "http://127.0.0.1:9999",
+            Some("tok"),
+        );
+        assert!(moved[0].stale);
+        let same = vision_states(
+            &root,
+            &[CliTarget::ClaudeCode],
+            "http://127.0.0.1:8990/",
+            Some("tok"),
+        );
+        assert!(!same[0].stale, "只差一个尾斜杠不该被判成过期");
+    }
+
+    /// 一家的配置坏了不该让另外四家的状态一起消失 —— 这一格只是用来点亮
+    /// 界面的，整次失败等于用户什么都看不到。
+    #[test]
+    fn one_broken_config_does_not_sink_the_others() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = ConfigRoot::sandbox(dir.path().to_path_buf());
+        let bk = BackupStore::new(dir.path().join("bk"));
+        set_vision_mcp(&root, CliTarget::ClaudeCode, true, &cfg("qwen3-vl"), "s1", &bk).unwrap();
+        // Codex 的 config.toml 被手工编辑坏了。
+        let codex = root.join(".codex/config.toml");
+        std::fs::create_dir_all(codex.parent().unwrap()).unwrap();
+        std::fs::write(&codex, "this = = not toml").unwrap();
+
+        let states = vision_states(
+            &root,
+            &[CliTarget::ClaudeCode, CliTarget::Codex],
+            "http://127.0.0.1:8990",
+            Some("tok"),
+        );
+        assert!(states[0].installed, "好的那家照常显示");
+        assert_eq!(states[0].model.as_deref(), Some("qwen3-vl"));
+        assert!(!states[1].installed, "坏的那家算没装，而不是整次报错");
+    }
+
+    /// 四个工具都要在 tools/list 里，且名字和 `dispatch` 认的一致 —— 少一个
+    /// 宿主模型就永远不会调它，多一个则会调到一个返回 "unknown tool" 的名字。
+    #[test]
+    fn every_advertised_tool_is_dispatchable() {
+        let specs = tool_specs();
+        let names: Vec<&str> = specs
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "describe_image",
+                "read_image_text",
+                "compare_images",
+                "describe_screen"
+            ]
+        );
+
+        // dispatch 对未知名字必须报错，对已知名字必须走到取图那一步
+        // （这里没有真图，所以预期是「缺参数」而不是「unknown tool」）。
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        for name in &names {
+            if *name == "describe_screen" {
+                continue; // 会真的去截屏，不在单测里跑
+            }
+            let err = rt
+                .block_on(dispatch(name, &serde_json::json!({})))
+                .unwrap_err();
+            assert!(
+                err.contains("provide either"),
+                "{name} 应当落到取图那一步，实际：{err}"
+            );
+        }
+        let err = rt
+            .block_on(dispatch("nope", &serde_json::json!({})))
+            .unwrap_err();
+        assert!(err.contains("unknown tool"), "{err}");
+    }
+
+    /// OCR 的全部价值就是「一字不改地抄下来」。允许调用方改写提示词等于把它
+    /// 变回 describe_image，所以 read_image_text 明确忽略 prompt。
+    #[test]
+    fn ocr_prompt_is_not_overridable() {
+        assert_eq!(prompt_or(&serde_json::json!({"prompt": "总结一下"}), PROMPT_OCR), "总结一下");
+        // dispatch 里 read_image_text 走的是常量而不是 prompt_or —— 这条断言
+        // 守的是那个选择本身。
+        assert!(PROMPT_OCR.contains("verbatim"));
+        assert!(PROMPT_OCR.contains("Do not summarise"));
     }
 }

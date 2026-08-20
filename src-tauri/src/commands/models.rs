@@ -3,9 +3,11 @@
 use tauri::State;
 
 use crate::error::{AppError, AppResult};
+use crate::services::cli_extensions::ALL_TARGETS;
 use crate::services::cli_types::CliTarget;
+use crate::services::mcp_usage::{self, McpUsage};
 use crate::services::model_import::{apply_import, ImportEntry, ImportResult};
-use crate::services::vision_mcp::{set_vision_mcp, VisionConfig};
+use crate::services::vision_mcp::{set_vision_mcp, vision_states, VisionConfig, VisionTargetState};
 use crate::state::AppState;
 use crate::services::cli_backup::unique_stamp;
 
@@ -64,5 +66,37 @@ pub async fn vision_mcp_set(
         model,
     };
     Ok(set_vision_mcp(&root, target, true, &cfg, &unique_stamp(), &state.backups)?)
+}
+
+/// 五个 CLI 上视觉 MCP 的真实状态：装没装、正在用哪个模型看图、里面存的
+/// 内核地址/令牌还对不对。
+///
+/// 模型这一项以前只活在渲染进程里，切走再回来就没了，用户以为「选了没保存上」。
+/// 真值一直在各 CLI 的配置文件里，读回来即可。
+#[tauri::command]
+pub async fn vision_mcp_state(state: State<'_, AppState>) -> AppResult<Vec<VisionTargetState>> {
+    let (token, base) = {
+        let s = state.settings.read().await;
+        (s.client_api_token.clone(), s.kernel.base_url())
+    };
+    let root = state.config_root().await?;
+    Ok(vision_states(&root, &ALL_TARGETS, &base, token.as_deref()))
+}
+
+/// 本客户端自带 MCP 工具的调用统计（次数 / 耗时 / 失败）。
+///
+/// 口径只覆盖 `ccload-vision` 这一个服务器 —— 别家 MCP 服务器是独立进程，
+/// 既不经过内核也不经过我们，客户端没有任何位置能看见它们的调用。UI 上要
+/// 把这个边界写出来，别让「MCP 调用统计」被读成「所有 MCP 的统计」。
+#[tauri::command]
+pub fn mcp_usage_stats() -> AppResult<McpUsage> {
+    Ok(mcp_usage::aggregate())
+}
+
+/// 清空调用流水。
+#[tauri::command]
+pub fn mcp_usage_clear() -> AppResult<()> {
+    mcp_usage::clear().map_err(AppError::from)?;
+    Ok(())
 }
 
