@@ -164,17 +164,20 @@ jobs:
           fi
           rm -f "$CERT_PATH"
 
-      # beta 版本号打进包体：tauri.conf.json 的 version 就是「关于」页里显示的。
-      # build.rs / updater 之外没人依赖这个文件是干净的，checkout 后改写即可，
-      # 不需要回写 git。
+      # beta 版本号打进包体（不回写 git）。侧栏读的是 Vite 注入的 package.json
+      # 版本，getVersion() 读的是 tauri.conf.json —— 两处都要戳，否则界面上只
+      # 看得到基座 0.1.0，分不清装的是哪一包 beta。
       - name: Stamp beta version
         shell: bash
         run: |
           node -e '
-            const fs = require("fs"), p = "src-tauri/tauri.conf.json";
-            const doc = JSON.parse(fs.readFileSync(p, "utf8"));
-            doc.version = process.env.BETA_TAG.slice(1);  // v0.1.0-beta.… → 0.1.0-beta.…
-            fs.writeFileSync(p, JSON.stringify(doc, null, 2) + "\n");
+            const fs = require("fs");
+            const ver = process.env.BETA_TAG.slice(1);  // v0.1.0-beta.… → 0.1.0-beta.…
+            for (const p of ["package.json", "src-tauri/tauri.conf.json"]) {
+              const doc = JSON.parse(fs.readFileSync(p, "utf8"));
+              doc.version = ver;
+              fs.writeFileSync(p, JSON.stringify(doc, null, 2) + "\n");
+            }
           '
         env:
           BETA_TAG: ${{ needs.bump.outputs.tag }}

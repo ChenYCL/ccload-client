@@ -144,6 +144,10 @@ if let Err(e) = carry_permissions(path, &tmp) { … }
 > 别为了打 beta 去手改 `package.json` 的 version。那个字段是 beta 版本号的
 > **基座**，把它写成 `0.2.0-beta.1` 会让流水线算出
 > `v0.2.0-beta.1-beta.20260819.1`。beta 序号是流水线的事，不是人的事。
+>
+> 流水线会在打包前把算出来的完整 tag 戳进工作区的 `package.json` 和
+> `tauri.conf.json`（不 commit），侧栏才能显示 `v0.1.0-beta.20260820.2`
+> 而不是基座 `v0.1.0`。
 
 beta 的 Windows 只出 NSIS，不出 MSI —— 原因写在 `beta.yml` 的 matrix 注释里
 （MSI 的 ProductVersion 比较时忽略第四段，两个 beta 会被当成同一版本，覆盖安装
