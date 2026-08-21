@@ -1,14 +1,15 @@
-import { useT } from "../i18n";
+import { useT, type Translate } from "../i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import type { BackupEntry, CliTarget, ConfigFileView, TakeoverOptions, TakeoverPreview } from "../types";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { errText } from "../lib/err";
 import { Modal } from "../components/Modal";
 import { TextArea, TextInput } from "../components/ui/Input";
 import { ComboBox } from "../components/ui/ComboBox";
 import { kernelAliases, type ChannelModels } from "../lib/modelOptions";
+import { ALL_TARGETS, TARGET_LABELS } from "../lib/targets";
 import { cn } from "../lib/cn";
 
 export function CliPage() {
@@ -44,6 +45,26 @@ export function CliPage() {
     opencode: {},
   });
   const [editing, setEditing] = useState<CliTarget | null>(null);
+
+  // 快照按 CLI 分组。一台机器上五家轮着接管、导入模型、装扩展，混在一条时间轴上
+  // 时「Claude Code 上一次好的配置」要在十几条里翻 —— 而回滚从来是「某一家」的事，
+  // 跨家的时间先后没有意义。组内仍按时间倒序，就是那一家自己的历史。
+  const backupGroups = useMemo(() => {
+    const by = new Map<CliTarget, BackupEntry[]>();
+    for (const b of backups.data ?? []) {
+      const cur = by.get(b.target);
+      if (cur) cur.push(b);
+      else by.set(b.target, [b]);
+    }
+    // 后端 list() 已经是新的在前，这里不依赖它。同一秒的多次写入靠 sort 的稳定性
+    // 保持入参顺序。
+    for (const items of by.values()) items.sort((a, b) => b.created_at - a.created_at);
+    // 组的顺序跟着上面接管卡片的顺序走，位置固定才好按肌肉记忆找；没有快照的不列。
+    return ALL_TARGETS.filter((tg) => by.has(tg)).map((tg) => ({
+      target: tg,
+      items: by.get(tg) ?? [],
+    }));
+  }, [backups.data]);
 
   const running = kernel.data?.state === "running";
 
@@ -113,16 +134,28 @@ export function CliPage() {
           {backups.data && backups.data.length === 0 && (
             <p className="mt-4 text-sm text-muted">{t("还没有任何快照。")}</p>
           )}
-          <ul className="mt-4 space-y-2">
-            {(backups.data ?? []).map((b) => (
-              <BackupCard
-                key={b.id}
-                b={b}
-                disabled={restore.isPending}
-                onRestore={() => restore.mutate(b.id)}
-              />
+          <div className="mt-4 space-y-4">
+            {backupGroups.map((g) => (
+              <section key={g.target} className="card overflow-hidden">
+                <div className="flex items-center gap-2 border-b border-border/60 bg-surface-2/50 px-3 py-2">
+                  <span className="text-sm font-medium">{TARGET_LABELS[g.target]}</span>
+                  <span className="text-[11px] text-muted">
+                    {t("{n} 份快照", { n: g.items.length })}
+                  </span>
+                </div>
+                <ul className="divide-y divide-border/60">
+                  {g.items.map((b) => (
+                    <BackupRow
+                      key={b.id}
+                      b={b}
+                      disabled={restore.isPending}
+                      onRestore={() => restore.mutate(b.id)}
+                    />
+                  ))}
+                </ul>
+              </section>
             ))}
-          </ul>
+          </div>
         </div>
       )}
 
@@ -671,7 +704,21 @@ function ModelField({
   );
 }
 
-function BackupCard({
+/// 快照是**因为什么**被拍下来的。同一家 CLI 一天里能攒下四五条，只有时间戳的话
+/// 「哪一条是我装扩展之前的」只能靠猜；后端本来就记了 reason，露出来即可。
+function reasonLabel(reason: string, t: Translate): string {
+  const map: Record<string, string> = {
+    takeover: t("接管写入"),
+    "manual-edit": t("手工编辑配置"),
+    "model-import": t("模型导入"),
+    "extension-mcp": t("改 MCP"),
+    "extension-hook": t("改 Hook"),
+    "system-inject": t("系统注入"),
+  };
+  return map[reason] ?? reason;
+}
+
+function BackupRow({
   b,
   disabled,
   onRestore,
@@ -688,35 +735,28 @@ function BackupCard({
     hour: "2-digit",
     minute: "2-digit",
   });
-  const targetLabel =
-    {
-      "claude-code": "Claude Code",
-      codex: "Codex",
-      "gemini-cli": "Gemini CLI",
-      "grok-build": "Grok Build",
-      opencode: "OpenCode",
-    }[b.target] ?? b.target;
 
   return (
-    <li className="flex items-center justify-between card p-3">
-      <div className="flex-1">
-        <div className="flex items-center gap-2">
-          <span className="font-medium text-sm">{targetLabel}</span>
-          {b.pristine && (
-            <span className="rounded-full bg-emerald-500/20 px-2 py-0.5 text-[10px] text-emerald-700">
-              {t("原始")}
-            </span>
-          )}
-        </div>
-        <div className="mt-1 text-xs text-muted">{date}</div>
-        <div className="mt-1 text-xs text-muted">
-          {b.files.filter((f) => f.existed).length} {t("个文件")}
-        </div>
-      </div>
+    <li className="flex items-center gap-3 px-3 py-2">
+      <span className="w-36 shrink-0 font-mono text-xs text-muted">{date}</span>
+      <span className="min-w-0 flex-1 truncate text-xs">
+        {reasonLabel(b.reason, t)}
+        <span className="ml-2 text-muted">
+          {t("{n} 个文件", { n: b.files.filter((f) => f.existed).length })}
+        </span>
+      </span>
+      {b.pristine && (
+        <span
+          className="shrink-0 rounded-full bg-emerald-500/20 px-2 py-0.5 text-[10px] text-emerald-700"
+          title={t("首次接管前的用户配置 —— 这一条永远不会被新快照挤掉")}
+        >
+          {t("原始")}
+        </span>
+      )}
       <button
         disabled={disabled}
         onClick={onRestore}
-        className="rounded-lg border border-border bg-surface-raised px-3 py-1.5 text-xs hover:bg-surface-2 disabled:opacity-40"
+        className="shrink-0 rounded-lg border border-border bg-surface-raised px-3 py-1.5 text-xs hover:bg-surface-2 disabled:opacity-40"
       >
         {t("恢复")}
       </button>

@@ -850,4 +850,14 @@ registerDict("en", {
   删这轮: "Remove turn",
   加一轮: "Add a turn",
   已删除: "Deleted",
+
+  // ---- 快照历史：按 CLI 分组 ----
+  "{n} 份快照": "{n} snapshot(s)",
+  "{n} 个文件": "{n} file(s)",
+  接管写入: "Takeover",
+  手工编辑配置: "Manual config edit",
+  "改 MCP": "MCP change",
+  "改 Hook": "Hook change",
+  "首次接管前的用户配置 —— 这一条永远不会被新快照挤掉":
+    "Your config from before the first takeover — this one is never evicted by newer snapshots",
 });
