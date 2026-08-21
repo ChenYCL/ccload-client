@@ -7,6 +7,8 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import { errText } from "../lib/err";
 import { Modal } from "../components/Modal";
 import { TextArea, TextInput } from "../components/ui/Input";
+import { ComboBox } from "../components/ui/ComboBox";
+import { kernelAliases, type ChannelModels } from "../lib/modelOptions";
 import { cn } from "../lib/cn";
 
 export function CliPage() {
@@ -555,6 +557,11 @@ function FallbackFields({
     }
   })();
 
+  const chans = useQuery({
+    queryKey: ["channels"],
+    queryFn: () => api.admin<ChannelModels[]>("GET", "channels"),
+  });
+  const aliases = kernelAliases(chans.data?.data);
   const draft = options.fallback_models;
   const shown = draft ?? current.chain;
   const setSlot = (i: number, v: string) => {
@@ -577,15 +584,16 @@ function FallbackFields({
         {Array.from({ length: MAX_FALLBACK }, (_, i) => (
           <label key={i} className="block text-xs">
             <div className="text-muted">{t("第")} {i + 1} {t("顺位")}</div>
-            <TextInput
-              mono
+            <ComboBox
               value={shown[i] ?? ""}
-              onChange={(e) => setSlot(i, e.target.value)}
+              onChange={(v) => setSlot(i, v)}
+              options={aliases}
               placeholder={i === 0 ? "fable-5" : t("留空则不写入")}
+              emptyHint={t("内核里还没有渠道，或渠道没配模型")}
               className={cn(
                 "mt-1",
                 draft !== undefined && (draft[i] ?? "") !== (current.chain[i] ?? "") &&
-                  "!border-accent",
+                  "[&_input]:!border-accent",
               )}
             />
           </label>
@@ -636,6 +644,11 @@ function ModelField({
     queryKey: ["cli-env-keys", target],
     queryFn: () => api.cliEnvKeys(target),
   });
+  const channels = useQuery({
+    queryKey: ["channels"],
+    queryFn: () => api.admin<ChannelModels[]>("GET", "channels"),
+  });
+  const aliases = kernelAliases(channels.data?.data);
   const current = keys.data?.find((k) => k.key === envKey)?.current ?? null;
   const shown = value ?? current ?? "";
   const dirty = value !== undefined && value !== (current ?? "");
@@ -643,11 +656,16 @@ function ModelField({
   return (
     <label className="block text-xs">
       <div className="text-muted">{label}</div>
-      <TextInput
+      {/* 这里填的是 **CLI 请求用的别名**（内核按它选渠道），不是上游真实模型名
+          —— 和模型链/调度图那两处正好相反，别把两份清单弄混。见
+          lib/modelOptions.ts 的表。 */}
+      <ComboBox
         value={shown}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={onChange}
+        options={aliases}
         placeholder={t("留空则不写入")}
-        className={cn("mt-1", dirty && "!border-accent")}
+        emptyHint={t("内核里还没有渠道，或渠道没配模型")}
+        className={cn("mt-1", dirty && "[&_input]:!border-accent")}
       />
     </label>
   );

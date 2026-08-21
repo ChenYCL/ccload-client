@@ -141,6 +141,9 @@ export function ComboBox({
           setOpen(true);
         }}
         onFocus={() => setOpen(true)}
+        // 焦点已经在框里时再点一下不会触发 focus —— 用 Esc 关掉下拉之后再点
+        // 输入框，只有 onFocus 的话什么都不会发生，表现是「点了没反应」。
+        onClick={() => setOpen(true)}
         onKeyDown={onKeyDown}
         className="w-full pr-7"
       />

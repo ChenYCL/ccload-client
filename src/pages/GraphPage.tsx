@@ -8,6 +8,8 @@ import { cn } from "../lib/cn";
 import { errText } from "../lib/err";
 import { useReorder } from "../lib/useReorder";
 import { Select, TextInput } from "../components/ui/Input";
+import { ComboBox } from "../components/ui/ComboBox";
+import { upstreamModelsOf } from "../lib/modelOptions";
 import type { GraphDoc, GraphProvider, GraphTier } from "../types";
 
 /// 调度图：把「档位别名 → 哪家的哪个模型」编成内核已经认识的渠道配置。
@@ -16,6 +18,14 @@ import type { GraphDoc, GraphProvider, GraphTier } from "../types";
 /// 内核不动，所以 graph 是**静态编译**成 `models[].redirect_model` + 渠道优先级，
 /// 而不是请求时改写。因此逐档不同的 provider 顺序必须能折成一个全局顺序 ——
 /// 折不出来就拒绝保存，并指出是哪两档打架。
+
+/// 渠道列表里我们用得上的字段。`models` 是候选模型的来源。
+type GraphChannel = {
+  id?: number;
+  name?: string;
+  enabled?: boolean;
+  models?: { model?: string; redirect_model?: string; disabled?: boolean }[];
+};
 
 export function GraphPage() {
   const t = useT();
@@ -26,7 +36,7 @@ export function GraphPage() {
   const channels = useQuery({
     queryKey: ["channels"],
     queryFn: () =>
-      api.admin<{ id?: number; name?: string; url?: string; urls?: unknown }[]>(
+      api.admin<GraphChannel[]>(
         "GET",
         "channels",
       ),
@@ -247,7 +257,7 @@ function ProviderTable({
   onAutoBind,
 }: {
   doc: GraphDoc;
-  channels: { id?: number; name?: string; url?: string; urls?: unknown }[];
+  channels: GraphChannel[];
   onChange: (p: GraphProvider[]) => void;
   onAutoBind: () => void;
 }) {
@@ -327,14 +337,21 @@ function ProviderTable({
               </td>
               {doc.tiers.map((tier) => (
                 <td key={tier.id} className="px-2 py-2">
-                  <TextInput
-                    small
-                    mono
-                    aria-label={`${p.label} 在 ${tier.label} 档的模型`}
+                  {/* 这一格填的是**上游真实模型名**，所以候选取该渠道的
+                      `redirect_model || model`；CLI 接管那边填的是别名，取的是
+                      另一份清单。两者的区别见 lib/modelOptions.ts。 */}
+                  <ComboBox
+                    aria-label={t("{p} 在 {tier} 档的模型", { p: p.label, tier: tier.label })}
                     value={p.models[tier.id] ?? ""}
                     placeholder={t("上游模型名")}
-                    onChange={(e) =>
-                      set(i, { models: { ...p.models, [tier.id]: e.target.value } })
+                    onChange={(v) => set(i, { models: { ...p.models, [tier.id]: v } })}
+                    options={upstreamModelsOf(
+                      channels.find((c) => c.id === p.channelId),
+                    )}
+                    emptyHint={
+                      p.channelId == null
+                        ? t("先在左边给它绑一个渠道")
+                        : t("这个渠道还没配模型")
                     }
                   />
                 </td>

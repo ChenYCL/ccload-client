@@ -690,4 +690,9 @@ registerDict("en", {
   没有候选模型: "No suggestions",
   "没有匹配的模型，可直接用你输入的名字":
     "No match — what you typed will be used as-is",
+  // ---- 模型候选下拉在其它页面的文案 ----
+  "{p} 在 {tier} 档的模型": "{p} model for the {tier} tier",
+  先在左边给它绑一个渠道: "Bind a channel on the left first",
+  这个渠道还没配模型: "This channel has no models configured",
+  "内核里还没有渠道，或渠道没配模型": "No channels yet, or none of them have models",
 });

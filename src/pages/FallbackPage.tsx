@@ -21,6 +21,7 @@ import { Modal } from "../components/Modal";
 import { useReorder } from "../lib/useReorder";
 import { Select, TextInput } from "../components/ui/Input";
 import { ComboBox } from "../components/ui/ComboBox";
+import { upstreamModelsOf } from "../lib/modelOptions";
 
 /// Multi-layer model fallback. The kernel only does one hop (redirect_model)
 /// and then retries channels; this page turns a chain like
@@ -46,17 +47,16 @@ type ChannelLite = {
 /// 一层的候选上游模型。
 ///
 /// 两个来源，优先级有讲究：
-///   1. **探测回来的真实清单**（点过「校验上游模型」）—— 上游亲口说的，最准。
-///   2. 渠道**已配**的模型条目 —— 免费、即时，`GET /admin/channels` 本来就带
-///      回来了，不用为了看一眼候选去打一次上游（有的按次计费）。
+///   1. **探测回来的真实清单**（点过「校验上游模型」）—— 上游亲口说的，最准；
+///   2. 渠道**已配**的模型条目 —— `GET /admin/channels` 本来就带回来了，免费
+///      即时，不用为了看一眼候选去打一次上游（有的按次计费）。
 ///
 /// 都没有就返回空，此时 ComboBox 退化成普通输入框 —— 候选缺失不该挡住手填。
+/// 取名字的规则（`redirect_model` 优先）在 `lib/modelOptions.ts`，和调度图共用
+/// 同一份实现。
 function candidatesFor(channel: ChannelLite | undefined, probe: Probe | undefined): string[] {
   if (probe?.models.length) return probe.models;
-  return (channel?.models ?? [])
-    .filter((m) => !m.disabled)
-    .map((m) => (m.redirect_model?.trim() || m.model?.trim() || ""))
-    .filter(Boolean);
+  return upstreamModelsOf(channel);
 }
 
 /// `GET /admin/channels/:id/models/fetch` 的响应。内核按渠道声明的协议去问上游
