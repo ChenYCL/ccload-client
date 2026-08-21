@@ -132,7 +132,7 @@ function TargetChoice({
     return (
       <div
         className="flex items-start gap-2 rounded-lg border border-dashed border-border px-2.5 py-1.5 text-xs text-muted/60"
-        title={`${support.label} 没有 ${kindLabel} 的配置位置`}
+        title={t("{cli} 没有 {kind} 的配置位置", { cli: support.label, kind: kindLabel })}
       >
         <Minus className="mt-0.5 h-3 w-3 shrink-0" />
         <span>

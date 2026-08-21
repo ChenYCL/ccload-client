@@ -63,7 +63,7 @@ export function ExtensionsPage() {
         <div>
           <h1 className="t-display">{t("扩展管理")}</h1>
           <p className="mt-1 text-sm text-muted">
-            {t("MCP / Skill / Agent / Hook 一处配置，推给装了它们的每一个 CLI —— 各家的原生 格式（JSON、TOML、markdown 目录）由后端转换，写入前自动快照。")}
+            {t("MCP / Skill / Agent / Hook 一处配置，推给装了它们的每一个 CLI —— 各家的原生格式（JSON、TOML、markdown 目录）由后端转换，写入前自动快照。")}
           </p>
         </div>
         <button
@@ -81,7 +81,7 @@ export function ExtensionsPage() {
             key={tab.id}
             onClick={() => setKind(tab.id)}
             aria-current={kind === tab.id ? "page" : undefined}
-            title={tab.hint}
+            title={t(tab.hint)}
             className={
               kind === tab.id
                 ? "rounded-lg bg-accent/10 px-3.5 py-1.5 text-sm font-medium text-accent"
@@ -102,15 +102,23 @@ export function ExtensionsPage() {
         </div>
       </div>
 
+      {/* 整句进词典，而不是「{n} + 个 CLI 支持 + {kind} + 不支持」拼起来：
+          拼接的写法在中文里就已经黏成「5 个 CLI 支持MCP 服务器」（缺空格），
+          换成英文更没法看 —— 语序和空格规则都不一样，只有整句才有救。 */}
       <p className="mt-2 text-xs text-muted">
-        {KIND_TABS.find((t) => t.id === kind)?.hint} ·{" "}
-        {supports.filter((s) => s.supported).length}/{supports.length} {t("个 CLI 支持")}
-        {KIND_LABELS[kind]}
+        {t(KIND_TABS.find((x) => x.id === kind)?.hint ?? "")} ·{" "}
+        {t("{n}/{total} 个 CLI 支持{kind}", {
+          n: supports.filter((s) => s.supported).length,
+          total: supports.length,
+          kind: t(KIND_LABELS[kind]),
+        })}
         {supports.some((s) => !s.supported) &&
-          ` · ${supports
-            .filter((s) => !s.supported)
-            .map((s) => s.label)
-            .join("、")}不支持`}
+          ` · ${t("{list} 不支持", {
+            list: supports
+              .filter((s) => !s.supported)
+              .map((s) => s.label)
+              .join(t("、")),
+          })}`}
       </p>
 
       {/* 某个 CLI 的配置读不出来（比如 config.toml 语法错）只影响它自己那份
@@ -138,13 +146,13 @@ export function ExtensionsPage() {
             isEmpty={groups.length === 0}
             emptyText={
               query
-                ? `没有匹配「${query}」的${KIND_LABELS[kind]}`
-                : `还没有任何${KIND_LABELS[kind]}`
+                ? t("没有匹配「{q}」的{kind}", { q: query, kind: t(KIND_LABELS[kind]) })
+                : t("还没有任何{kind}", { kind: t(KIND_LABELS[kind]) })
             }
             emptyHint={
               query
                 ? total > 0
-                  ? `清空搜索可看到全部 ${total} 项`
+                  ? t("清空搜索可看到全部 {n} 项", { n: total })
                   : undefined
                 : t("点右上角「新建」装一个，或先在某个 CLI 里装好再回来同步")
             }
@@ -176,7 +184,7 @@ export function ExtensionsPage() {
 
       {pendingRemove && (
         <ConfirmDialog
-          title={`删除 ${KIND_LABELS[pendingRemove.kind]}？`}
+          title={t("删除{kind}？", { kind: t(KIND_LABELS[pendingRemove.kind]) })}
           body={
             <>
               {t("将从")}{" "}
@@ -184,7 +192,7 @@ export function ExtensionsPage() {
                 {supports.find((s) => s.target === pendingRemove.target)?.label ??
                   pendingRemove.target}
               </span>{" "}
-              {t("移除")} <span className="font-mono text-content">{pendingRemove.id}</span>{t("。 这会改动你正在用的配置：")}
+              {t("移除")} <span className="font-mono text-content">{pendingRemove.id}</span>{t("。这会改动你正在用的配置：")}
               <span className="mt-1 block break-all font-mono text-[11px]">
                 {pendingRemove.source}
               </span>

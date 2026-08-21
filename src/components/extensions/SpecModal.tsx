@@ -52,11 +52,11 @@ export function SpecModal(props: {
     onSuccess: invalidate,
   });
 
-  const problem = draft ? draftProblem(draft, kind) : t("加载中");
+  const problem = draft ? draftProblem(draft, kind, t) : t("加载中");
   const chosen = supports.find((s) => s.target === target);
   const title = editing
     ? `编辑 ${KIND_LABELS[kind]} · ${editing.id}`
-    : `新建 ${KIND_LABELS[kind]}`;
+    : t("新建{kind}", { kind: t(KIND_LABELS[kind]) });
 
   return (
     <Overlay onClose={props.onClose} className="animate-scrim flex items-center justify-center bg-black/40 p-6">
@@ -92,7 +92,7 @@ export function SpecModal(props: {
                         title={
                           s.supported
                             ? `写入 ~/${s.path}`
-                            : `${s.label} 没有 ${KIND_LABELS[kind]} 的配置位置`
+                            : t("{cli} 没有 {kind} 的配置位置", { cli: s.label, kind: t(KIND_LABELS[kind]) })
                         }
                         onClick={() => setTarget(s.target)}
                         className={

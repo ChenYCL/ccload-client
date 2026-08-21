@@ -1,3 +1,4 @@
+import type { Translate } from "../../i18n";
 /// 表单草稿 ↔ `ExtensionSpec` 的转换。表单里所有字段都是「有值」的（字符串用
 /// 空串、数字用文本），提交时才按 kind 裁成后端要的形状 —— 给 MCP 发一个 body
 /// 或者给 Skill 发一个 transport 都只会让配置文件里多出没人看的字段。
@@ -105,28 +106,32 @@ export function draftToSpec(draft: SpecDraft, kind: ExtensionKind): ExtensionSpe
 
 /// 前端预校验，规则照抄后端 `validate` —— 这里拦下来只是为了让「保存」按钮
 /// 能提前置灰并说明缺什么，真正的把关仍然在后端。
-export function draftProblem(draft: SpecDraft, kind: ExtensionKind): string | null {
+export function draftProblem(
+  draft: SpecDraft,
+  kind: ExtensionKind,
+  t: Translate,
+): string | null {
   if (kind !== "hook") {
     const id = draft.id.trim();
-    if (!id) return "名称不能为空";
+    if (!id) return t("名称不能为空");
     if (/[/\\]/.test(id) || id.includes("..") || id.startsWith("."))
-      return "名称不能包含 / \\ .. 或以 . 开头";
+      return t("名称不能包含 / \\ .. 或以 . 开头");
   }
   switch (kind) {
     case "mcp":
       if (draft.transport === "stdio" && !draft.command.trim())
-        return "stdio 类型的 MCP 必须填 command";
+        return t("stdio 类型的 MCP 必须填 command");
       if (draft.transport === "http" && !draft.url.trim())
-        return "http 类型的 MCP 必须填 url";
+        return t("http 类型的 MCP 必须填 url");
       return null;
     case "skill":
     case "agent":
-      if (!draft.body.trim()) return "正文（markdown）不能为空";
+      if (!draft.body.trim()) return t("正文（markdown）不能为空");
       return null;
     case "hook":
-      if (!draft.hookCommand.trim()) return "必须填要执行的命令";
+      if (!draft.hookCommand.trim()) return t("必须填要执行的命令");
       if (draft.timeout.trim() && !/^\d+$/.test(draft.timeout.trim()))
-        return "超时必须是非负整数（秒）";
+        return t("超时必须是非负整数（秒）");
       return null;
   }
 }

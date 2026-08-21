@@ -417,7 +417,7 @@ export function ModelsPage() {
         <div>
           <h1 className="t-display">{t("模型导入")}</h1>
           <p className="mt-1 text-sm text-muted">
-            {t("从内核渠道聚合所有可用模型别名，")}<strong>{t("追加")}</strong>{t("进各 CLI 的模型目录： Codex 每个别名一个")} <code>{t("[profiles.别名]")}</code>（<code>codex --profile</code> {t("选用）、 OpenCode 合并进")} <code>provider.ccload.models</code>{t("。 两者都不会动你当前正在用的模型。Claude Code 没有目录文件，只有 5 个槽位， 所以要在 Tier 列显式指定 —— 没指定的行不写。")}
+            {t("从内核渠道聚合所有可用模型别名，")}<strong>{t("追加")}</strong>{t("进各 CLI 的模型目录： Codex 每个别名一个")} <code>{t("[profiles.别名]")}</code>（<code>codex --profile</code> {t("选用）、 OpenCode 合并进")} <code>provider.ccload.models</code>{t("。两者都不会动你当前正在用的模型。Claude Code 没有目录文件，只有 5 个槽位，所以要在 Tier 列显式指定 —— 没指定的行不写。")}
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -442,7 +442,7 @@ export function ModelsPage() {
 
       {catalog.isError && (
         <p className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs">
-          {t("models.dev 拉取失败，上下文窗口暂用本地预设值（claude 20 万、gemini 100 万等）， 联网后点「同步」重试。")}
+          {t("models.dev 拉取失败，上下文窗口暂用本地预设值（claude 20 万、gemini 100 万等），联网后点「同步」重试。")}
         </p>
       )}
 
@@ -569,7 +569,7 @@ export function ModelsPage() {
                 {probedFail.length > 0 && (
                   <div className="basis-full rounded-lg bg-amber-500/10 px-2.5 py-1.5 text-[11px] text-amber-800">
                     <div className="font-medium">
-                      {probedFail.length} {t("个渠道没返回模型清单 —— 它们上的别名会被算成 「上游无」，别据此删掉")}
+                      {probedFail.length} {t("个渠道没返回模型清单 —— 它们上的别名会被算成「上游无」，别据此删掉")}
                     </div>
                     <ul className="mt-0.5 space-y-0.5">
                       {probedFail.map((f) => (
@@ -697,8 +697,8 @@ export function ModelsPage() {
           <Eye className="h-4 w-4 text-accent" /> {t("视觉辅助 MCP")}
         </div>
         <p className="mt-1 text-sm text-muted">
-          {t("给文本模型装上「眼睛」：本客户端自带一个 MCP 服务器，把图片交给一个多模态模型 描述，再把文字交给当前模型。已支持多模态的模型不需要。四个工具：")}
-          <code>describe_image</code>{t("（看图）、")}<code>read_image_text</code>{t("（逐字抄下图上的文字， 报错截图用它）、")}<code>compare_images</code>{t("（比对改动前后）、")}
+          {t("给文本模型装上「眼睛」：本客户端自带一个 MCP 服务器，把图片交给一个多模态模型描述，再把文字交给当前模型。已支持多模态的模型不需要。四个工具：")}
+          <code>describe_image</code>{t("（看图）、")}<code>read_image_text</code>{t("（逐字抄下图上的文字，报错截图用它）、")}<code>compare_images</code>{t("（比对改动前后）、")}
           <code>describe_screen</code>{t("（直接截当前屏幕，仅 macOS）。")}
         </p>
 
@@ -721,7 +721,7 @@ export function ModelsPage() {
               旧值 —— 又变成一次「以为保存了」。 */}
           {installedModels.length > 0 && (
             <span className="text-xs text-muted">
-              {t("已装：")}{installedModels.join("、")}
+              {t("已装：")}{installedModels.join(t("、"))}
               {visionPick !== null && visionPick !== installedModels[0] && (
                 <span className="ml-1 text-amber-700">{t("（改动尚未写入，点下面的安装才生效）")}</span>
               )}
@@ -730,7 +730,7 @@ export function ModelsPage() {
         </label>
         {installedModels.length > 1 && (
           <p className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-900">
-            {t("这几个 CLI 用的看图模型不一致（")}{installedModels.join("、")}{t("）。上面的下拉只显示 其中一个；要统一就选好模型后对每个 CLI 重新点一次「安装」。")}
+            {t("这几个 CLI 用的看图模型不一致（")}{installedModels.join(t("、"))}{t("）。上面的下拉只显示其中一个；要统一就选好模型后对每个 CLI 重新点一次「安装」。")}
           </p>
         )}
 
@@ -746,7 +746,7 @@ export function ModelsPage() {
               <li key={tg} className="flex items-center gap-3 px-3 py-2">
                 <input
                   type="checkbox"
-                  aria-label={`选中 ${TARGET_LABELS[tg]}`}
+                  aria-label={t("选中 {name}", { name: TARGET_LABELS[tg] })}
                   checked={visionPicked.includes(tg)}
                   onChange={() =>
                     setVisionPicked((p) =>

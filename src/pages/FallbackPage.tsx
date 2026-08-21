@@ -1,4 +1,4 @@
-import { useT } from "../i18n";
+import { useT, type Translate } from "../i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import {
@@ -53,26 +53,27 @@ function hopVerdict(
   hop: FallbackHop,
   channel: ChannelLite | undefined,
   probe: Probe | undefined,
+  t: Translate,
 ): HopVerdict {
   if (hop.channel_id == null) {
-    return { level: "warn", text: "没绑渠道 · 应用时这一层会被跳过" };
+    return { level: "warn", text: t("没绑渠道 · 应用时这一层会被跳过") };
   }
   if (!channel) {
-    return { level: "error", text: `渠道 #${hop.channel_id} 已不存在` };
+    return { level: "error", text: t("渠道 #{id} 已不存在", { id: hop.channel_id }) };
   }
   if (channel.enabled === false) {
-    return { level: "error", text: "渠道已禁用 · 这一层永远不会被选中" };
+    return { level: "error", text: t("渠道已禁用 · 这一层永远不会被选中") };
   }
   if (!hop.upstream.trim()) return { level: "idle", text: "" };
   if (!probe) return { level: "idle", text: "" };
   if (probe.err) {
-    return { level: "warn", text: `上游清单拉不到，无法校验：${probe.err}` };
+    return { level: "warn", text: t("上游清单拉不到，无法校验：{err}", { err: probe.err }) };
   }
   return probe.models.includes(hop.upstream.trim())
-    ? { level: "ok", text: "上游清单里有这个模型" }
+    ? { level: "ok", text: t("上游清单里有这个模型") }
     : {
         level: "error",
-        text: `上游清单里没有 ${hop.upstream.trim()} · 请求打到这一层会直接失败`,
+        text: t("上游清单里没有 {m} · 请求打到这一层会直接失败", { m: hop.upstream.trim() }),
       };
 }
 
@@ -108,7 +109,7 @@ export function FallbackPage() {
         <div>
           <h1 className="t-display">{t("模型链")}</h1>
           <p className="mt-1 text-sm text-muted">
-            {t("ccLoad 内核只做一层模型重定向，然后按优先级切渠道。这里把一条 fallback 链（例如 fable-5 → kimi-k3 → opus-5）写成一组按优先级 递减的渠道，内核的选择器就会自动走完整个链。")}
+            {t("ccLoad 内核只做一层模型重定向，然后按优先级切渠道。这里把一条 fallback 链（例如 fable-5 → kimi-k3 → opus-5）写成一组按优先级递减的渠道，内核的选择器就会自动走完整个链。")}
           </p>
         </div>
         <button
@@ -202,9 +203,11 @@ function ChainStrip({ hops, channels }: { hops: FallbackHop[]; channels: Channel
                   ? "border-red-500/40 bg-red-500/10"
                   : "border-border bg-surface-2/60",
               )}
-              title={`第 ${i + 1} 层 · 优先级 ${hopPriority(i)}${
-                h.channel_name ? ` · 渠道 ${h.channel_name}` : ""
-              }${dead ? t(" · 渠道已禁用，这一层不会被选中") : ""}`}
+              title={
+                t("第 {n} 层 · 优先级 {p}", { n: i + 1, p: hopPriority(i) }) +
+                (h.channel_name ? t(" · 渠道 {c}", { c: h.channel_name }) : "") +
+                (dead ? t(" · 渠道已禁用，这一层不会被选中") : "")
+              }
             >
               {dead && <XCircle className="h-3 w-3 shrink-0 text-red-600" />}
               <span
@@ -311,7 +314,7 @@ function ChainEditor({
       <>
         <h2 className="t-title">{t("编辑模型链")}</h2>
         <p className="mt-1 text-xs text-muted">
-          {t("从上到下依次尝试。上面的层优先级更高，拖住左侧手柄可以换顺序 （也可以聚焦手柄后按 ↑ ↓）。")}
+          {t("从上到下依次尝试。上面的层优先级更高，拖住左侧手柄可以换顺序（也可以聚焦手柄后按 ↑ ↓）。")}
         </p>
 
         <label className="mt-4 block text-xs">
@@ -355,7 +358,7 @@ function ChainEditor({
                   <button
                     onPointerDown={reorder.start(i)}
                     onKeyDown={reorder.onKeyDown(i)}
-                    aria-label={`第 ${i + 1} 层，拖动或按上下键调整顺序`}
+                    aria-label={t("第 {n} 层，拖动或按上下键调整顺序", { n: i + 1 })}
                     title={t("拖动排序")}
                     className="flex cursor-grab touch-none items-center rounded-md p-1 text-muted hover:bg-surface-2 active:cursor-grabbing"
                   >
@@ -376,7 +379,7 @@ function ChainEditor({
 
                   <Select
                     className="w-52 shrink-0"
-                    aria-label={`第 ${i + 1} 层的渠道`}
+                    aria-label={t("第 {n} 层的渠道", { n: i + 1 })}
                     value={hop.channel_id ?? ""}
                     onChange={(e) => {
                       const id = e.target.value ? Number(e.target.value) : null;
@@ -399,7 +402,7 @@ function ChainEditor({
                   <button
                     onClick={() => removeHop(i)}
                     disabled={draft.hops.length <= 1}
-                    aria-label={`删除第 ${i + 1} 层`}
+                    aria-label={t("删除第 {n} 层", { n: i + 1 })}
                     className="shrink-0 rounded-md border border-border p-1.5 text-muted hover:bg-surface-2 hover:text-red-600 disabled:opacity-40"
                   >
                     <X className="h-3.5 w-3.5" />
@@ -415,6 +418,7 @@ function ChainEditor({
                     hop,
                     channelOf(hop.channel_id),
                     hop.channel_id == null ? undefined : probes[hop.channel_id],
+                    t,
                   )}
                 />
               </li>

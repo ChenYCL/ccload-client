@@ -170,8 +170,20 @@ if let Err(e) = carry_permissions(path, &tmp) { … }
     `GROUPS` / `TOOL_LABELS` 这类常量表要在**使用处**翻译（`t(group.title)`），
     在定义处包一层既编译不过，也把已经正确的做法改坏。
   - `map((t) => …)` 这种参数会**遮住**翻译函数。回调参数别叫 `t`。
-  - 全局扫一遍用 `python3 scripts/i18n-wrap.py`（不带参数是 dry run）。它只做
-    保守改写并跳过上面两种情况，改完必须跑 `pnpm typecheck` 兜底。
+  - 模块级**纯函数**（`draftProblem` / `hopVerdict` 这种返回文案的）没有 hook，
+    把 `t: Translate` 当参数传进去，别在里面硬编码中文。
+  - 中文文案里**不要靠源码换行断句**：JSX 会把换行折成一个空格，英文正好，
+    中文就成了句中多一个空格（「各家的原生 格式」）。
+  - 拼接的句子要**整句**进词典。`{n} + "个 CLI 支持" + {kind}` 拼出来中文就已经
+    黏在一起，换成英文语序和空格规则都不一样，只有整句有救。
+  - 全局扫一遍用两个 codemod，都得跑到 0 命中：
+    `python3 scripts/i18n-wrap.py`（属性与字符串字面量）、
+    `node scripts/i18n-jsx.mjs`（JSX 文本节点，走 TS 解析器）。不带参数是 dry run，
+    改完必须 `pnpm typecheck` 兜底。
+  - **静态扫描不够**。只有交互才出现的文案（弹窗标题、表单校验、逐层体检结论）
+    和 `title` / `aria-label` / `placeholder` 都扫不到，得真的把页面点开看：
+    `npx vite --port 5399` 起 dev server，再用 Playwright 遍历每一页 × 两种语言，
+    正文和这三个属性一起查。
 
 ---
 

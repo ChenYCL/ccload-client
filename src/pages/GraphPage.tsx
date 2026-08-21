@@ -89,7 +89,7 @@ export function GraphPage() {
         <div className="min-w-0">
           <h1 className="t-display">{t("调度图")}</h1>
           <p className="mt-0.5 max-w-3xl text-sm text-muted">
-            {t("把「哪种活用哪家的哪个模型」配成一张表，应用后写进内核渠道：档位别名 落成")} <code className="font-mono text-xs">redirect_model</code>{t("，队列顺序落成渠道优先级。 之后 CLI 只认四个档位别名，换家、重试、冷却全部由内核原有的选择器完成。")}
+            {t("把「哪种活用哪家的哪个模型」配成一张表，应用后写进内核渠道：档位别名落成")} <code className="font-mono text-xs">redirect_model</code>{t("，队列顺序落成渠道优先级。之后 CLI 只认四个档位别名，换家、重试、冷却全部由内核原有的选择器完成。")}
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -152,12 +152,12 @@ export function GraphPage() {
             {t("内核未运行，读不到渠道列表")}
           </div>
           <p className="mt-1">
-            {t("调度图要把 provider 绑到内核里")}<strong className="font-medium">{t("已有的")}</strong>{t("渠道上， 所以得先从左下角「启动内核」。下面的下拉框在那之前是空的，与配置本身无关。")}
+            {t("调度图要把 provider 绑到内核里")}<strong className="font-medium">{t("已有的")}</strong>{t("渠道上，所以得先从左下角「启动内核」。下面的下拉框在那之前是空的，与配置本身无关。")}
           </p>
         </div>
       ) : channelList.length === 0 ? (
         <div className="rounded-xl border border-amber-300/70 bg-amber-50/70 px-3 py-2.5 text-xs text-amber-900">
-          {t("内核里还没有任何渠道。先去「内核后台」把各家的渠道建好（客户端不替你发明凭据）， 再回来绑定。")}
+          {t("内核里还没有任何渠道。先去「内核后台」把各家的渠道建好（客户端不替你发明凭据），再回来绑定。")}
         </div>
       ) : (
         <ValidationPanel
@@ -264,7 +264,7 @@ function ProviderTable({
         <div className="min-w-0">
         <h2 className="t-title">Provider</h2>
         <p className="mt-0.5 text-xs text-muted">
-          {t("每家绑一个内核里已有的渠道（客户端不替你建渠道、不发明凭据）， 再填它在各档的")}<strong className="font-medium text-content">{t("真实上游模型名")}</strong>
+          {t("每家绑一个内核里已有的渠道（客户端不替你建渠道、不发明凭据），再填它在各档的")}<strong className="font-medium text-content">{t("真实上游模型名")}</strong>
           {t("—— 这些名字必须是该渠道上游认识的。")}
         </p>
         </div>
@@ -440,7 +440,7 @@ function ProviderQueue({
               <button
                 onPointerDown={reorder.start(i)}
                 onKeyDown={reorder.onKeyDown(i)}
-                aria-label={`${labelOf(pid)}，第 ${i + 1} 位，可拖动或按上下键调整`}
+                aria-label={t("{name}，第 {n} 位，可拖动或按上下键调整", { name: labelOf(pid), n: i + 1 })}
                 className="cursor-grab touch-none rounded p-0.5 text-muted hover:bg-surface-2 active:cursor-grabbing"
               >
                 <GripVertical className="h-3.5 w-3.5" />

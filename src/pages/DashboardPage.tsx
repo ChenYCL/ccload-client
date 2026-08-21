@@ -206,6 +206,7 @@ function RangeSwitch({
   value: StatsRange;
   onChange: (r: StatsRange) => void;
 }) {
+  const t = useT();
   return (
     <div role="tablist" className="flex rounded-lg bg-surface-2 p-0.5">
       {RANGES.map((r) => (
@@ -221,7 +222,7 @@ function RangeSwitch({
               : "text-muted hover:text-content",
           )}
         >
-          {r.label}
+          {t(r.label)}
         </button>
       ))}
     </div>

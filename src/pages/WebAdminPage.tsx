@@ -125,8 +125,8 @@ export function WebAdminPage() {
             onClick={() => open(p.file)}
             className="card p-4 text-left transition-colors hover:border-accent/60 hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            <div className="t-title">{p.label}</div>
-            <div className="mt-1 text-xs text-muted">{p.desc}</div>
+            <div className="t-title">{t(p.label)}</div>
+            <div className="mt-1 text-xs text-muted">{t(p.desc)}</div>
           </button>
         ))}
       </div>

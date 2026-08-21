@@ -107,7 +107,10 @@ export function LogsPage() {
           <h1 className="t-display">{t("实时日志")}</h1>
           <p className="mt-0.5 text-sm text-muted">
             {live
-              ? `内核没有日志推送通道，这里是轮询：进行中 ${ACTIVE_POLL_MS / 1000}s、历史 ${LOGS_POLL_MS / 1000}s，窗口切走时自动暂停。`
+              ? t("内核没有日志推送通道，这里是轮询：进行中 {a}s、历史 {b}s，窗口切走时自动暂停。", {
+                  a: ACTIVE_POLL_MS / 1000,
+                  b: LOGS_POLL_MS / 1000,
+                })
               : t("实时已关闭，不再向内核发起任何轮询；下面显示的是最后一次取到的数据。")}
           </p>
         </div>

@@ -51,7 +51,7 @@ export function CliPage() {
         <div>
           <h1 className="t-display">{t("CLI 接管")}</h1>
           <p className="mt-1 text-sm text-muted">
-            {t("把各 CLI 的配置指到内核。写入前自动快照，可在「快照历史」回滚； 不确定时先在设置里打开「沙箱写入」，改动只落到 ~/.ccload-client/sandbox/，不碰真实配置。")}
+            {t("把各 CLI 的配置指到内核。写入前自动快照，可在「快照历史」回滚；不确定时先在设置里打开「沙箱写入」，改动只落到 ~/.ccload-client/sandbox/，不碰真实配置。")}
           </p>
         </div>
         <button
@@ -571,7 +571,7 @@ function FallbackFields({
       <div className="text-xs font-medium">{t("强制 fallback 模型")}</div>
       <p className="mt-1 text-[11px] leading-relaxed text-muted">
         {t("主力")}<strong>{t("过载或不可用")}</strong>{t("时，按下面的顺序换人（写进 settings.json 顶层的")}{" "}
-        <code>fallbackModel</code>{t("）。去重后最多 3 个，多余的 Claude Code 会忽略； 填")} <code>default</code> {t("表示默认模型。留空则不写入。")}
+        <code>fallbackModel</code>{t("）。去重后最多 3 个，多余的 Claude Code 会忽略；填")} <code>default</code> {t("表示默认模型。留空则不写入。")}
       </p>
       <div className="mt-2 grid grid-cols-3 gap-2">
         {Array.from({ length: MAX_FALLBACK }, (_, i) => (
@@ -596,9 +596,9 @@ function FallbackFields({
           他们会先在这一格里找，找不到就以为客户端没这个能力。 */}
       <p className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-[11px] leading-relaxed text-amber-900">
         <strong>{t("总是跳到 claude-opus-4-8？")}</strong>{t("那不是上面这条链干的。请求被 Claude Code 的安全分类器标记时，它会跳到")}<strong>{t("写死的")}</strong> {t("Opus 4.8 / Opus 5，完全不看")}{" "}
-        <code>fallbackModel</code>{t("。而 ccLoad 上游没有")} <code>claude-opus-4-8</code> {t("这个名字， 于是每次都跳进一个不存在的模型。唯一的改法是把上面的")}{" "}
+        <code>fallbackModel</code>{t("。而 ccLoad 上游没有")} <code>claude-opus-4-8</code> {t("这个名字，于是每次都跳进一个不存在的模型。唯一的改法是把上面的")}{" "}
         <strong>Opus tier（ANTHROPIC_DEFAULT_OPUS_MODEL）</strong>
-        {t("钉成你自己有的模型 —— 设了它之后，所有有 fallback 的分类都改跑这一个。 另外把 Fable tier 填上，Claude Code 才认得出当前模型是 Fable 5。")}
+        {t("钉成你自己有的模型 —— 设了它之后，所有有 fallback 的分类都改跑这一个。另外把 Fable tier 填上，Claude Code 才认得出当前模型是 Fable 5。")}
       </p>
 
       <label className="mt-2 flex items-center gap-2 text-[11px]">

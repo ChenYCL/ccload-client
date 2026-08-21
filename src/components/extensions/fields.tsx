@@ -128,7 +128,7 @@ export function StringListRows(props: {
             />
             <button
               type="button"
-              aria-label={`删除第 ${i + 1} 个参数`}
+              aria-label={t("删除第 {n} 个参数", { n: i + 1 })}
               onClick={() => props.onChange(props.value.filter((_, j) => j !== i))}
               className="rounded-md border border-border p-1.5 text-muted hover:bg-surface-2 hover:text-red-600"
             >

@@ -65,7 +65,7 @@ export function SettingsPage() {
           </div>
           {versionMismatch && (
             <p className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs">
-              {t("远端内核版本（")}{remoteVersion}{t("）与壳体打包版本（")}{bundled.data}{t("）不一致。 Admin API 的字段与校验规则随版本变化，建议切回本机内核或把远端升级到同版本， 否则设置、渠道编辑等操作可能拿到意料外的响应。")}
+              {t("远端内核版本（")}{remoteVersion}{t("）与壳体打包版本（")}{bundled.data}{t("）不一致。 Admin API 的字段与校验规则随版本变化，建议切回本机内核或把远端升级到同版本，否则设置、渠道编辑等操作可能拿到意料外的响应。")}
             </p>
           )}
         </section>
@@ -93,7 +93,7 @@ export function SettingsPage() {
       <section className="mt-6">
         <h2 className="t-title">{t("内核运行时配置")}</h2>
         <p className="mt-1 text-xs text-muted">
-          {t("字段来自 GET /admin/settings，新增项会自动出现。改任何一项都会写库并让 内核约 2 秒后自动重启，在途请求会被打断，请避开使用中修改。")}
+          {t("字段来自 GET /admin/settings，新增项会自动出现。改任何一项都会写库并让内核约 2 秒后自动重启，在途请求会被打断，请避开使用中修改。")}
         </p>
         <div className="mt-3 space-y-2">
           {list.map((it) => (
@@ -320,7 +320,7 @@ function EndpointsCard({ baseUrl, token }: { baseUrl: string; token: string | nu
     <section className="mt-6 card p-4">
       <h2 className="t-title">{t("接入地址")}</h2>
       <p className="mt-1 text-sm text-muted">
-        {t("内核同时提供这几套规范的入口，协议转换在内核里完成。第三方工具直接填下面的 地址和令牌即可，不必经过 CLI 接管。")}
+        {t("内核同时提供这几套规范的入口，协议转换在内核里完成。第三方工具直接填下面的地址和令牌即可，不必经过 CLI 接管。")}
       </p>
       <div className="mt-3 space-y-1.5">
         {rows.map((r) => (
@@ -425,7 +425,7 @@ function MigrationCard() {
     <section className="mt-6 card p-4">
       <h2 className="t-title">{t("配置迁移")}</h2>
       <p className="mt-1 text-sm text-muted">
-        {t("导出内核连接方式与模型链，换机器时导入即可。渠道和令牌属于内核数据， 在「内核后台」用它自带的导入导出。")}
+        {t("导出内核连接方式与模型链，换机器时导入即可。渠道和令牌属于内核数据，在「内核后台」用它自带的导入导出。")}
       </p>
 
       <label className="mt-3 flex items-center gap-2 text-sm">
@@ -471,11 +471,11 @@ function MigrationCard() {
             </li>
             <li>
               {t("模型链")} {preview.info.chain_aliases.length} {t("条：")}
-              {preview.info.chain_aliases.join("、") || t("无")}
+              {preview.info.chain_aliases.join(t("、")) || t("无")}
             </li>
             {preview.info.overwritten_aliases.length > 0 && (
               <li className="text-amber-700">
-                {t("会覆盖同名的本机链：")}{preview.info.overwritten_aliases.join("、")}
+                {t("会覆盖同名的本机链：")}{preview.info.overwritten_aliases.join(t("、"))}
               </li>
             )}
           </ul>
