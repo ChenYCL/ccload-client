@@ -403,6 +403,81 @@ mod tests {
         assert!(!root.join(instructions_path(CliTarget::GeminiCli)).exists());
     }
 
+    /// 端到端：完整 spec（视觉 + 第三方说明 + 自定义规则）写进**五家**，
+    /// 逐个文件核对内容，再验往返、幂等、还原。
+    ///
+    /// 这条盯的是「填了说明 → 真的写进那五个 md」整条路。之前只验到「不报错」
+    /// 和「含 describe_image」，第三方说明那一段是新加的，没人看着。
+    #[test]
+    fn full_spec_lands_in_every_cli_and_can_be_undone() {
+        let (_keep, root, bk) = sandbox();
+        let mine = "# 我自己的规则\n\n攒了很久的东西。\n";
+
+        // 每家先放一份用户原有内容 —— 注入必须绕开它。
+        for target in crate::services::cli_extensions::ALL_TARGETS {
+            let path = root.join(instructions_path(target));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, mine).unwrap();
+        }
+
+        let spec = InjectSpec {
+            vision: true,
+            tools: vec![
+                ToolNote {
+                    name: "codegraph".into(),
+                    note: "改代码前先查调用链，比 grep 准".into(),
+                },
+                ToolNote {
+                    name: "zread".into(),
+                    note: "看不想克隆的 GitHub 仓库".into(),
+                },
+                // 没写说明的：不该出现在任何一家的文件里。
+                ToolNote { name: "dune".into(), note: "  ".into() },
+            ],
+            custom: "永远用中文回答。".into(),
+        };
+
+        for target in crate::services::cli_extensions::ALL_TARGETS {
+            let written = apply(&root, target, &spec, "e2e-1", &bk).unwrap();
+            let body = std::fs::read_to_string(&written).unwrap();
+
+            assert!(body.starts_with(mine.trim_end()), "{target:?} 用户内容被动了：{body}");
+            assert_eq!(body.matches(BEGIN).count(), 1, "{target:?} 标记不唯一");
+            assert_eq!(body.matches(END).count(), 1, "{target:?} 标记不唯一");
+
+            // 三段都在
+            assert!(body.contains("describe_image"), "{target:?} 缺视觉段");
+            assert!(body.contains("read_image_text"), "{target:?} 缺视觉段");
+            assert!(body.contains("`codegraph` —— 改代码前先查调用链，比 grep 准"), "{target:?} 缺第三方说明");
+            assert!(body.contains("`zread` —— 看不想克隆的 GitHub 仓库"), "{target:?} 缺第三方说明");
+            assert!(body.contains("永远用中文回答。"), "{target:?} 缺自定义规则");
+            // 没说明的条目一个字都不该出现
+            assert!(!body.contains("dune"), "{target:?} 把没说明的条目也写进去了：{body}");
+
+            // 往返：读回来的块里有这些内容
+            let st = state(&root, target);
+            assert!(st.injected, "{target:?} 写完读不回来");
+            let block = st.block.unwrap();
+            assert!(block.contains("codegraph"), "{target:?} 块里没有第三方说明");
+            assert!(block.contains("永远用中文回答。"), "{target:?} 块里没有自定义规则");
+        }
+
+        // 幂等：再写一遍内容完全一致，不会长出第二个块
+        for target in crate::services::cli_extensions::ALL_TARGETS {
+            let path = root.join(instructions_path(target));
+            let before = std::fs::read_to_string(&path).unwrap();
+            apply(&root, target, &spec, "e2e-2", &bk).unwrap();
+            assert_eq!(before, std::fs::read_to_string(&path).unwrap(), "{target:?} 重复写入不幂等");
+        }
+
+        // 还原：清空 spec 之后回到用户原文
+        for target in crate::services::cli_extensions::ALL_TARGETS {
+            apply(&root, target, &InjectSpec::default(), "e2e-3", &bk).unwrap();
+            let after = std::fs::read_to_string(root.join(instructions_path(target))).unwrap();
+            assert_eq!(after.trim(), mine.trim(), "{target:?} 移除后没回到原样");
+        }
+    }
+
     /// 提示里的工具名必须和 MCP 真正暴露的一致，否则等于教模型调一个不存在的
     /// 工具 —— 比不写还糟。
     #[test]
