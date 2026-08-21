@@ -630,4 +630,42 @@ registerDict("en", {
   "）与壳体打包版本（": ") and the version bundled with this app (",
   "，队列顺序落成渠道优先级。 之后 CLI 只认四个档位别名，换家、重试、冷却全部由内核原有的选择器完成。":
     ", and queue order becomes channel priority. After that the CLI only ever sees the four tier aliases; switching providers, retries and cooldowns are all handled by the kernel's existing selector.",
+
+  // ---- 本地混用 ----
+  本地混用: "Local mix",
+  "把本机跑的 OpenAI 兼容服务（cursor2api 之类）和远端 ccLoad 拼进同一个渠道池，CLI 只认一个地址。":
+    "Pool an OpenAI-compatible service running on this machine (cursor2api and friends) together with your remote ccLoad, so the CLI only ever sees one address.",
+  "为什么不能直接去远端后台加一条 127.0.0.1 的渠道":
+    "Why you cannot just add a 127.0.0.1 channel in the remote admin",
+  "远端内核解析 127.0.0.1 得到的是它自己那台机器的回环口，不是你的电脑 —— 它会去连自己的端口然后报连接被拒。地址看着没错，日志也不会告诉你拓扑搞反了。":
+    "The remote kernel resolves 127.0.0.1 to its own loopback, not your computer — it dials its own port and reports connection refused. The address looks fine and the logs will never tell you the topology is backwards.",
+  "能同时看见「本机服务」和「公网远端」的位置只有你这台机器。所以正确的接法是反过来：本机跑内核，把远端 ccLoad 当成它的一个渠道，cursor2api 当成另一个，CLI 指向本机内核。故障转移、协议转换、成本统计照旧由内核完成。":
+    "The only place that can see both your local service and the public remote is this machine. So the correct wiring is the other way round: run the kernel locally, add the remote ccLoad as one of its channels and cursor2api as another, and point the CLIs at the local kernel. Failover, protocol conversion and cost accounting are still done by the kernel.",
+  "另一条路是把本机服务用隧道暴露到公网（ngrok / cloudflared / frp），远端才够得着 —— 代价是服务上了公网，还多一个要维护的东西。":
+    "The other option is to expose the local service publicly through a tunnel (ngrok / cloudflared / frp) so the remote can reach it — at the cost of putting the service on the public internet and one more moving part to maintain.",
+  "当前内核是「远端」模式。这一页会把渠道建到你连着的那个内核上 —— 也就是远端 —— 结果还是够不着本机服务。请先去「设置」把内核切成「本机内核」并启动，再回来。":
+    "The kernel is currently in remote mode. This page creates channels on whichever kernel you are connected to — the remote one — which still cannot reach your local service. Switch the kernel to “Local kernel” under Settings, start it, then come back.",
+  "本机内核还没启动。左下角「启动内核」之后再建渠道。":
+    "The local kernel is not running yet. Start it from the bottom left before creating channels.",
+  本机服务: "Local service",
+  "cursor2api 等 OpenAI 兼容服务。填根地址即可，结尾的 /v1 会自动去掉。":
+    "cursor2api and other OpenAI-compatible services. Give the root URL — a trailing /v1 is stripped automatically.",
+  "你原来连的那个实例。令牌填它的客户端 API 令牌，不是管理密码。":
+    "The instance you were connected to. Use its client API token, not the admin password.",
+  渠道名: "Channel name",
+  根地址: "Root URL",
+  "API 令牌（没有就留空）": "API token (leave empty if there is none)",
+  探测: "Probe",
+  "探测中…": "Probing…",
+  "问一次 /v1/models，确认通不通，顺带把模型清单带回来":
+    "Asks /v1/models once to check reachability and bring back the model list",
+  "通了 · {n} 个模型": "Reachable · {n} model(s)",
+  建成本机内核的渠道: "Create channels on the local kernel",
+  "建立中…": "Creating…",
+  已建为渠道: "created as channel",
+  "先探测至少一边，拿到模型清单才能建渠道":
+    "Probe at least one side first — a channel needs a model list",
+  先把内核切成本机模式: "Switch the kernel to local mode first",
+  "建完记得回「CLI 接管」重新写入一次，让 CLI 指向本机内核。":
+    "Once done, go back to “CLI takeover” and write again so the CLIs point at the local kernel.",
 });

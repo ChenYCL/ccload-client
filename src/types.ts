@@ -178,6 +178,7 @@ export type Page =
   | "fallback"
   | "models"
   | "inject"
+  | "local-mix"
   | "extensions"
   | "graph"
   | "settings";
@@ -583,4 +584,35 @@ export type ImportPreview = {
   kernel_endpoint: string;
   chain_aliases: string[];
   overwritten_aliases: string[];
+};
+
+/* ---------------------------------------------------------------------------
+   本地混用：把本机 OpenAI 兼容服务和远端 ccLoad 拼进同一个渠道池。
+
+   远端内核够不着你的 127.0.0.1（它解析出来的是它自己那台机器），所以正确的
+   接法是本机跑内核、把远端 ccLoad 当成它的一个渠道。见 services/local_mix.rs。
+--------------------------------------------------------------------------- */
+
+export type ProbeResult = {
+  /** 规范化之后真正写进渠道的根地址（结尾的 /v1 已剥掉）。 */
+  base_url: string;
+  ok: boolean;
+  models: string[];
+  error: string;
+};
+
+export type ChannelSpec = {
+  name: string;
+  baseUrl: string;
+  apiKey: string;
+  models: string[];
+  /** 越大越先用。 */
+  priority: number;
+};
+
+export type MixOutcome = {
+  name: string;
+  ok: boolean;
+  channel_id: number | null;
+  error: string | null;
 };

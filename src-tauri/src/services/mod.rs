@@ -11,6 +11,7 @@ pub mod cli_types;
 pub mod embed_proxy;
 pub mod fallback;
 pub mod kernel;
+pub mod local_mix;
 pub mod mcp_usage;
 pub mod model_import;
 pub mod system_inject;
