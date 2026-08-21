@@ -63,8 +63,7 @@ export function ExtensionsPage() {
         <div>
           <h1 className="t-display">{t("扩展管理")}</h1>
           <p className="mt-1 text-sm text-muted">
-            MCP / Skill / Agent / Hook 一处配置，推给装了它们的每一个 CLI —— 各家的原生
-            格式（JSON、TOML、markdown 目录）由后端转换，写入前自动快照。
+            {t("MCP / Skill / Agent / Hook 一处配置，推给装了它们的每一个 CLI —— 各家的原生 格式（JSON、TOML、markdown 目录）由后端转换，写入前自动快照。")}
           </p>
         </div>
         <button
@@ -72,7 +71,7 @@ export function ExtensionsPage() {
           className="flex shrink-0 items-center gap-1.5 rounded-lg bg-accent px-3.5 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-accent/90"
         >
           <Plus className="h-4 w-4" />
-          新建
+          {t("新建")}
         </button>
       </div>
 
@@ -105,7 +104,7 @@ export function ExtensionsPage() {
 
       <p className="mt-2 text-xs text-muted">
         {KIND_TABS.find((t) => t.id === kind)?.hint} ·{" "}
-        {supports.filter((s) => s.supported).length}/{supports.length} 个 CLI 支持
+        {supports.filter((s) => s.supported).length}/{supports.length} {t("个 CLI 支持")}
         {KIND_LABELS[kind]}
         {supports.some((s) => !s.supported) &&
           ` · ${supports
@@ -123,7 +122,7 @@ export function ExtensionsPage() {
         >
           {data.failures.map((f) => (
             <div key={f.target} className="break-all">
-              读取 {f.label} 的扩展清单失败，下面的列表里不含它：{errText(f.error)}
+              {t("读取")} {f.label} {t("的扩展清单失败，下面的列表里不含它：")}{errText(f.error)}
             </div>
           ))}
         </div>
@@ -180,17 +179,16 @@ export function ExtensionsPage() {
           title={`删除 ${KIND_LABELS[pendingRemove.kind]}？`}
           body={
             <>
-              将从{" "}
+              {t("将从")}{" "}
               <span className="font-medium text-content">
                 {supports.find((s) => s.target === pendingRemove.target)?.label ??
                   pendingRemove.target}
               </span>{" "}
-              移除 <span className="font-mono text-content">{pendingRemove.id}</span>。
-              这会改动你正在用的配置：
+              {t("移除")} <span className="font-mono text-content">{pendingRemove.id}</span>{t("。 这会改动你正在用的配置：")}
               <span className="mt-1 block break-all font-mono text-[11px]">
                 {pendingRemove.source}
               </span>
-              装在其他 CLI 上的同名扩展不受影响。
+              {t("装在其他 CLI 上的同名扩展不受影响。")}
             </>
           }
           confirmText={t("删除")}

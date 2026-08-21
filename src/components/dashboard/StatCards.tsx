@@ -51,7 +51,7 @@ export function StatCards({
         sub={
           totals.requests > 0 ? (
             <>
-              成功 <span className="text-emerald-600">{fmtInt(totals.success)}</span> · 失败{" "}
+              {t("成功")} <span className="text-emerald-600">{fmtInt(totals.success)}</span> {t("· 失败")}{" "}
               <span className={totals.error ? "text-red-600" : undefined}>
                 {fmtInt(totals.error)}
               </span>
@@ -83,8 +83,8 @@ export function StatCards({
         sub={
           rpm ? (
             <>
-              峰值 <span className="text-content">{fmtInt(rpm.peak_rpm)}</span> · 均值{" "}
-              <span className="text-content">{rpm.avg_rpm.toFixed(1)}</span> · 峰值 QPS{" "}
+              {t("峰值")} <span className="text-content">{fmtInt(rpm.peak_rpm)}</span> {t("· 均值")}{" "}
+              <span className="text-content">{rpm.avg_rpm.toFixed(1)}</span> {t("· 峰值 QPS")}{" "}
               <span className="text-content">{rpm.peak_qps.toFixed(2)}</span>
             </>
           ) : undefined
@@ -96,7 +96,7 @@ export function StatCards({
         value={fmtCost(totals.effectiveCost)}
         sub={
           <>
-            标准价 {fmtCost(totals.standardCost)} · 输出{" "}
+            {t("标准价")} {fmtCost(totals.standardCost)} {t("· 输出")}{" "}
             {fmtCompact(totals.outputTokens)} tok
           </>
         }

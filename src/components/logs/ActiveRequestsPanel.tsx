@@ -32,7 +32,7 @@ export function ActiveRequestsPanel({ items }: { items: ActiveRequest[] }) {
     return (
       <div className="flex min-h-[3.25rem] items-center gap-2 text-sm text-muted">
         <span className="h-1.5 w-1.5 rounded-full bg-border" />
-        当前没有进行中的请求
+        {t("当前没有进行中的请求")}
       </div>
     );
   }
@@ -56,7 +56,7 @@ export function ActiveRequestsPanel({ items }: { items: ActiveRequest[] }) {
                   {r.model ?? t("（未知模型）")}
                 </span>
                 <span className="text-[11px] text-muted">
-                  经 {r.channel_name ?? `#${r.channel_id ?? "?"}`}
+                  {t("经")} {r.channel_name ?? `#${r.channel_id ?? "?"}`}
                 </span>
                 {r.upstream_status && (
                   <span className="rounded bg-emerald-500/12 px-1.5 py-px text-[10px] text-emerald-700">
@@ -76,9 +76,9 @@ export function ActiveRequestsPanel({ items }: { items: ActiveRequest[] }) {
               </div>
               <div className="mt-0.5 flex flex-wrap gap-x-3 text-[11px] tabular-nums text-muted">
                 {/* bytes_received 是快照值：它在涨说明上游还在吐，停住说明可能卡了。 */}
-                <span>已收 {fmtCompact(r.bytes_received ?? 0)}B</span>
+                <span>{t("已收")} {fmtCompact(r.bytes_received ?? 0)}B</span>
                 {r.client_first_byte_time != null && r.client_first_byte_time > 0 && (
-                  <span>首字节 {fmtDuration(r.client_first_byte_time)}</span>
+                  <span>{t("首字节")} {fmtDuration(r.client_first_byte_time)}</span>
                 )}
                 {r.upstream_protocol && <span>{r.upstream_protocol}</span>}
               </div>

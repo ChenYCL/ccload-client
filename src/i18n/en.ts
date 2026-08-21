@@ -464,4 +464,170 @@ registerDict("en", {
   "（看图）、": "(describe), ",
   "：上游没有可用的 /v1/models 或返回为空": ": upstream has no usable /v1/models, or returned nothing",
   " · 渠道已禁用，这一层不会被选中": " · channel disabled, this hop will never be picked",
+
+  // ---- JSX 文本节点（跨行段落、跟在元素后的文本、被 {expr} 断开的片段）----
+  "+ 添加变量": "+ Add variable",
+  "MCP / Skill / Agent / Hook 一处配置，推给装了它们的每一个 CLI —— 各家的原生 格式（JSON、TOML、markdown 目录）由后端转换，写入前自动快照。":
+    "Configure MCP / Skill / Agent / Hook once and push it to every CLI that supports it. The backend converts to each CLI's native format (JSON, TOML, markdown directories) and snapshots before writing.",
+  "Opus 4.8 / Opus 5，完全不看": "Opus 4.8 / Opus 5, ignoring",
+  "ccLoad 内核只做一层模型重定向，然后按优先级切渠道。这里把一条 fallback 链（例如 fable-5 → kimi-k3 → opus-5）写成一组按优先级 递减的渠道，内核的选择器就会自动走完整个链。":
+    "The ccLoad kernel does a single model redirect and then switches channels by priority. This page turns a fallback chain (e.g. fable-5 → kimi-k3 → opus-5) into a set of channels with descending priority, so the kernel's existing selector walks the whole chain for you.",
+  "ccLoad 自带的管理界面，在独立窗口中打开，字段随内核升级自动跟进。":
+    "ccLoad's own admin UI, opened in a separate window. Its fields follow the kernel as it is upgraded.",
+  "hook 在配置里没有名字，后端用「事件 + 命令」认它。改动命令等于新增一条， 原来那条要回列表里单独删除。":
+    "Hooks have no name in the config — the backend identifies them by event + command. Changing the command creates a new entry; the old one has to be deleted separately from the list.",
+  "models.dev 拉取失败，上下文窗口暂用本地预设值（claude 20 万、gemini 100 万等）， 联网后点「同步」重试。":
+    "Could not reach models.dev, so context windows fall back to local presets (200k for claude, 1M for gemini, …). Hit “Sync” to retry once you are online.",
+  "· 均值": "· avg",
+  "· 失败": "· failed",
+  "· 峰值 QPS": "· peak QPS",
+  "· 模糊": "· fuzzy",
+  "· 缺失": "· missing",
+  "· 输出": "· output",
+  "—— 这些名字必须是该渠道上游认识的。":
+    "— these names must be ones that channel's upstream recognises.",
+  "✓ 已写入": "✓ Wrote",
+  "。 两者都不会动你当前正在用的模型。Claude Code 没有目录文件，只有 5 个槽位， 所以要在 Tier 列显式指定 —— 没指定的行不写。":
+    ". Neither touches the model you are currently using. Claude Code has no catalog file, only 5 slots, so you must pick one explicitly in the Tier column — rows without one are not written.",
+  "。 这会改动你正在用的配置：": ". This changes the config you are actively using:",
+  "一并应用内核连接设置（不勾则只导入模型链）":
+    "Also apply the kernel connection settings (unticked imports model chains only)",
+  "不支持": "no support for",
+  "个": "",
+  "个 CLI 支持": "CLIs support",
+  "个文件": "file(s)",
+  "个模型": "model(s)",
+  "个模型正在失败": "model(s) failing",
+  "个模型：精确": "models — exact",
+  "个渠道上有": "channel(s) have",
+  "个渠道未列出，完整明细见下方模型表。":
+    "more channel(s) not listed; see the model table below for the full detail.",
+  "个渠道没返回模型清单 —— 它们上的别名会被算成 「上游无」，别据此删掉":
+    "channel(s) returned no model list — aliases served by them will be counted as “not upstream”, so do not delete based on this",
+  "个渠道给出清单，并集": "channel(s) returned a list, union of",
+  "个请求进行中": "request(s) in flight",
+  "主力": "the primary model is",
+  "从上到下依次尝试。上面的层优先级更高，拖住左侧手柄可以换顺序 （也可以聚焦手柄后按 ↑ ↓）。":
+    "Tried top to bottom; higher rows win. Drag the handle on the left to reorder (or focus it and press ↑ ↓).",
+  "从内核渠道聚合所有可用模型别名，":
+    "Aggregates every model alias the kernel's channels expose and",
+  "优先级": "priority",
+  "优先级，所以所有档的顺序必须能折成一个全局顺序，折不出来上面会报冲突。":
+    "priority, so every tier's order must collapse into one global order; if it cannot, a conflict is reported above.",
+  "会覆盖同名的本机链：": "Will overwrite local chains with the same name:",
+  "先装一处，再用列表里的「同步」推给其他 CLI。":
+    "Install it in one place, then use “Sync” in the list to push it to the other CLIs.",
+  "内核同时提供这几套规范的入口，协议转换在内核里完成。第三方工具直接填下面的 地址和令牌即可，不必经过 CLI 接管。":
+    "The kernel exposes an endpoint for each of these formats and does the protocol conversion itself. Third-party tools can use the URL and token below directly, without going through CLI takeover.",
+  "内核未运行。左下角「启动内核」后再打开管理界面。":
+    "The kernel is not running. Start it from the bottom left, then open the admin UI.",
+  "内核连接：": "Kernel connection:",
+  "内核里还没有任何渠道。先去「内核后台」把各家的渠道建好（客户端不替你发明凭据）， 再回来绑定。":
+    "The kernel has no channels yet. Create them under “Kernel admin” first (this client will not invent credentials for you), then come back and bind them.",
+  "写入前自动快照；不支持的目标已置灰":
+    "Snapshots before writing; unsupported targets are greyed out",
+  "写成下面这个别名，请求就会落到对应档。":
+    "to the alias below and requests will land on the matching tier.",
+  "凭证过期": "Stale credentials",
+  "分钟": "min",
+  "别名是 CLI 侧实际请求的模型名。队列从上到下依次尝试 —— 但内核只有":
+    "The alias is the model name the CLI actually requests. Queues are tried top to bottom — but the kernel only has",
+  "原始": "pristine",
+  "地址已指向内核，但令牌与当前内核不匹配 —— 调用会 401，请重新写入。":
+    "The URL points at the kernel, but the token belongs to a different one — calls will 401. Write it again.",
+  "复原": "Reset",
+  "字段来自 GET /admin/settings，新增项会自动出现。改任何一项都会写库并让 内核约 2 秒后自动重启，在途请求会被打断，请避开使用中修改。":
+    "Fields come from GET /admin/settings; new ones appear automatically. Changing any of them writes to the database and restarts the kernel about 2 seconds later, cutting off in-flight requests — avoid editing while it is in use.",
+  "导出内核连接方式与模型链，换机器时导入即可。渠道和令牌属于内核数据， 在「内核后台」用它自带的导入导出。":
+    "Exports the kernel connection settings and model chains; import them on a new machine. Channels and tokens are kernel data — use the kernel admin's own import/export for those.",
+  "将从": "Will remove from",
+  "峰值": "peak",
+  "已停用": "Disabled",
+  "已收": "received",
+  "已装：": "Installed:",
+  "已选": "Selected",
+  "应用后会把该渠道的优先级写成": "On apply, this channel's priority will be set to",
+  "当前": "Currently",
+  "恢复": "Restore",
+  "打开管理窗口时会自动登录，正常情况下你看不到登录框。会话有效期 24 小时，过期或密码不对时会退回登录页 —— 那时用上面这个密码手动登一次。":
+    "Opening the admin window signs you in automatically, so you normally never see the login box. Sessions last 24 hours; when one expires or the password is wrong you land back on the login page — use the password above to sign in manually that once.",
+  "批量安装": "Install selected",
+  "把「哪种活用哪家的哪个模型」配成一张表，应用后写进内核渠道：档位别名 落成":
+    "Lay out which provider and model handles which kind of work, then write it into the kernel's channels: tier aliases become",
+  "把各 CLI 的配置指到内核。写入前自动快照，可在「快照历史」回滚； 不确定时先在设置里打开「沙箱写入」，改动只落到 ~/.ccload-client/sandbox/，不碰真实配置。":
+    "Points each CLI's config at the kernel. A snapshot is taken before writing and can be rolled back from “Snapshot history”. If you are unsure, turn on “sandbox writes” in Settings first — changes then land only in ~/.ccload-client/sandbox/ and never touch the real config.",
+  "拿到就能直接调内核全部管理接口，别丢进聊天或云盘":
+    "Anyone holding this can call every kernel admin endpoint — do not paste it into chat or cloud storage",
+  "时，按下面的顺序换人（写进 settings.json 顶层的": ", switch in the order below (written to the top-level",
+  "条新日志": "new log entries",
+  "条：": "chain(s):",
+  "来源客户端内核版本：": "Source client's kernel version:",
+  "标准价": "List price",
+  "次": "×",
+  "次失败": "failures",
+  "每家绑一个内核里已有的渠道（客户端不替你建渠道、不发明凭据）， 再填它在各档的":
+    "Bind each provider to a channel that already exists in the kernel (this client will not create channels or invent credentials for you), then fill in its",
+  "每次接管前会自动快照。标记「原始」的是首次接管前的用户配置。":
+    "A snapshot is taken before every takeover. The one marked “pristine” is your config from before the first takeover.",
+  "沙箱已开：写入 ~/.ccload-client/sandbox，真实 CLI 配置不会被改。":
+    "Sandbox is on: writes go to ~/.ccload-client/sandbox and your real CLI config is left alone.",
+  "添加一行": "Add a row",
+  "添加参数": "Add an argument",
+  "清除": "Clear",
+  "渠道上， 所以得先从左下角「启动内核」。下面的下拉框在那之前是空的，与配置本身无关。":
+    "channels, so the kernel has to be started from the bottom left first. Until then the dropdowns below are empty — that is not a problem with your config.",
+  "的扩展清单失败，下面的列表里不含它：":
+    "'s extension list could not be read, so it is missing from the list below:",
+  "第": "Slot",
+  "经": "via",
+  "给文本模型装上「眼睛」：本客户端自带一个 MCP 服务器，把图片交给一个多模态模型 描述，再把文字交给当前模型。已支持多模态的模型不需要。四个工具：":
+    "Gives text-only models eyes: this client ships an MCP server that hands the image to a multimodal model and passes the description back as text. Models that already handle images do not need it. Four tools:",
+  "编辑配置": "Edit config",
+  "表示默认模型。留空则不写入。": "means the default model. Leave empty to skip.",
+  "被标记时先问一句，不自动换模型（": "Ask before switching when a request is flagged (",
+  "装在其他 CLI 上的同名扩展不受影响。":
+    "Extensions with the same name installed in other CLIs are unaffected.",
+  "视觉辅助 MCP": "Vision-assist MCP",
+  "角色靠 CLI 侧表达：在「扩展管理」里建一个同名 agent，把它的":
+    "Roles live on the CLI side: create an agent with the same name under “Extensions” and set its",
+  "该渠道合计": "This channel totals",
+  "该渠道最近一次请求": "This channel's most recent request",
+  "读取": "Reading",
+  "调度图要把 provider 绑到内核里":
+    "The dispatch graph binds each provider to a channel that already",
+  "走沙箱（~/.ccload-client/sandbox），不改真实 CLI 配置":
+    "Use the sandbox (~/.ccload-client/sandbox) and leave the real CLI config alone",
+  "起": "from",
+  "还有": "and",
+  "还没有客户端令牌。先到「令牌」页新建一个，创建时会自动记下。":
+    "No client token yet. Create one on the “Tokens” page — it is recorded automatically.",
+  "还没有链。点「新建链」把第一个别名加进来。": "No chains yet. Hit “New chain” to add the first alias.",
+  "这个名字， 于是每次都跳进一个不存在的模型。唯一的改法是把上面的":
+    ", so every switch lands on a model that does not exist. The only fix is to pin",
+  "这几个 CLI 用的看图模型不一致（": "These CLIs are using different vision models (",
+  "进各 CLI 的模型目录： Codex 每个别名一个": "them into each CLI's model catalog: one",
+  "远端内核版本（": "The remote kernel version (",
+  "选用）、 OpenCode 合并进":
+    "per alias for Codex (selected with codex --profile), merged into",
+  "那不是上面这条链干的。请求被 Claude Code 的安全分类器标记时，它会跳到":
+    "That is not what the chain above does. When a request is flagged by Claude Code's safety classifier it switches to a",
+  "配置编辑": "config editor",
+  "重写": "Rewrite",
+  "钉成你自己有的模型 —— 设了它之后，所有有 fallback 的分类都改跑这一个。 另外把 Fable tier 填上，Claude Code 才认得出当前模型是 Fable 5。":
+    "to a model you actually have — once it is set, every flagged category re-runs on that one. Also fill in the Fable tier so Claude Code can recognise the current model as Fable 5.",
+  "顺位": "",
+  "高级配置": "Advanced",
+  "（比对改动前后）、": "(compare before and after), ",
+  "（直接截当前屏幕，仅 macOS）。": "(capture the current screen, macOS only).",
+  "（逐字抄下图上的文字， 报错截图用它）、":
+    "(transcribe the text in an image verbatim — use it for error screenshots), ",
+  "）。上面的下拉只显示 其中一个；要统一就选好模型后对每个 CLI 重新点一次「安装」。":
+    "). The dropdown above shows only one of them; to unify, pick a model and hit Install again for each CLI.",
+  "）。去重后最多 3 个，多余的 Claude Code 会忽略； 填":
+    "). At most 3 after deduplication — Claude Code ignores the rest. Use",
+  "）不一致。 Admin API 的字段与校验规则随版本变化，建议切回本机内核或把远端升级到同版本， 否则设置、渠道编辑等操作可能拿到意料外的响应。":
+    ") does not match. Admin API fields and validation rules change between versions, so switch back to the local kernel or upgrade the remote one to match — otherwise settings and channel edits may get unexpected responses.",
+  "）与壳体打包版本（": ") and the version bundled with this app (",
+  "，队列顺序落成渠道优先级。 之后 CLI 只认四个档位别名，换家、重试、冷却全部由内核原有的选择器完成。":
+    ", and queue order becomes channel priority. After that the CLI only ever sees the four tier aliases; switching providers, retries and cooldowns are all handled by the kernel's existing selector.",
 });

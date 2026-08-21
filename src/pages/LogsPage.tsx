@@ -124,7 +124,7 @@ export function LogsPage() {
               <RefreshCw
                 className={cn("h-3.5 w-3.5", (logs.isFetching || active.isFetching) && "animate-spin")}
               />
-              刷新一次
+              {t("刷新一次")}
             </button>
           )}
           <LiveSwitch on={live} onToggle={toggleLive} />
@@ -209,7 +209,7 @@ export function LogsPage() {
                       className="material-modal animate-materialize absolute inset-x-0 bottom-3 mx-auto flex w-max items-center gap-1.5 rounded-full border border-border px-3 py-1.5 text-xs font-medium text-accent"
                     >
                       <ArrowUp className="h-3.5 w-3.5" />
-                      {feed.pending} 条新日志
+                      {feed.pending} {t("条新日志")}
                     </button>
                   )}
                 </div>
@@ -266,6 +266,7 @@ function LiveSwitch({ on, onToggle }: { on: boolean; onToggle: () => void }) {
 
 /** 跟随状态要一直可见 —— 用户得知道自己看的是实时流还是一份定住的快照。 */
 function FollowBadge({ following, pending }: { following: boolean; pending: number }) {
+  const t = useT();
   return (
     <span
       className={cn(
@@ -276,12 +277,12 @@ function FollowBadge({ following, pending }: { following: boolean; pending: numb
       {following ? (
         <>
           <span className="h-1.5 w-1.5 rounded-full bg-accent" />
-          实时跟随
+          {t("实时跟随")}
         </>
       ) : (
         <>
           <Pause className="h-3 w-3" />
-          已暂停{pending > 0 ? ` · ${pending} 条待读` : ""}
+          {t("已暂停")}{pending > 0 ? ` · ${pending} 条待读` : ""}
         </>
       )}
     </span>

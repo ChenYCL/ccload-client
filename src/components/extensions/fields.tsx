@@ -88,7 +88,7 @@ export function KeyValueRows(props: {
         className="mt-1.5 flex items-center gap-1 rounded-lg border border-border bg-surface-raised px-2 py-1 text-xs hover:bg-surface-2 disabled:opacity-40"
       >
         <Plus className="h-3 w-3" />
-        添加一行
+        {t("添加一行")}
       </button>
     </div>
   );
@@ -102,6 +102,7 @@ export function StringListRows(props: {
   value: string[];
   onChange: (v: string[]) => void;
 }) {
+  const t = useT();
   return (
     <div>
       <div className="flex items-baseline gap-1.5">
@@ -142,7 +143,7 @@ export function StringListRows(props: {
         className="mt-1.5 flex items-center gap-1 rounded-lg border border-border bg-surface-raised px-2 py-1 text-xs hover:bg-surface-2"
       >
         <Plus className="h-3 w-3" />
-        添加参数
+        {t("添加参数")}
       </button>
     </div>
   );

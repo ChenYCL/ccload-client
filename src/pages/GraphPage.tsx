@@ -89,9 +89,7 @@ export function GraphPage() {
         <div className="min-w-0">
           <h1 className="t-display">{t("调度图")}</h1>
           <p className="mt-0.5 max-w-3xl text-sm text-muted">
-            把「哪种活用哪家的哪个模型」配成一张表，应用后写进内核渠道：档位别名
-            落成 <code className="font-mono text-xs">redirect_model</code>，队列顺序落成渠道优先级。
-            之后 CLI 只认四个档位别名，换家、重试、冷却全部由内核原有的选择器完成。
+            {t("把「哪种活用哪家的哪个模型」配成一张表，应用后写进内核渠道：档位别名 落成")} <code className="font-mono text-xs">redirect_model</code>{t("，队列顺序落成渠道优先级。 之后 CLI 只认四个档位别名，换家、重试、冷却全部由内核原有的选择器完成。")}
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -151,17 +149,15 @@ export function GraphPage() {
         <div className="rounded-xl border border-amber-300/70 bg-amber-50/70 px-3 py-2.5 text-xs text-amber-900">
           <div className="flex items-center gap-2 font-medium">
             <AlertTriangle className="h-4 w-4 shrink-0" />
-            内核未运行，读不到渠道列表
+            {t("内核未运行，读不到渠道列表")}
           </div>
           <p className="mt-1">
-            调度图要把 provider 绑到内核里<strong className="font-medium">{t("已有的")}</strong>渠道上，
-            所以得先从左下角「启动内核」。下面的下拉框在那之前是空的，与配置本身无关。
+            {t("调度图要把 provider 绑到内核里")}<strong className="font-medium">{t("已有的")}</strong>{t("渠道上， 所以得先从左下角「启动内核」。下面的下拉框在那之前是空的，与配置本身无关。")}
           </p>
         </div>
       ) : channelList.length === 0 ? (
         <div className="rounded-xl border border-amber-300/70 bg-amber-50/70 px-3 py-2.5 text-xs text-amber-900">
-          内核里还没有任何渠道。先去「内核后台」把各家的渠道建好（客户端不替你发明凭据），
-          再回来绑定。
+          {t("内核里还没有任何渠道。先去「内核后台」把各家的渠道建好（客户端不替你发明凭据）， 再回来绑定。")}
         </div>
       ) : (
         <ValidationPanel
@@ -220,11 +216,12 @@ function ValidationPanel({
   problems: string[];
   order: string[];
 }) {
+  const t = useT();
   if (ok) {
     return (
       <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50/60 px-3 py-2 text-xs text-emerald-800">
         <Check className="h-4 w-4 shrink-0" />
-        校验通过。全局优先级顺序：{order.join(" → ")}
+        {t("校验通过。全局优先级顺序：")}{order.join(" → ")}
       </div>
     );
   }
@@ -232,7 +229,7 @@ function ValidationPanel({
     <div className="rounded-xl border border-amber-300/70 bg-amber-50/70 px-3 py-2.5 text-xs text-amber-900">
       <div className="flex items-center gap-2 font-medium">
         <AlertTriangle className="h-4 w-4 shrink-0" />
-        校验未通过，无法应用（不会写入任何东西）
+        {t("校验未通过，无法应用（不会写入任何东西）")}
       </div>
       <ul className="mt-1.5 list-disc space-y-0.5 pl-5">
         {problems.map((p, i) => (
@@ -267,9 +264,8 @@ function ProviderTable({
         <div className="min-w-0">
         <h2 className="t-title">Provider</h2>
         <p className="mt-0.5 text-xs text-muted">
-          每家绑一个内核里已有的渠道（客户端不替你建渠道、不发明凭据），
-          再填它在各档的<strong className="font-medium text-content">{t("真实上游模型名")}</strong>
-          —— 这些名字必须是该渠道上游认识的。
+          {t("每家绑一个内核里已有的渠道（客户端不替你建渠道、不发明凭据）， 再填它在各档的")}<strong className="font-medium text-content">{t("真实上游模型名")}</strong>
+          {t("—— 这些名字必须是该渠道上游认识的。")}
         </p>
         </div>
         <button
@@ -278,7 +274,7 @@ function ProviderTable({
           title={t("按渠道名称和 URL 里的关键词猜，填完仍需自己核对")}
           className="shrink-0 rounded-lg border border-border bg-surface-raised px-2.5 py-1.5 text-xs hover:bg-surface-2 disabled:opacity-40"
         >
-          按名称自动匹配
+          {t("按名称自动匹配")}
         </button>
       </div>
       <table className="w-full table-fixed text-sm">
@@ -373,28 +369,28 @@ function TierTable({
     <section className="card p-4">
       <h2 className="t-title">{t("档位与队列")}</h2>
       <p className="mt-0.5 text-xs text-muted">
-        别名是 CLI 侧实际请求的模型名。队列从上到下依次尝试 —— 但内核只有<strong className="font-medium text-content">{t("渠道级")}</strong>
-        优先级，所以所有档的顺序必须能折成一个全局顺序，折不出来上面会报冲突。
+        {t("别名是 CLI 侧实际请求的模型名。队列从上到下依次尝试 —— 但内核只有")}<strong className="font-medium text-content">{t("渠道级")}</strong>
+        {t("优先级，所以所有档的顺序必须能折成一个全局顺序，折不出来上面会报冲突。")}
       </p>
 
       <div className="mt-3 space-y-3">
-        {doc.tiers.map((t, i) => (
-          <div key={t.id} className="rounded-xl border border-border p-3">
+        {doc.tiers.map((tier, i) => (
+          <div key={tier.id} className="rounded-xl border border-border p-3">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="w-20 shrink-0 text-sm font-medium">{t.label}</span>
+              <span className="w-20 shrink-0 text-sm font-medium">{tier.label}</span>
               <label className="flex items-center gap-1.5 text-xs text-muted">
-                别名
+                {t("别名")}
                 <TextInput
                   small
                   mono
                   className="w-40"
-                  value={t.alias}
+                  value={tier.alias}
                   onChange={(e) => setTier(i, { alias: e.target.value })}
                 />
               </label>
             </div>
             <ProviderQueue
-              tier={t}
+              tier={tier}
               labelOf={labelOf}
               all={doc.providers}
               priorities={priorities}
@@ -457,7 +453,7 @@ function ProviderQueue({
                 {all.find((p) => p.id === pid)?.models[tier.id] || t("（未填模型）")}
               </span>
               {priorities?.[pid] != null && (
-                <span className="text-[10px] text-muted">优先级 {priorities[pid]}</span>
+                <span className="text-[10px] text-muted">{t("优先级")} {priorities[pid]}</span>
               )}
               <button
                 onClick={() => onChange(tier.providers.filter((x) => x !== pid))}
@@ -502,8 +498,8 @@ function RolePanel({ doc }: { doc: GraphDoc }) {
     <section className="card p-4">
       <h2 className="t-title">{t("角色映射")}</h2>
       <p className="mt-0.5 text-xs text-muted">
-        角色靠 CLI 侧表达：在「扩展管理」里建一个同名 agent，把它的{" "}
-        <code className="font-mono">model</code> 写成下面这个别名，请求就会落到对应档。
+        {t("角色靠 CLI 侧表达：在「扩展管理」里建一个同名 agent，把它的")}{" "}
+        <code className="font-mono">model</code> {t("写成下面这个别名，请求就会落到对应档。")}
       </p>
       <ul className="mt-2.5 grid gap-1.5 sm:grid-cols-2">
         {rows.map((r) => (

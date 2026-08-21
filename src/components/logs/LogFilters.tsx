@@ -97,7 +97,7 @@ export function LogFilters({
         )}
       >
         <AlertOctagon className="h-3.5 w-3.5" />
-        只看错误
+        {t("只看错误")}
       </button>
 
       {hasAnyFilter(value) && (
@@ -107,7 +107,7 @@ export function LogFilters({
           className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-muted hover:text-content"
         >
           <RotateCcw className="h-3.5 w-3.5" />
-          清除
+          {t("清除")}
         </button>
       )}
     </div>

@@ -65,9 +65,7 @@ export function SettingsPage() {
           </div>
           {versionMismatch && (
             <p className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs">
-              远端内核版本（{remoteVersion}）与壳体打包版本（{bundled.data}）不一致。
-              Admin API 的字段与校验规则随版本变化，建议切回本机内核或把远端升级到同版本，
-              否则设置、渠道编辑等操作可能拿到意料外的响应。
+              {t("远端内核版本（")}{remoteVersion}{t("）与壳体打包版本（")}{bundled.data}{t("）不一致。 Admin API 的字段与校验规则随版本变化，建议切回本机内核或把远端升级到同版本， 否则设置、渠道编辑等操作可能拿到意料外的响应。")}
             </p>
           )}
         </section>
@@ -89,14 +87,13 @@ export function SettingsPage() {
             checked={!!settings.data?.sandbox_cli_writes}
             onChange={(e) => sandbox.mutate(e.target.checked)}
           />
-          走沙箱（~/.ccload-client/sandbox），不改真实 CLI 配置
+          {t("走沙箱（~/.ccload-client/sandbox），不改真实 CLI 配置")}
         </label>
       </section>
       <section className="mt-6">
         <h2 className="t-title">{t("内核运行时配置")}</h2>
         <p className="mt-1 text-xs text-muted">
-          字段来自 GET /admin/settings，新增项会自动出现。改任何一项都会写库并让
-          内核约 2 秒后自动重启，在途请求会被打断，请避开使用中修改。
+          {t("字段来自 GET /admin/settings，新增项会自动出现。改任何一项都会写库并让 内核约 2 秒后自动重启，在途请求会被打断，请避开使用中修改。")}
         </p>
         <div className="mt-3 space-y-2">
           {list.map((it) => (
@@ -323,8 +320,7 @@ function EndpointsCard({ baseUrl, token }: { baseUrl: string; token: string | nu
     <section className="mt-6 card p-4">
       <h2 className="t-title">{t("接入地址")}</h2>
       <p className="mt-1 text-sm text-muted">
-        内核同时提供这几套规范的入口，协议转换在内核里完成。第三方工具直接填下面的
-        地址和令牌即可，不必经过 CLI 接管。
+        {t("内核同时提供这几套规范的入口，协议转换在内核里完成。第三方工具直接填下面的 地址和令牌即可，不必经过 CLI 接管。")}
       </p>
       <div className="mt-3 space-y-1.5">
         {rows.map((r) => (
@@ -429,8 +425,7 @@ function MigrationCard() {
     <section className="mt-6 card p-4">
       <h2 className="t-title">{t("配置迁移")}</h2>
       <p className="mt-1 text-sm text-muted">
-        导出内核连接方式与模型链，换机器时导入即可。渠道和令牌属于内核数据，
-        在「内核后台」用它自带的导入导出。
+        {t("导出内核连接方式与模型链，换机器时导入即可。渠道和令牌属于内核数据， 在「内核后台」用它自带的导入导出。")}
       </p>
 
       <label className="mt-3 flex items-center gap-2 text-sm">
@@ -440,9 +435,9 @@ function MigrationCard() {
           onChange={(e) => setIncludeSecrets(e.target.checked)}
         />
         <span>
-          包含密钥（管理密码与 API 令牌）
+          {t("包含密钥（管理密码与 API 令牌）")}
           <span className="ml-1.5 text-xs text-muted">
-            拿到就能直接调内核全部管理接口，别丢进聊天或云盘
+            {t("拿到就能直接调内核全部管理接口，别丢进聊天或云盘")}
           </span>
         </span>
       </label>
@@ -453,14 +448,14 @@ function MigrationCard() {
           disabled={exportIt.isPending}
           className="flex items-center gap-1.5 rounded-lg border border-border bg-surface-raised px-3 py-1.5 text-sm hover:bg-surface-2 disabled:opacity-40"
         >
-          <Upload className="h-4 w-4" /> 导出配置
+          <Upload className="h-4 w-4" /> {t("导出配置")}
         </button>
         <button
           onClick={() => pick.mutate()}
           disabled={pick.isPending}
           className="flex items-center gap-1.5 rounded-lg border border-border bg-surface-raised px-3 py-1.5 text-sm hover:bg-surface-2 disabled:opacity-40"
         >
-          <Download className="h-4 w-4" /> 导入配置
+          <Download className="h-4 w-4" /> {t("导入配置")}
         </button>
       </div>
 
@@ -469,18 +464,18 @@ function MigrationCard() {
         <div className="mt-3 rounded-xl border border-border p-3 text-xs">
           <div className="font-medium">{t("即将导入")}</div>
           <ul className="mt-1.5 space-y-1 text-muted">
-            <li>来源客户端内核版本：{preview.info.client_kernel_version}</li>
+            <li>{t("来源客户端内核版本：")}{preview.info.client_kernel_version}</li>
             <li>
-              内核连接：{preview.info.kernel_mode} · {preview.info.kernel_endpoint || t("（未设置）")}
+              {t("内核连接：")}{preview.info.kernel_mode} · {preview.info.kernel_endpoint || t("（未设置）")}
               {!preview.info.includes_secrets && t("（文件不含密钥，本机密码保持不变）")}
             </li>
             <li>
-              模型链 {preview.info.chain_aliases.length} 条：
+              {t("模型链")} {preview.info.chain_aliases.length} {t("条：")}
               {preview.info.chain_aliases.join("、") || t("无")}
             </li>
             {preview.info.overwritten_aliases.length > 0 && (
               <li className="text-amber-700">
-                会覆盖同名的本机链：{preview.info.overwritten_aliases.join("、")}
+                {t("会覆盖同名的本机链：")}{preview.info.overwritten_aliases.join("、")}
               </li>
             )}
           </ul>
@@ -490,14 +485,14 @@ function MigrationCard() {
               checked={applyKernel}
               onChange={(e) => setApplyKernel(e.target.checked)}
             />
-            一并应用内核连接设置（不勾则只导入模型链）
+            {t("一并应用内核连接设置（不勾则只导入模型链）")}
           </label>
           <div className="mt-3 flex justify-end gap-2">
             <button
               onClick={() => setPreview(null)}
               className="rounded-lg border border-border bg-surface-raised px-3 py-1 hover:bg-surface-2"
             >
-              取消
+              {t("取消")}
             </button>
             <button
               onClick={() => doImport.mutate()}

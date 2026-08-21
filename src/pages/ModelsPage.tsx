@@ -417,11 +417,7 @@ export function ModelsPage() {
         <div>
           <h1 className="t-display">{t("模型导入")}</h1>
           <p className="mt-1 text-sm text-muted">
-            从内核渠道聚合所有可用模型别名，<strong>{t("追加")}</strong>进各 CLI 的模型目录：
-            Codex 每个别名一个 <code>{t("[profiles.别名]")}</code>（<code>codex --profile</code> 选用）、
-            OpenCode 合并进 <code>provider.ccload.models</code>。
-            两者都不会动你当前正在用的模型。Claude Code 没有目录文件，只有 5 个槽位，
-            所以要在 Tier 列显式指定 —— 没指定的行不写。
+            {t("从内核渠道聚合所有可用模型别名，")}<strong>{t("追加")}</strong>{t("进各 CLI 的模型目录： Codex 每个别名一个")} <code>{t("[profiles.别名]")}</code>（<code>codex --profile</code> {t("选用）、 OpenCode 合并进")} <code>provider.ccload.models</code>{t("。 两者都不会动你当前正在用的模型。Claude Code 没有目录文件，只有 5 个槽位， 所以要在 Tier 列显式指定 —— 没指定的行不写。")}
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -430,7 +426,7 @@ export function ModelsPage() {
             title={t("按 models.dev 目录与本地预设重填所有行的上下文窗口")}
             className="flex items-center gap-1 rounded-lg border border-border bg-surface-raised px-3 py-1.5 text-sm hover:bg-surface-2"
           >
-            <Wand2 className="h-4 w-4" /> 填充默认值
+            <Wand2 className="h-4 w-4" /> {t("填充默认值")}
           </button>
           <button
             onClick={() => catalog.refetch()}
@@ -446,8 +442,7 @@ export function ModelsPage() {
 
       {catalog.isError && (
         <p className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs">
-          models.dev 拉取失败，上下文窗口暂用本地预设值（claude 20 万、gemini 100 万等），
-          联网后点「同步」重试。
+          {t("models.dev 拉取失败，上下文窗口暂用本地预设值（claude 20 万、gemini 100 万等）， 联网后点「同步」重试。")}
         </p>
       )}
 
@@ -483,7 +478,7 @@ export function ModelsPage() {
               );
             })}
             <span className="ml-2 text-xs text-muted">
-              已选 {checkedCount}/{aliases.length} 个模型
+              {t("已选")} {checkedCount}/{aliases.length} {t("个模型")}
               {disabledCount > 0 && `（已排除 ${disabledCount} 个停用渠道）`}
             </span>
             <button
@@ -537,7 +532,7 @@ export function ModelsPage() {
               和别名做匹配、给出一键筛选 —— 匹配规则见 lib/modelMatch.ts。 */}
           <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-border bg-surface-2/40 px-3 py-2">
             <span className="flex items-center gap-1.5 text-xs text-muted">
-              <Radar className="h-3.5 w-3.5" /> 上游校验
+              <Radar className="h-3.5 w-3.5" /> {t("上游校验")}
             </span>
             <button
               onClick={() => probe.mutate()}
@@ -553,29 +548,28 @@ export function ModelsPage() {
             {matches && (
               <>
                 <span className="text-xs text-muted">
-                  {probedOk} 个渠道给出清单，并集 {upstreamIds.length} 个模型：精确{" "}
-                  {countBy(matches, "exact")} · 模糊 {countBy(matches, "fuzzy")} · 缺失{" "}
+                  {probedOk} {t("个渠道给出清单，并集")} {upstreamIds.length} {t("个模型：精确")}{" "}
+                  {countBy(matches, "exact")} {t("· 模糊")} {countBy(matches, "fuzzy")} {t("· 缺失")}{" "}
                   {countBy(matches, "missing")}
                 </span>
                 <button
                   onClick={() => selectByMatch((l) => l === "exact")}
                   className="rounded-lg border border-border bg-surface-raised px-2.5 py-1 text-xs hover:bg-surface-2"
                 >
-                  只选精确命中
+                  {t("只选精确命中")}
                 </button>
                 <button
                   onClick={() => selectByMatch((l) => l !== "missing")}
                   className="rounded-lg border border-border bg-surface-raised px-2.5 py-1 text-xs hover:bg-surface-2"
                 >
-                  含模糊命中
+                  {t("含模糊命中")}
                 </button>
                 {/* 没给出清单的渠道要点名。它们服务的别名会被判成「上游无」，
                     不说清楚的话用户会误删掉能用的模型。 */}
                 {probedFail.length > 0 && (
                   <div className="basis-full rounded-lg bg-amber-500/10 px-2.5 py-1.5 text-[11px] text-amber-800">
                     <div className="font-medium">
-                      {probedFail.length} 个渠道没返回模型清单 —— 它们上的别名会被算成
-                      「上游无」，别据此删掉
+                      {probedFail.length} {t("个渠道没返回模型清单 —— 它们上的别名会被算成 「上游无」，别据此删掉")}
                     </div>
                     <ul className="mt-0.5 space-y-0.5">
                       {probedFail.map((f) => (
@@ -655,7 +649,7 @@ export function ModelsPage() {
                               className="shrink-0 whitespace-nowrap rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] text-emerald-700"
                               title={t("来自 models.dev 目录")}
                             >
-                              目录
+                              {t("目录")}
                             </span>
                           )}
                         </div>
@@ -680,11 +674,11 @@ export function ModelsPage() {
                       <td className="px-2 py-2 text-xs">
                         {r.vision ? (
                           <span className="rounded bg-sky-500/15 px-1.5 py-0.5 text-sky-700">
-                            原生
+                            {t("原生")}
                           </span>
                         ) : (
                           <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-700">
-                            需辅助
+                            {t("需辅助")}
                           </span>
                         )}
                       </td>
@@ -700,14 +694,12 @@ export function ModelsPage() {
 
       <div className="mt-8 card p-4">
         <div className="flex items-center gap-2 font-medium">
-          <Eye className="h-4 w-4 text-accent" /> 视觉辅助 MCP
+          <Eye className="h-4 w-4 text-accent" /> {t("视觉辅助 MCP")}
         </div>
         <p className="mt-1 text-sm text-muted">
-          给文本模型装上「眼睛」：本客户端自带一个 MCP 服务器，把图片交给一个多模态模型
-          描述，再把文字交给当前模型。已支持多模态的模型不需要。四个工具：
-          <code>describe_image</code>{t("（看图）、")}<code>read_image_text</code>（逐字抄下图上的文字，
-          报错截图用它）、<code>compare_images</code>（比对改动前后）、
-          <code>describe_screen</code>（直接截当前屏幕，仅 macOS）。
+          {t("给文本模型装上「眼睛」：本客户端自带一个 MCP 服务器，把图片交给一个多模态模型 描述，再把文字交给当前模型。已支持多模态的模型不需要。四个工具：")}
+          <code>describe_image</code>{t("（看图）、")}<code>read_image_text</code>{t("（逐字抄下图上的文字， 报错截图用它）、")}<code>compare_images</code>{t("（比对改动前后）、")}
+          <code>describe_screen</code>{t("（直接截当前屏幕，仅 macOS）。")}
         </p>
 
         <label className="mt-3 flex flex-wrap items-center gap-2 text-sm">
@@ -729,7 +721,7 @@ export function ModelsPage() {
               旧值 —— 又变成一次「以为保存了」。 */}
           {installedModels.length > 0 && (
             <span className="text-xs text-muted">
-              已装：{installedModels.join("、")}
+              {t("已装：")}{installedModels.join("、")}
               {visionPick !== null && visionPick !== installedModels[0] && (
                 <span className="ml-1 text-amber-700">{t("（改动尚未写入，点下面的安装才生效）")}</span>
               )}
@@ -738,8 +730,7 @@ export function ModelsPage() {
         </label>
         {installedModels.length > 1 && (
           <p className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-900">
-            这几个 CLI 用的看图模型不一致（{installedModels.join("、")}）。上面的下拉只显示
-            其中一个；要统一就选好模型后对每个 CLI 重新点一次「安装」。
+            {t("这几个 CLI 用的看图模型不一致（")}{installedModels.join("、")}{t("）。上面的下拉只显示 其中一个；要统一就选好模型后对每个 CLI 重新点一次「安装」。")}
           </p>
         )}
 
@@ -785,7 +776,7 @@ export function ModelsPage() {
                     className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-700"
                     title={t("里面存的内核地址或令牌已经不是当前这个内核的了，重新安装即可修好")}
                   >
-                    凭证过期
+                    {t("凭证过期")}
                   </span>
                 )}
                 <button
@@ -815,7 +806,7 @@ export function ModelsPage() {
                     }
                     className="rounded-lg border border-border bg-surface-raised px-2.5 py-1 text-xs hover:bg-surface-2 disabled:opacity-40"
                   >
-                    重写
+                    {t("重写")}
                   </button>
                 )}
               </li>
@@ -823,12 +814,12 @@ export function ModelsPage() {
           })}
           {visionPicked.length > 0 && (
             <li className="flex items-center gap-2 bg-surface-2/60 px-3 py-2 text-xs">
-              <span className="text-muted">已选 {visionPicked.length} 个</span>
+              <span className="text-muted">{t("已选")} {visionPicked.length} {t("个")}</span>
               <button
                 onClick={() => setVisionPicked([])}
                 className="text-muted underline-offset-2 hover:underline"
               >
-                取消选择
+                {t("取消选择")}
               </button>
               <button
                 onClick={() => vision.mutate(visionPicked)}
@@ -836,14 +827,14 @@ export function ModelsPage() {
                 title={!visionModel ? t("先在上面选一个多模态模型") : undefined}
                 className="ml-auto rounded-lg bg-accent px-2.5 py-1 font-medium text-white hover:bg-accent/90 disabled:opacity-40"
               >
-                批量安装
+                {t("批量安装")}
               </button>
               <button
                 onClick={() => visionOff.mutate(visionPicked)}
                 disabled={visionOff.isPending}
                 className="rounded-lg border border-border px-2.5 py-1 text-red-600 hover:bg-surface-2 disabled:opacity-40"
               >
-                批量移除
+                {t("批量移除")}
               </button>
             </li>
           )}
@@ -868,12 +859,13 @@ function countBy(
 /// 三态：精确命中、模糊命中（把命中的上游 ID 一并显示，用户要能自己判断这次
 /// 模糊是不是对的）、上游没有。
 function MatchCell({ m }: { m?: { level: MatchLevel; upstreamId: string | null } }) {
+  const t = useT();
   if (!m) return <td className="px-2 py-2" />;
   if (m.level === "exact") {
     return (
       <td className="px-2 py-2">
         <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] text-emerald-700">
-          精确
+          {t("精确")}
         </span>
       </td>
     );
@@ -885,7 +877,7 @@ function MatchCell({ m }: { m?: { level: MatchLevel; upstreamId: string | null }
           className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-700"
           title={`上游对应：${m.upstreamId}`}
         >
-          模糊
+          {t("模糊")}
         </span>
       </td>
     );
@@ -893,7 +885,7 @@ function MatchCell({ m }: { m?: { level: MatchLevel; upstreamId: string | null }
   return (
     <td className="px-2 py-2">
       <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-muted">
-        上游无
+        {t("上游无")}
       </span>
     </td>
   );

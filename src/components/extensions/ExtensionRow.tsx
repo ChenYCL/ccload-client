@@ -134,7 +134,7 @@ function InstallRow({
             <span className="text-xs font-medium">{label}</span>
             {!item.enabled && (
               <span className="rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] text-muted">
-                已停用
+                {t("已停用")}
               </span>
             )}
           </div>
@@ -145,14 +145,14 @@ function InstallRow({
           className="flex shrink-0 items-center gap-1 rounded-lg border border-border px-2 py-1 text-[11px] hover:bg-surface-2"
         >
           <Pencil className="h-3 w-3" />
-          编辑
+          {t("编辑")}
         </button>
         <button
           onClick={onRemove}
           className="flex shrink-0 items-center gap-1 rounded-lg border border-border px-2 py-1 text-[11px] text-red-600 hover:bg-surface-2"
         >
           <Trash2 className="h-3 w-3" />
-          删除
+          {t("删除")}
         </button>
       </div>
       {/* detail 是这条目在配置文件里的原始片段。手工排过版的展示总会漏字段，

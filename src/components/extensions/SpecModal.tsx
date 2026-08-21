@@ -67,7 +67,7 @@ export function SpecModal(props: {
             onClick={props.onClose}
             className="rounded-md border border-border px-2 py-1 text-sm hover:bg-surface-2"
           >
-            关闭
+            {t("关闭")}
           </button>
         </div>
 
@@ -81,7 +81,7 @@ export function SpecModal(props: {
                 <div className="mb-5">
                   <div className="text-xs font-medium text-content">{t("装到哪个 CLI")}</div>
                   <p className="mt-0.5 text-[11px] text-muted">
-                    先装一处，再用列表里的「同步」推给其他 CLI。
+                    {t("先装一处，再用列表里的「同步」推给其他 CLI。")}
                   </p>
                   <div className="mt-1.5 flex flex-wrap gap-2">
                     {supports.map((s) => (
@@ -129,7 +129,7 @@ export function SpecModal(props: {
               role="status"
               className="mb-3 rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-700"
             >
-              ✓ 已写入 {install.data.length} 个文件
+              {t("✓ 已写入")} {install.data.length} {t("个文件")}
               <WrittenFiles files={install.data} />
             </div>
           )}

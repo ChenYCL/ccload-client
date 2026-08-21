@@ -211,7 +211,7 @@ function Tooltip(props: {
     >
       <div className="font-medium tabular-nums">
         {fmtHm(p.ts)}
-        <span className="ml-1 font-normal text-muted">起 {props.bucketMin} 分钟</span>
+        <span className="ml-1 font-normal text-muted">{t("起")} {props.bucketMin} {t("分钟")}</span>
       </div>
       <dl className="mt-1.5 space-y-0.5 text-muted">
         <Row k={t("请求")} v={fmtInt(total)} />

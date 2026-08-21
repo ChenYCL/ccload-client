@@ -60,7 +60,7 @@ export function ChannelHealthRow(props: {
           {props.avgDurationSeconds != null && (
             <span className="text-muted">{fmtDuration(props.avgDurationSeconds)}</span>
           )}
-          <span className="text-muted">{fmtInt(total)} 次</span>
+          <span className="text-muted">{fmtInt(total)} {t("次")}</span>
           <span className={`w-12 text-right font-medium ${TONE_TEXT[tone]}`}>
             {total === 0 ? t("闲置") : fmtPct(rate)}
           </span>

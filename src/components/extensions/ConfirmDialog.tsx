@@ -41,7 +41,7 @@ export function ConfirmDialog(props: {
             onClick={props.onCancel}
             className="rounded-lg border border-border bg-surface-raised px-3 py-1.5 text-sm hover:bg-surface-2"
           >
-            取消
+            {t("取消")}
           </button>
           <button
             disabled={props.pending}

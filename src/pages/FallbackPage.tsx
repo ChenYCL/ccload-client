@@ -108,9 +108,7 @@ export function FallbackPage() {
         <div>
           <h1 className="t-display">{t("模型链")}</h1>
           <p className="mt-1 text-sm text-muted">
-            ccLoad 内核只做一层模型重定向，然后按优先级切渠道。这里把一条
-            fallback 链（例如 fable-5 → kimi-k3 → opus-5）写成一组按优先级
-            递减的渠道，内核的选择器就会自动走完整个链。
+            {t("ccLoad 内核只做一层模型重定向，然后按优先级切渠道。这里把一条 fallback 链（例如 fable-5 → kimi-k3 → opus-5）写成一组按优先级 递减的渠道，内核的选择器就会自动走完整个链。")}
           </p>
         </div>
         <button
@@ -119,13 +117,13 @@ export function FallbackPage() {
           }
           className="flex shrink-0 items-center gap-1 rounded-lg bg-accent px-3.5 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-accent/90"
         >
-          <Plus className="h-4 w-4" /> 新建链
+          <Plus className="h-4 w-4" /> {t("新建链")}
         </button>
       </div>
 
       {chains.data && chains.data.length === 0 && (
         <p className="mt-6 text-sm text-muted">
-          还没有链。点「新建链」把第一个别名加进来。
+          {t("还没有链。点「新建链」把第一个别名加进来。")}
         </p>
       )}
 
@@ -143,13 +141,13 @@ export function FallbackPage() {
                   disabled={apply.isPending}
                   className="flex items-center gap-1 rounded-lg border border-border bg-surface-raised px-2 py-1 text-xs hover:bg-surface-2 disabled:opacity-40"
                 >
-                  <Zap className="h-3 w-3" /> 应用
+                  <Zap className="h-3 w-3" /> {t("应用")}
                 </button>
                 <button
                   onClick={() => setEditing(c)}
                   className="rounded-lg border border-border bg-surface-raised px-2 py-1 text-xs hover:bg-surface-2"
                 >
-                  编辑
+                  {t("编辑")}
                 </button>
                 <button
                   onClick={() => remove.mutate(c.alias)}
@@ -313,8 +311,7 @@ function ChainEditor({
       <>
         <h2 className="t-title">{t("编辑模型链")}</h2>
         <p className="mt-1 text-xs text-muted">
-          从上到下依次尝试。上面的层优先级更高，拖住左侧手柄可以换顺序
-          （也可以聚焦手柄后按 ↑ ↓）。
+          {t("从上到下依次尝试。上面的层优先级更高，拖住左侧手柄可以换顺序 （也可以聚焦手柄后按 ↑ ↓）。")}
         </p>
 
         <label className="mt-4 block text-xs">
@@ -410,7 +407,7 @@ function ChainEditor({
                 </div>
 
                 <div className="mt-1 pl-[3.4rem] text-[11px] text-muted">
-                  应用后会把该渠道的优先级写成 {hopPriority(i)}
+                  {t("应用后会把该渠道的优先级写成")} {hopPriority(i)}
                   <span className="text-muted/70">{t("（影响该渠道服务的所有模型）")}</span>
                 </div>
                 <HopStatus
@@ -430,7 +427,7 @@ function ChainEditor({
             onClick={addHop}
             className="flex items-center gap-1 rounded-lg border border-border bg-surface-raised px-2.5 py-1.5 text-xs hover:bg-surface-2"
           >
-            <Plus className="h-3.5 w-3.5" /> 添加一层
+            <Plus className="h-3.5 w-3.5" /> {t("添加一层")}
           </button>
           {/* 上游校验。内核已经能「按渠道声明的协议去问上游要模型清单」
               （GET /admin/channels/:id/models/fetch），这里只负责把它拉回来、
@@ -454,7 +451,7 @@ function ChainEditor({
             onClick={onClose}
             className="rounded-lg border border-border bg-surface-raised px-3 py-1.5 text-sm hover:bg-surface-2"
           >
-            取消
+            {t("取消")}
           </button>
           <button
             onClick={() => {
@@ -463,7 +460,7 @@ function ChainEditor({
             }}
             className="rounded-lg bg-accent px-3.5 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-accent/90"
           >
-            保存
+            {t("保存")}
           </button>
         </div>
       </>

@@ -90,14 +90,14 @@ export function DashboardPage() {
         <div>
           <h1 className="t-display">{t("总览")}</h1>
           <p className="mt-0.5 text-sm text-muted">
-            全部数字来自内核 Admin API 的真实字段，客户端只做聚合，不做估算。
+            {t("全部数字来自内核 Admin API 的真实字段，客户端只做聚合，不做估算。")}
           </p>
         </div>
         <div className="flex items-center gap-3">
           {running && inFlight > 0 && (
             <span className="flex items-center gap-1.5 rounded-full bg-emerald-500/12 px-2.5 py-1 text-xs font-medium text-emerald-700">
               <Radio className="h-3.5 w-3.5 animate-pulse" />
-              {inFlight} 个请求进行中
+              {inFlight} {t("个请求进行中")}
             </span>
           )}
           <RangeSwitch value={range} onChange={setRange} />

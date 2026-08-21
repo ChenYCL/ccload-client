@@ -51,9 +51,7 @@ export function CliPage() {
         <div>
           <h1 className="t-display">{t("CLI 接管")}</h1>
           <p className="mt-1 text-sm text-muted">
-            把各 CLI 的配置指到内核。写入前自动快照，可在「快照历史」回滚；
-            不确定时先在设置里打开「沙箱写入」，改动只落到
-            ~/.ccload-client/sandbox/，不碰真实配置。
+            {t("把各 CLI 的配置指到内核。写入前自动快照，可在「快照历史」回滚； 不确定时先在设置里打开「沙箱写入」，改动只落到 ~/.ccload-client/sandbox/，不碰真实配置。")}
           </p>
         </div>
         <button
@@ -65,12 +63,12 @@ export function CliPage() {
       </div>
       {settings.data?.sandbox_cli_writes && (
         <p className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs">
-          沙箱已开：写入 ~/.ccload-client/sandbox，真实 CLI 配置不会被改。
+          {t("沙箱已开：写入 ~/.ccload-client/sandbox，真实 CLI 配置不会被改。")}
         </p>
       )}
       {!settings.data?.client_api_token && (
         <p className="mt-3 text-sm text-amber-700">
-          还没有客户端令牌。先到「令牌」页新建一个，创建时会自动记下。
+          {t("还没有客户端令牌。先到「令牌」页新建一个，创建时会自动记下。")}
         </p>
       )}
 
@@ -108,7 +106,7 @@ export function CliPage() {
         <div className="mt-6">
           <h2 className="t-title">{t("快照历史")}</h2>
           <p className="mt-1 text-xs text-muted">
-            每次接管前会自动快照。标记「原始」的是首次接管前的用户配置。
+            {t("每次接管前会自动快照。标记「原始」的是首次接管前的用户配置。")}
           </p>
           {backups.data && backups.data.length === 0 && (
             <p className="mt-4 text-sm text-muted">{t("还没有任何快照。")}</p>
@@ -171,11 +169,11 @@ function CliCard({
           <div className="font-medium">{p.label}</div>
           <div className="mt-1 font-mono text-[11px] text-muted">{p.path}</div>
           <div className="mt-1 text-xs text-muted">
-            当前 {p.current_endpoint ?? t("（未配置）")} → {p.next_endpoint}
+            {t("当前")} {p.current_endpoint ?? t("（未配置）")} → {p.next_endpoint}
           </div>
           {p.token_stale && (
             <div className="mt-1 text-xs text-amber-700">
-              地址已指向内核，但令牌与当前内核不匹配 —— 调用会 401，请重新写入。
+              {t("地址已指向内核，但令牌与当前内核不匹配 —— 调用会 401，请重新写入。")}
             </div>
           )}
           {result && (
@@ -197,7 +195,7 @@ function CliCard({
             onClick={onEdit}
             className="rounded-lg border border-border bg-surface-raised px-3 py-1.5 text-xs hover:bg-surface-2"
           >
-            编辑配置
+            {t("编辑配置")}
           </button>
           {/* Never latch this off on `already_active`: re-writing is the fix
               for a hand-edited, half-migrated, or stale-token config, and
@@ -222,7 +220,7 @@ function CliCard({
           className="flex w-full items-center gap-1 px-4 py-2 text-xs text-muted hover:text-content"
         >
           {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-          高级配置
+          {t("高级配置")}
         </button>
         {expanded && (
           <div className="px-4 pb-4">
@@ -391,7 +389,7 @@ function KnownKeysEditor({
                 title={k.current ? t("恢复为本机现值") : t("清空")}
                 className="rounded-md border border-border px-2 py-1 text-[10px] text-muted hover:bg-surface-2"
               >
-                复原
+                {t("复原")}
               </button>
             </div>
           );
@@ -456,7 +454,7 @@ function CustomEnvRows({
               }}
               className="rounded-md border border-border px-2 py-1 text-[10px] text-red-600 hover:bg-surface-2"
             >
-              删除
+              {t("删除")}
             </button>
           </div>
         ))}
@@ -466,7 +464,7 @@ function CustomEnvRows({
         disabled={Object.keys(value).includes("")}
         className="mt-2 rounded-lg border border-border bg-surface-raised px-2 py-1 text-xs hover:bg-surface-2 disabled:opacity-40"
       >
-        + 添加变量
+        {t("+ 添加变量")}
       </button>
     </div>
   );
@@ -572,14 +570,13 @@ function FallbackFields({
     <div className="mb-4 rounded-xl border border-border bg-surface-2/40 p-3">
       <div className="text-xs font-medium">{t("强制 fallback 模型")}</div>
       <p className="mt-1 text-[11px] leading-relaxed text-muted">
-        主力<strong>{t("过载或不可用")}</strong>时，按下面的顺序换人（写进 settings.json 顶层的{" "}
-        <code>fallbackModel</code>）。去重后最多 3 个，多余的 Claude Code 会忽略；
-        填 <code>default</code> 表示默认模型。留空则不写入。
+        {t("主力")}<strong>{t("过载或不可用")}</strong>{t("时，按下面的顺序换人（写进 settings.json 顶层的")}{" "}
+        <code>fallbackModel</code>{t("）。去重后最多 3 个，多余的 Claude Code 会忽略； 填")} <code>default</code> {t("表示默认模型。留空则不写入。")}
       </p>
       <div className="mt-2 grid grid-cols-3 gap-2">
         {Array.from({ length: MAX_FALLBACK }, (_, i) => (
           <label key={i} className="block text-xs">
-            <div className="text-muted">第 {i + 1} 顺位</div>
+            <div className="text-muted">{t("第")} {i + 1} {t("顺位")}</div>
             <TextInput
               mono
               value={shown[i] ?? ""}
@@ -598,13 +595,10 @@ function FallbackFields({
       {/* 用户真正抱怨的那个症状在这里解释。放在 fallbackModel 下面是有意的：
           他们会先在这一格里找，找不到就以为客户端没这个能力。 */}
       <p className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-[11px] leading-relaxed text-amber-900">
-        <strong>{t("总是跳到 claude-opus-4-8？")}</strong>那不是上面这条链干的。请求被 Claude Code
-        的安全分类器标记时，它会跳到<strong>{t("写死的")}</strong> Opus 4.8 / Opus 5，完全不看{" "}
-        <code>fallbackModel</code>{t("。而 ccLoad 上游没有")} <code>claude-opus-4-8</code> 这个名字，
-        于是每次都跳进一个不存在的模型。唯一的改法是把上面的{" "}
+        <strong>{t("总是跳到 claude-opus-4-8？")}</strong>{t("那不是上面这条链干的。请求被 Claude Code 的安全分类器标记时，它会跳到")}<strong>{t("写死的")}</strong> {t("Opus 4.8 / Opus 5，完全不看")}{" "}
+        <code>fallbackModel</code>{t("。而 ccLoad 上游没有")} <code>claude-opus-4-8</code> {t("这个名字， 于是每次都跳进一个不存在的模型。唯一的改法是把上面的")}{" "}
         <strong>Opus tier（ANTHROPIC_DEFAULT_OPUS_MODEL）</strong>
-        钉成你自己有的模型 —— 设了它之后，所有有 fallback 的分类都改跑这一个。
-        另外把 Fable tier 填上，Claude Code 才认得出当前模型是 Fable 5。
+        {t("钉成你自己有的模型 —— 设了它之后，所有有 fallback 的分类都改跑这一个。 另外把 Fable tier 填上，Claude Code 才认得出当前模型是 Fable 5。")}
       </p>
 
       <label className="mt-2 flex items-center gap-2 text-[11px]">
@@ -617,7 +611,7 @@ function FallbackFields({
           className="h-3.5 w-3.5"
         />
         <span>
-          被标记时先问一句，不自动换模型（<code>switchModelsOnFlag: false</code>）
+          {t("被标记时先问一句，不自动换模型（")}<code>switchModelsOnFlag: false</code>）
         </span>
       </label>
     </div>
@@ -668,6 +662,7 @@ function BackupCard({
   disabled: boolean;
   onRestore: () => void;
 }) {
+  const t = useT();
   const date = new Date(b.created_at * 1000).toLocaleString("zh-CN", {
     year: "numeric",
     month: "2-digit",
@@ -691,13 +686,13 @@ function BackupCard({
           <span className="font-medium text-sm">{targetLabel}</span>
           {b.pristine && (
             <span className="rounded-full bg-emerald-500/20 px-2 py-0.5 text-[10px] text-emerald-700">
-              原始
+              {t("原始")}
             </span>
           )}
         </div>
         <div className="mt-1 text-xs text-muted">{date}</div>
         <div className="mt-1 text-xs text-muted">
-          {b.files.filter((f) => f.existed).length} 个文件
+          {b.files.filter((f) => f.existed).length} {t("个文件")}
         </div>
       </div>
       <button
@@ -705,7 +700,7 @@ function BackupCard({
         onClick={onRestore}
         className="rounded-lg border border-border bg-surface-raised px-3 py-1.5 text-xs hover:bg-surface-2 disabled:opacity-40"
       >
-        恢复
+        {t("恢复")}
       </button>
     </li>
   );
@@ -757,12 +752,12 @@ function ConfigEditor({
     <Modal onClose={onClose} className="max-w-3xl">
       <>
         <div className="flex items-center justify-between">
-          <h2 className="t-title">{targetLabel} 配置编辑</h2>
+          <h2 className="t-title">{targetLabel} {t("配置编辑")}</h2>
           <button
             onClick={onClose}
             className="rounded-md border border-border px-2 py-1 text-sm hover:bg-surface-2"
           >
-            关闭
+            {t("关闭")}
           </button>
         </div>
 

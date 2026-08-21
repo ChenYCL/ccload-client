@@ -52,7 +52,7 @@ export function SyncPanel({
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <span className="text-xs font-medium">{t("同步到其他 CLI")}</span>
         <label className="flex items-center gap-1.5 text-[11px] text-muted">
-          来源
+          {t("来源")}
           <Select
             small
             value={source}
@@ -83,7 +83,7 @@ export function SyncPanel({
 
       <div className="mt-3 flex items-center justify-between gap-3">
         <span className="text-[11px] text-muted">
-          写入前自动快照；不支持的目标已置灰
+          {t("写入前自动快照；不支持的目标已置灰")}
         </span>
         <button
           disabled={picked.length === 0 || sync.isPending}
@@ -137,7 +137,7 @@ function TargetChoice({
         <Minus className="mt-0.5 h-3 w-3 shrink-0" />
         <span>
           <span className="line-through">{support.label}</span>
-          <span className="ml-1.5 text-[10px]">不支持{kindLabel}</span>
+          <span className="ml-1.5 text-[10px]">{t("不支持")}{kindLabel}</span>
         </span>
       </div>
     );
@@ -169,6 +169,7 @@ function TargetChoice({
 
 /// 三态：成功、跳过（后端对「目标就是来源」返回 ok=true 且带一句说明）、失败。
 function OutcomeRow({ outcome }: { outcome: SyncOutcome }) {
+  const t = useT();
   const skipped = outcome.ok && outcome.error !== null;
   const cls = skipped
     ? "bg-surface-2 text-muted"
@@ -184,7 +185,7 @@ function OutcomeRow({ outcome }: { outcome: SyncOutcome }) {
         <span className="font-medium">{outcome.label}</span>
         {outcome.error && <span className="ml-1.5 break-all">{outcome.error}</span>}
         {outcome.ok && !outcome.error && (
-          <span className="ml-1.5">已写入 {outcome.written.length} 个文件</span>
+          <span className="ml-1.5">{t("已写入")} {outcome.written.length} {t("个文件")}</span>
         )}
         <WrittenFiles files={outcome.written} />
       </div>
