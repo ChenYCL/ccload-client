@@ -584,3 +584,40 @@ export type ImportPreview = {
   chain_aliases: string[];
   overwritten_aliases: string[];
 };
+
+/* ---------------------------------------------------------------------------
+   渠道模型清单刷新。`POST /admin/channels/models/refresh-batch`
+
+   上游改了模型清单之后，渠道里存的还是**旧的那份** —— 内核不会自己去发现
+   「某个模型消失了」。`replace` 模式才会把已经不存在的条目删掉；默认的
+   `merge` 只增不删，所以退役的模型会一直挂在候选里，点了就失败。
+
+   字段对照 vendor/ccLoad/internal/app/admin_models.go 的
+   `BatchRefreshModelsRequest` / `BatchRefreshModelsItem`。
+--------------------------------------------------------------------------- */
+
+export type RefreshMode = "merge" | "replace";
+
+export type RefreshItem = {
+  channel_id: number;
+  channel_name?: string;
+  status: "updated" | "unchanged" | "failed";
+  error?: string;
+  /** 这次从上游拉到几个 */
+  fetched: number;
+  /** merge 模式：新增几个 */
+  added?: number;
+  /** replace 模式：删掉几个 */
+  removed?: number;
+  /** 刷新后渠道一共有几个模型 */
+  total: number;
+};
+
+export type RefreshResult = {
+  mode: RefreshMode;
+  total: number;
+  updated: number;
+  unchanged: number;
+  failed: number;
+  results: RefreshItem[];
+};

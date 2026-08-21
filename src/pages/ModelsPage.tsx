@@ -1,4 +1,4 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { Check, Download, Eye, RefreshCw, Radar, Wand2 } from "lucide-react";
 import { useT } from "../i18n";
@@ -8,7 +8,7 @@ import { fetchCatalog, lookupMeta } from "../lib/modelCatalog";
 import { ALL_TARGETS, TARGET_LABELS } from "../lib/targets";
 import { buildUpstreamIndex, matchAlias, type MatchLevel } from "../lib/modelMatch";
 import { Select, TextInput } from "../components/ui/Input";
-import type { CliTarget, ImportEntry, VisionTargetState } from "../types";
+import type { CliTarget, ImportEntry, RefreshMode, VisionTargetState } from "../types";
 import { errText } from "../lib/err";
 
 /// One-click model catalog import. The kernel can serve every alias that any
@@ -585,6 +585,11 @@ export function ModelsPage() {
             )}
           </div>
 
+          {/* 上游改了模型清单之后，渠道里存的还是旧的那份 —— 内核不会自己发现
+              「某个模型消失了」。这一块就是把它同步回来。放在上游校验下面：
+              校验告诉你「哪些别名上游没有」，这里负责把它们真的删掉。 */}
+          <RefreshPanel channels={liveChannels} onDone={setMessage} />
+
           <div className="mt-3 overflow-hidden card">
             <table className="w-full table-fixed text-sm">
               <thead>
@@ -888,5 +893,80 @@ function MatchCell({ m }: { m?: { level: MatchLevel; upstreamId: string | null }
         {t("上游无")}
       </span>
     </td>
+  );
+}
+
+
+/// 把渠道的模型清单同步成上游现在的样子。
+///
+/// 为什么单独做一块而不是复用「上游校验」：校验只是**读**，读完告诉你哪些别名
+/// 上游已经没有了；但那些条目还留在渠道里，ComboBox 和 Tier 绑定照样会把它们
+/// 当候选推给你，点了就失败。真正删掉要靠内核的
+/// `POST /admin/channels/models/refresh-batch`，而它默认的 `merge` 只增不删 ——
+/// 必须显式用 `replace`。这个默认值坑过人，所以两种模式的差别写在按钮旁边，
+/// 不藏进 tooltip。
+function RefreshPanel({
+  channels,
+  onDone,
+}: {
+  channels: Channel[];
+  onDone: (msg: string) => void;
+}) {
+  const t = useT();
+  const qc = useQueryClient();
+  const [mode, setMode] = useState<RefreshMode>("replace");
+  const ids = channels.map((c) => c.id).filter((id): id is number => id !== undefined);
+
+  const run = useMutation({
+    mutationFn: () => api.channelsRefreshModels(ids, mode),
+    onSuccess: (env) => {
+      const r = env.data;
+      const lines = (r?.results ?? []).map((it) => {
+        const name = it.channel_name || `#${it.channel_id}`;
+        if (it.status === "failed") return `${name}：${t("失败")} —— ${it.error ?? ""}`;
+        if (it.status === "unchanged") return `${name}：${t("没有变化")}（${it.total}）`;
+        const delta =
+          mode === "replace"
+            ? t("删掉 {n} 个", { n: it.removed ?? 0 })
+            : t("新增 {n} 个", { n: it.added ?? 0 });
+        return `${name}：${delta}，${t("现在共 {n} 个", { n: it.total })}`;
+      });
+      onDone(lines.join("\n"));
+      // 渠道的模型变了，别名表、ComboBox 候选都要跟着重取。
+      qc.invalidateQueries({ queryKey: ["channels"] });
+    },
+    onError: (e) => onDone(errText(e)),
+  });
+
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-border bg-surface-2/40 px-3 py-2">
+      <span className="flex items-center gap-1.5 text-xs text-muted">
+        <RefreshCw className="h-3.5 w-3.5" /> {t("同步渠道模型清单")}
+      </span>
+      <Select
+        small
+        className="w-56"
+        aria-label={t("同步方式")}
+        value={mode}
+        onChange={(e) => setMode(e.target.value as RefreshMode)}
+      >
+        <option value="replace">{t("覆盖：删掉上游已经没有的")}</option>
+        <option value="merge">{t("增量：只加新的，不删")}</option>
+      </Select>
+      <button
+        onClick={() => run.mutate()}
+        disabled={run.isPending || ids.length === 0}
+        className="rounded-lg border border-border bg-surface-raised px-2.5 py-1 text-xs hover:bg-surface-2 disabled:opacity-40"
+      >
+        {run.isPending
+          ? t("同步中…")
+          : t("同步 {n} 个渠道", { n: ids.length })}
+      </button>
+      <span className="basis-full text-[11px] text-muted/80">
+        {mode === "replace"
+          ? t("上游改过模型清单（比如去掉了一批旧名字）之后用这个。内核默认的「增量」只增不删，退役的模型会一直留在候选里。")
+          : t("只把上游新增的模型加进来，渠道里已有的一个都不动。")}
+      </span>
+    </div>
   );
 }

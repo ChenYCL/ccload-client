@@ -27,6 +27,8 @@ import type {
   KernelConfig,
   KernelStatus,
   McpUsage,
+  RefreshMode,
+  RefreshResult,
   SyncOutcome,
   TakeoverOptions,
   TakeoverPreview,
@@ -128,6 +130,20 @@ export const api = {
    * 模型选择读的是磁盘，不是按钮的记忆 —— 切走再回来仍能看到自己选的那个。
    */
   visionMcpState: () => invoke<VisionTargetState[]>("vision_mcp_state"),
+
+  /**
+   * 让内核去问上游要模型清单并写回渠道。
+   *
+   * `replace` 才会删掉上游已经没有的模型 —— `merge`（内核默认）只增不删，
+   * 退役的模型会一直留在渠道里。上游改过清单之后要用 replace。
+   */
+  channelsRefreshModels: (channelIds: number[], mode: RefreshMode) =>
+    invoke<Envelope<RefreshResult>>("admin_request", {
+      method: "POST",
+      path: "channels/models/refresh-batch",
+      query: null,
+      body: { channel_ids: channelIds, mode },
+    }),
 
   /** 自带 MCP 工具（ccload-vision）的调用次数与耗时。别家 MCP 不在口径内。 */
   mcpUsageStats: () => invoke<McpUsage>("mcp_usage_stats"),

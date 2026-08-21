@@ -695,4 +695,18 @@ registerDict("en", {
   先在左边给它绑一个渠道: "Bind a channel on the left first",
   这个渠道还没配模型: "This channel has no models configured",
   "内核里还没有渠道，或渠道没配模型": "No channels yet, or none of them have models",
+  // ---- 同步渠道模型清单 ----
+  同步渠道模型清单: "Sync channel model lists",
+  同步方式: "Sync mode",
+  "覆盖：删掉上游已经没有的": "Replace: drop what upstream no longer has",
+  "增量：只加新的，不删": "Merge: only add new ones, never delete",
+  "同步 {n} 个渠道": "Sync {n} channel(s)",
+  没有变化: "unchanged",
+  "删掉 {n} 个": "dropped {n}",
+  "新增 {n} 个": "added {n}",
+  "现在共 {n} 个": "now {n} total",
+  "上游改过模型清单（比如去掉了一批旧名字）之后用这个。内核默认的「增量」只增不删，退役的模型会一直留在候选里。":
+    "Use this after the upstream changed its model list (e.g. dropped a batch of old names). The kernel's default “merge” only ever adds, so retired models stay in the candidate list forever.",
+  "只把上游新增的模型加进来，渠道里已有的一个都不动。":
+    "Only pulls in models the upstream added; nothing already in the channel is touched.",
 });
