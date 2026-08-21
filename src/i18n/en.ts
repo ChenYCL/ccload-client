@@ -98,6 +98,14 @@ registerDict("en", {
 
   // ---- 调度图 ----
   "校验通过。全局优先级顺序：": "Validation passed. Global priority order: ",
+  "校验通过。": "Validation passed.",
+  全局顺序: "Global order",
+  "拖动调整各档队列的排列。应用到内核时只写别名映射，不改渠道绑定，也不改渠道优先级。":
+    "Drag to reorder each tier’s queue. Applying to the kernel only writes alias mappings — it does not change channel bindings or channel priority.",
+  "{name}，第 {n} 位，可拖动或按左右键调整":
+    "{name}, position {n}, drag or use the left/right keys to reorder",
+  "别名是 CLI 侧实际请求的模型名。队列从上到下是全局顺序在这一档的投影；加入或移除只改变谁参与，不会改渠道绑定。":
+    "The alias is the model name the CLI actually requests. The queue is this tier’s slice of the global order; adding or removing only changes who participates, not channel bindings.",
   "校验未通过，无法应用（不会写入任何东西）":
     "Validation failed — nothing will be written",
   "内核未运行，读不到渠道列表": "Kernel isn't running, so the channel list is unavailable",
@@ -632,6 +640,8 @@ registerDict("en", {
   "）与壳体打包版本（": ") and the version bundled with this app (",
   "，队列顺序落成渠道优先级。之后 CLI 只认四个档位别名，换家、重试、冷却全部由内核原有的选择器完成。":
     ", and queue order becomes channel priority. After that the CLI only ever sees the four tier aliases; switching providers, retries and cooldowns are all handled by the kernel's existing selector.",
+  "。全局顺序只排各档队列，不会改渠道绑定，也不会改渠道优先级。之后 CLI 只认档位别名，换家、重试、冷却全部由内核原有的选择器完成。":
+    ". Global order only arranges each tier’s queue — it does not change channel bindings or channel priority. After that the CLI only ever sees the tier aliases; switching providers, retries and cooldowns are all handled by the kernel's existing selector.",
 
   // ---- 逐页核对补漏：模块级常量表要在使用处翻译 ----
   "MCP 服务器": "MCP servers",

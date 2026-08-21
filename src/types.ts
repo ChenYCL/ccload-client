@@ -159,6 +159,8 @@ export type GraphDoc = {
   providers: GraphProvider[];
   tiers: GraphTier[];
   roles: GraphRole[];
+  /** 用户钉住的全局顺序。空则从各档队列做拓扑排序。 */
+  providerOrder?: string[];
 };
 
 /** 校验结果。ok=false 时禁止应用，后端也会再拦一次。 */

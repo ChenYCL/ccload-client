@@ -35,6 +35,11 @@
 //! kimi > gpt）；Graph B 的种子边不存在（fast 要 grok>glm，daily 要 glm>grok）。
 //! 冲突时**拒绝保存**并指出是哪两档打架，让用户自己决定改哪一边 —— 而不是偷偷
 //! 挑一个顺序，让用户以为配好了。
+//!
+//! 用户也可以在图上钉一份 `provider_order`。有它之后不再做拓扑，各档队列按这份
+//! 顺序重排（成员不变、渠道绑定不变）。「应用到内核」只写别名 → 上游模型，
+//! **不改** `channel.priority`：两家共用一个渠道时写两个优先级会互相覆盖，而且
+//! 用户已经绑好的渠道不应被调度图改掉。实际选路仍看内核里原有的渠道优先级。
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
@@ -87,6 +92,12 @@ pub struct GraphDoc {
     pub tiers: Vec<GraphTier>,
     #[serde(default)]
     pub roles: Vec<GraphRole>,
+    /// 用户钉住的全局顺序。空则仍从各档队列做拓扑排序。
+    ///
+    /// 有它之后各档队列按它重排；应用到内核时只写别名映射，不改渠道绑定，
+    /// 也不改 `channel.priority`（两家共用一个渠道时写两个优先级会互相覆盖）。
+    #[serde(default)]
+    pub provider_order: Vec<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -104,13 +115,12 @@ impl GraphStore {
         if raw.trim().is_empty() {
             return Ok(Self { graphs: seeds() });
         }
-        serde_json::from_str(&raw)
-            .map_err(|e| AppError::Config(format!("graphs.json 损坏：{e}")))
+        serde_json::from_str(&raw).map_err(|e| AppError::Config(format!("graphs.json 损坏：{e}")))
     }
 
     pub fn save(&self, path: &Path) -> Result<(), AppError> {
-        let body = serde_json::to_string_pretty(self)
-            .map_err(|e| AppError::Config(e.to_string()))?;
+        let body =
+            serde_json::to_string_pretty(self).map_err(|e| AppError::Config(e.to_string()))?;
         write_atomic(path, &format!("{body}\n"))
     }
 
@@ -157,19 +167,31 @@ pub fn validate(doc: &GraphDoc) -> GraphValidation {
     let mut used: HashSet<&str> = HashSet::new();
     for tier in &doc.tiers {
         if tier.alias.trim().is_empty() {
-            push(&mut problems, format!("{} 档没有别名，CLI 侧无从请求", tier.label));
+            push(
+                &mut problems,
+                format!("{} 档没有别名，CLI 侧无从请求", tier.label),
+            );
         }
         if tier.providers.is_empty() {
-            push(&mut problems, format!("{} 档没有任何 provider，该档不可用", tier.label));
+            push(
+                &mut problems,
+                format!("{} 档没有任何 provider，该档不可用", tier.label),
+            );
             continue;
         }
         for pid in &tier.providers {
             let Some(p) = by_id.get(pid.as_str()) else {
-                push(&mut problems, format!("{} 档引用了不存在的 provider「{pid}」", tier.label));
+                push(
+                    &mut problems,
+                    format!("{} 档引用了不存在的 provider「{pid}」", tier.label),
+                );
                 continue;
             };
             if !p.enabled {
-                push(&mut problems, format!("{} 档用到了未启用的 {}", tier.label, p.label));
+                push(
+                    &mut problems,
+                    format!("{} 档用到了未启用的 {}", tier.label, p.label),
+                );
             }
             if p.channel_id.is_none() {
                 push(&mut problems, format!("{} 还没有绑定渠道", p.label));
@@ -185,8 +207,9 @@ pub fn validate(doc: &GraphDoc) -> GraphValidation {
         }
     }
 
-    // 每档的顺序 → 两两偏序约束 → 找全局顺序。
-    let (order, conflicts) = global_order(&doc.tiers);
+    // 每档的顺序 → 两两偏序约束 → 找全局顺序。用户钉了 provider_order 就用它，
+    // 不再做拓扑 —— 这是解开「两档互相打架」的那条路，且不改渠道绑定。
+    let (order, conflicts) = resolve_global_order(doc);
     for c in conflicts {
         push(&mut problems, c);
     }
@@ -202,6 +225,37 @@ pub fn validate(doc: &GraphDoc) -> GraphValidation {
         global_order: order,
         priorities,
     }
+}
+
+/// 有用户指定的顺序就用它（过滤到实际出现在某档里的 provider），否则走拓扑。
+fn resolve_global_order(doc: &GraphDoc) -> (Vec<String>, Vec<String>) {
+    if doc.provider_order.is_empty() {
+        return global_order(&doc.tiers);
+    }
+    let mut used: Vec<String> = Vec::new();
+    for tier in &doc.tiers {
+        for pid in &tier.providers {
+            if !used.iter().any(|x| x == pid) {
+                used.push(pid.clone());
+            }
+        }
+    }
+    let known: HashSet<&str> = doc.providers.iter().map(|p| p.id.as_str()).collect();
+    let mut order = Vec::new();
+    for id in &doc.provider_order {
+        if used.iter().any(|x| x == id)
+            && known.contains(id.as_str())
+            && !order.iter().any(|x| x == id)
+        {
+            order.push(id.clone());
+        }
+    }
+    for id in &used {
+        if known.contains(id.as_str()) && !order.iter().any(|x| x == id) {
+            order.push(id.clone());
+        }
+    }
+    (order, Vec::new())
 }
 
 /// 从各档的 provider 顺序推一个全局顺序。
@@ -419,6 +473,7 @@ pub fn seeds() -> Vec<GraphDoc> {
                 role("planner", "planner（方案）", "deep"),
                 role("lead", "lead（主会话）", "flagship"),
             ],
+            provider_order: Vec::new(),
         },
         GraphDoc {
             id: "grok-build".into(),
@@ -428,6 +483,7 @@ pub fn seeds() -> Vec<GraphDoc> {
             // PRD §9.2 的种子边**故意保留原样**，尽管它存在矛盾
             // （fast 要 grok≻glm，daily 要 glm≻grok）。保存时校验会把这条冲突
             // 指出来，让用户自己决定改哪一档 —— 偷偷替他调顺序才是坑。
+            // 用户在界面上拖出一份 provider_order 之后，拓扑冲突不再拦保存。
             tiers: vec![
                 tier("fast", "Fast", "gb-fast", &["grok", "glm"]),
                 tier("daily", "Daily", "gb-daily", &["glm", "grok", "gpt"]),
@@ -440,6 +496,7 @@ pub fn seeds() -> Vec<GraphDoc> {
                 role("reviewer", "reviewer（评审）", "review"),
                 role("lead", "lead（主会话）", "deep"),
             ],
+            provider_order: Vec::new(),
         },
     ]
 }
@@ -472,7 +529,10 @@ mod tests {
         assert!(order.is_empty());
         assert!(!conflicts.is_empty());
         let joined = conflicts.join("\n");
-        assert!(joined.contains("grok") && joined.contains("glm"), "{joined}");
+        assert!(
+            joined.contains("grok") && joined.contains("glm"),
+            "{joined}"
+        );
     }
 
     /// 一个 provider 参与三档就把「没绑渠道」说三遍，读起来像三个问题。
@@ -529,6 +589,77 @@ mod tests {
         let names: Vec<&str> = steps.iter().map(|s| s.provider.as_str()).collect();
         assert_eq!(names, ["claude", "kimi", "gpt"]);
         assert_eq!(steps[0].upstream_model, "claude-opus-5");
+    }
+
+    fn bound(mut g: GraphDoc) -> GraphDoc {
+        for (i, p) in g.providers.iter_mut().enumerate() {
+            p.channel_id = Some(i as i64 + 1);
+        }
+        g
+    }
+
+    /// 用户钉住的顺序就是全局顺序，不再从各档队列推。
+    #[test]
+    fn an_explicit_provider_order_is_the_global_order() {
+        let mut g = bound(claude_graph());
+        g.provider_order = vec![
+            "kimi".into(),
+            "gpt".into(),
+            "claude".into(),
+            "glm".into(),
+            "grok".into(),
+        ];
+        let v = validate(&g);
+        assert!(v.ok, "{:?}", v.problems);
+        assert_eq!(v.global_order, g.provider_order);
+        assert_eq!(v.priorities["kimi"], PRIORITY_TOP);
+        assert!(v.priorities["kimi"] > v.priorities["grok"]);
+    }
+
+    /// 钉一份顺序之后，原本互相打架的档位队列不再报拓扑冲突。
+    /// 各档成员（以及渠道绑定）都原样保留。
+    #[test]
+    fn an_explicit_provider_order_overrides_conflicting_tier_queues() {
+        let mut g = bound(seeds().into_iter().find(|x| x.id == "grok-build").unwrap());
+        let daily = g
+            .tiers
+            .iter()
+            .find(|t| t.id == "daily")
+            .unwrap()
+            .providers
+            .clone();
+        assert_eq!(daily, ["glm", "grok", "gpt"]);
+        g.provider_order = vec!["grok".into(), "glm".into(), "claude".into(), "gpt".into()];
+        let v = validate(&g);
+        assert!(
+            !v.problems
+                .iter()
+                .any(|p| p.contains("反过来") || p.contains("构成了环")),
+            "{:?}",
+            v.problems
+        );
+        assert_eq!(
+            v.global_order,
+            vec![
+                "grok".to_string(),
+                "glm".into(),
+                "claude".into(),
+                "gpt".into()
+            ]
+        );
+        // 绑定没被校验逻辑改掉。
+        let daily_after = g
+            .tiers
+            .iter()
+            .find(|t| t.id == "daily")
+            .unwrap()
+            .providers
+            .clone();
+        assert_eq!(daily_after, daily);
+        assert_eq!(
+            g.providers.iter().map(|p| p.channel_id).collect::<Vec<_>>(),
+            (1..=g.providers.len() as i64).map(Some).collect::<Vec<_>>()
+        );
     }
 
     /// 一个别名只挂它自己那一档的模型 —— 内核换渠道时不可能换成别档的模型，

@@ -15,9 +15,10 @@ import type { GraphDoc, GraphProvider, GraphTier } from "../types";
 /// 调度图：把「档位别名 → 哪家的哪个模型」编成内核已经认识的渠道配置。
 ///
 /// 这页只做编辑和校验，真正的语义在后端 `services/graph.rs` 的注释里写全了：
-/// 内核不动，所以 graph 是**静态编译**成 `models[].redirect_model` + 渠道优先级，
-/// 而不是请求时改写。因此逐档不同的 provider 顺序必须能折成一个全局顺序 ——
-/// 折不出来就拒绝保存，并指出是哪两档打架。
+/// 内核不动，所以 graph 是**静态编译**成 `models[].redirect_model`。全局顺序
+/// 只排各档队列，存在图上；应用到内核**不改**渠道绑定，也不改渠道优先级 ——
+/// 两家共用一个渠道时写两个优先级会互相覆盖。没钉顺序时仍从各档队列做拓扑，
+/// 折不出来就拒绝应用，并指出是哪两档打架。
 
 /// 渠道列表里我们用得上的字段。`models` 是候选模型的来源。
 type GraphChannel = {
@@ -62,6 +63,9 @@ export function GraphPage() {
     queryKey: ["graph-validate", current],
     queryFn: () => api.graphValidate(current!),
     enabled: !!current,
+    // 拖动顺序时 current 每变一次就重跑校验；没有上一份结果的话面板会闪成
+    // 「校验未通过」。本地 invoke 很快，但闪一下仍然扎眼。
+    placeholderData: (prev) => prev,
   });
 
   const save = useMutation({
@@ -99,7 +103,7 @@ export function GraphPage() {
         <div className="min-w-0">
           <h1 className="t-display">{t("调度图")}</h1>
           <p className="mt-0.5 max-w-3xl text-sm text-muted">
-            {t("把「哪种活用哪家的哪个模型」配成一张表，应用后写进内核渠道：档位别名落成")} <code className="font-mono text-xs">redirect_model</code>{t("，队列顺序落成渠道优先级。之后 CLI 只认四个档位别名，换家、重试、冷却全部由内核原有的选择器完成。")}
+            {t("把「哪种活用哪家的哪个模型」配成一张表，应用后写进内核渠道：档位别名落成")} <code className="font-mono text-xs">redirect_model</code>{t("。全局顺序只排各档队列，不会改渠道绑定，也不会改渠道优先级。之后 CLI 只认档位别名，换家、重试、冷却全部由内核原有的选择器完成。")}
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -169,13 +173,15 @@ export function GraphPage() {
         <div className="rounded-xl border border-amber-300/70 bg-amber-50/70 px-3 py-2.5 text-xs text-amber-900">
           {t("内核里还没有任何渠道。先去「内核后台」把各家的渠道建好（客户端不替你发明凭据），再回来绑定。")}
         </div>
-      ) : (
-        <ValidationPanel
-          problems={v?.problems ?? []}
-          ok={!!v?.ok}
-          order={v?.globalOrder ?? []}
-        />
-      )}
+      ) : null}
+
+      <ValidationPanel
+        problems={v?.problems ?? []}
+        ok={!!v?.ok}
+        order={chipOrder(current, v?.globalOrder ?? [])}
+        labelOf={(pid) => current.providers.find((p) => p.id === pid)?.label ?? pid}
+        onReorder={(next) => patch(withProviderOrder(current, next))}
+      />
 
       <ProviderTable
         doc={current}
@@ -203,7 +209,27 @@ export function GraphPage() {
         }}
       />
 
-      <TierTable doc={current} onChange={(tiers) => patch({ tiers })} priorities={v?.priorities} />
+      <TierTable
+        doc={current}
+        order={chipOrder(current, v?.globalOrder ?? [])}
+        onChange={(tiers) => patch({ tiers })}
+        onTierProviders={(i, providers) => {
+          const global = chipOrder(current, v?.globalOrder ?? []);
+          const old = current.tiers[i].providers;
+          const sameSet =
+            old.length === providers.length && old.every((id) => providers.includes(id));
+          const extra = providers.filter((id) => !global.includes(id));
+          const nextOrder = sameSet
+            ? mergeSubsequence(global, providers)
+            : extra.length
+              ? [...global, ...extra]
+              : global;
+          const tiers = current.tiers.map((tier, j) =>
+            j === i ? { ...tier, providers } : tier,
+          );
+          patch(withProviderOrder({ ...current, tiers }, nextOrder));
+        }}
+      />
 
       <RolePanel doc={current} />
 
@@ -215,37 +241,96 @@ export function GraphPage() {
   );
 }
 
-/// 校验面板。通过时把算出来的全局顺序摊出来 —— 这是整套静态实现的核心结论，
-/// 用户得能一眼看到「最终谁排前面」。
+/// 校验面板。全局顺序可拖 —— 这是用户钉在图上的排列，不会改渠道绑定。
 function ValidationPanel({
   ok,
   problems,
   order,
+  labelOf,
+  onReorder,
 }: {
   ok: boolean;
   problems: string[];
   order: string[];
+  labelOf: (id: string) => string;
+  onReorder: (next: string[]) => void;
 }) {
   const t = useT();
-  if (ok) {
-    return (
-      <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50/60 px-3 py-2 text-xs text-emerald-800">
-        <Check className="h-4 w-4 shrink-0" />
-        {t("校验通过。全局优先级顺序：")}{order.join(" → ")}
-      </div>
-    );
-  }
+  const reorder = useReorder(order, onReorder, "x");
   return (
-    <div className="rounded-xl border border-amber-300/70 bg-amber-50/70 px-3 py-2.5 text-xs text-amber-900">
-      <div className="flex items-center gap-2 font-medium">
-        <AlertTriangle className="h-4 w-4 shrink-0" />
-        {t("校验未通过，无法应用（不会写入任何东西）")}
-      </div>
-      <ul className="mt-1.5 list-disc space-y-0.5 pl-5">
-        {problems.map((p, i) => (
-          <li key={i}>{p}</li>
-        ))}
-      </ul>
+    <div
+      className={
+        ok
+          ? "rounded-xl border border-emerald-200 bg-emerald-50/60 px-3 py-2.5 text-xs text-emerald-800"
+          : "rounded-xl border border-amber-300/70 bg-amber-50/70 px-3 py-2.5 text-xs text-amber-900"
+      }
+    >
+      {ok ? (
+        <div className="flex items-center gap-2 font-medium">
+          <Check className="h-4 w-4 shrink-0" />
+          {t("校验通过。")}
+        </div>
+      ) : (
+        <>
+          <div className="flex items-center gap-2 font-medium">
+            <AlertTriangle className="h-4 w-4 shrink-0" />
+            {t("校验未通过，无法应用（不会写入任何东西）")}
+          </div>
+          <ul className="mt-1.5 list-disc space-y-0.5 pl-5">
+            {problems.map((msg, i) => (
+              <li key={i}>{msg}</li>
+            ))}
+          </ul>
+        </>
+      )}
+      {order.length > 0 && (
+        <div className="mt-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="shrink-0 font-medium">{t("全局顺序")}</span>
+            <ol
+              ref={reorder.listRef}
+              className="flex min-w-0 flex-nowrap items-center gap-1 overflow-x-auto"
+            >
+              {order.map((pid, i) => {
+                const dragging = reorder.drag?.from === i;
+                return (
+                  <li
+                    key={pid}
+                    style={{ transform: `translateX(${reorder.offsetOf(i)}px)` }}
+                    className={cn(
+                      "flex shrink-0 items-center gap-1 rounded-lg border px-1.5 py-1",
+                      dragging
+                        ? "z-10 border-accent/50 bg-surface-raised shadow-[var(--shadow-raised)]"
+                        : "border-border/80 bg-surface-raised/80 transition-transform duration-[180ms] ease-[cubic-bezier(0.32,0.72,0,1)]",
+                    )}
+                  >
+                    <button
+                      onPointerDown={reorder.start(i)}
+                      onKeyDown={reorder.onKeyDown(i)}
+                      aria-label={t("{name}，第 {n} 位，可拖动或按左右键调整", {
+                        name: labelOf(pid),
+                        n: i + 1,
+                      })}
+                      className="cursor-grab touch-none rounded p-0.5 text-muted hover:bg-surface-2 active:cursor-grabbing"
+                    >
+                      <GripVertical className="h-3.5 w-3.5" />
+                    </button>
+                    <span className="font-medium">{labelOf(pid)}</span>
+                    {i < order.length - 1 && (
+                      <span className="pl-0.5 text-[10px] text-muted" aria-hidden>
+                        →
+                      </span>
+                    )}
+                  </li>
+                );
+              })}
+            </ol>
+          </div>
+          <p className="mt-1.5 text-[11px] opacity-80">
+            {t("拖动调整各档队列的排列。应用到内核时只写别名映射，不改渠道绑定，也不改渠道优先级。")}
+          </p>
+        </div>
+      )}
     </div>
   );
 }
@@ -366,12 +451,14 @@ function ProviderTable({
 
 function TierTable({
   doc,
+  order,
   onChange,
-  priorities,
+  onTierProviders,
 }: {
   doc: GraphDoc;
-  onChange: (t: GraphTier[]) => void;
-  priorities?: Record<string, number>;
+  order: string[];
+  onChange: (tiers: GraphTier[]) => void;
+  onTierProviders: (i: number, providers: string[]) => void;
 }) {
   const t = useT();
   const setTier = (i: number, patch: Partial<GraphTier>) => {
@@ -386,8 +473,7 @@ function TierTable({
     <section className="card p-4">
       <h2 className="t-title">{t("档位与队列")}</h2>
       <p className="mt-0.5 text-xs text-muted">
-        {t("别名是 CLI 侧实际请求的模型名。队列从上到下依次尝试 —— 但内核只有")}<strong className="font-medium text-content">{t("渠道级")}</strong>
-        {t("优先级，所以所有档的顺序必须能折成一个全局顺序，折不出来上面会报冲突。")}
+        {t("别名是 CLI 侧实际请求的模型名。队列从上到下是全局顺序在这一档的投影；加入或移除只改变谁参与，不会改渠道绑定。")}
       </p>
 
       <div className="mt-3 space-y-3">
@@ -410,8 +496,8 @@ function TierTable({
               tier={tier}
               labelOf={labelOf}
               all={doc.providers}
-              priorities={priorities}
-              onChange={(providers) => setTier(i, { providers })}
+              order={order}
+              onChange={(providers) => onTierProviders(i, providers)}
             />
           </div>
         ))}
@@ -425,13 +511,13 @@ function ProviderQueue({
   tier,
   all,
   labelOf,
-  priorities,
+  order,
   onChange,
 }: {
   tier: GraphTier;
   all: GraphProvider[];
   labelOf: (id: string) => string;
-  priorities?: Record<string, number>;
+  order: string[];
   onChange: (p: string[]) => void;
 }) {
   const t = useT();
@@ -469,9 +555,6 @@ function ProviderQueue({
               <span className="font-mono text-[10px] text-muted">
                 {all.find((p) => p.id === pid)?.models[tier.id] || t("（未填模型）")}
               </span>
-              {priorities?.[pid] != null && (
-                <span className="text-[10px] text-muted">{t("优先级")} {priorities[pid]}</span>
-              )}
               <button
                 onClick={() => onChange(tier.providers.filter((x) => x !== pid))}
                 aria-label={`从 ${tier.label} 档移除 ${labelOf(pid)}`}
@@ -490,7 +573,7 @@ function ProviderQueue({
           {unused.map((p) => (
             <button
               key={p.id}
-              onClick={() => onChange([...tier.providers, p.id])}
+              onClick={() => onChange(sortByOrder([...tier.providers, p.id], order))}
               className="rounded-md border border-dashed border-border px-1.5 py-0.5 text-[10px] text-muted hover:bg-surface-2"
             >
               + {p.label}
@@ -534,4 +617,65 @@ function RolePanel({ doc }: { doc: GraphDoc }) {
       </ul>
     </section>
   );
+}
+
+function usedProviderIds(doc: GraphDoc): string[] {
+  const ids: string[] = [];
+  for (const tier of doc.tiers) {
+    for (const pid of tier.providers) {
+      if (!ids.includes(pid)) ids.push(pid);
+    }
+  }
+  return ids;
+}
+
+function sortByOrder(ids: string[], order: string[]): string[] {
+  return [...ids].sort((a, b) => {
+    const ra = order.indexOf(a);
+    const rb = order.indexOf(b);
+    const ia = ra === -1 ? Number.MAX_SAFE_INTEGER : ra;
+    const ib = rb === -1 ? Number.MAX_SAFE_INTEGER : rb;
+    if (ia !== ib) return ia - ib;
+    return ids.indexOf(a) - ids.indexOf(b);
+  });
+}
+
+function chipOrder(doc: GraphDoc, computed: string[]): string[] {
+  const used = usedProviderIds(doc);
+  const base =
+    doc.providerOrder && doc.providerOrder.length > 0
+      ? doc.providerOrder
+      : computed.length > 0
+        ? computed
+        : used;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const id of [...base, ...used]) {
+    if (used.includes(id) && !seen.has(id)) {
+      seen.add(id);
+      out.push(id);
+    }
+  }
+  return out;
+}
+
+function mergeSubsequence(global: string[], sub: string[]): string[] {
+  const set = new Set(sub);
+  const extra = sub.filter((id) => !global.includes(id));
+  let k = 0;
+  const mapped = global.map((id) => (set.has(id) ? sub[k++] : id));
+  return [...mapped, ...extra];
+}
+
+function withProviderOrder(
+  doc: GraphDoc,
+  order: string[],
+): Pick<GraphDoc, "providerOrder" | "tiers"> {
+  return {
+    providerOrder: order,
+    tiers: doc.tiers.map((tier) => ({
+      ...tier,
+      providers: sortByOrder(tier.providers, order),
+    })),
+  };
 }

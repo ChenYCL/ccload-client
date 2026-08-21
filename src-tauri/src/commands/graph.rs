@@ -40,9 +40,12 @@ pub fn graph_preview(doc: GraphDoc, tier: String) -> AppResult<Vec<PreviewStep>>
 
 /// 把一张图落到内核里。
 ///
-/// 对每个参与的 provider 做一次渠道更新：
-///   * `models[]` 里 upsert 它在各档的 `别名 → 真实模型`
-///   * 渠道 `priority` 设成校验算出的全局顺序
+/// 对每个参与的 provider 做一次渠道更新：`models[]` 里 upsert 它在各档的
+/// `别名 → 真实模型`。
+///
+/// **不改**渠道绑定，也**不改** `channel.priority`。优先级是渠道级属性，两家
+/// 共用一个渠道（GLM 和 Kimi 都绑同一个 Z.ai）时写两个数会互相覆盖；用户在
+/// 内核里已经设好的优先级也不该被调度图冲掉。全局顺序只排各档队列，存在图上。
 ///
 /// 校验不通过就**不写任何东西**（PRD §11.2 的 fail-fast）。写一半再报错会留下
 /// 一个半配好的状态，比不写更难收拾。
@@ -93,29 +96,31 @@ pub async fn graph_apply(state: State<'_, AppState>, id: String) -> AppResult<Ve
             .find(|p| p.id == pid)
             .expect("validated above");
         let channel_id = p.channel_id.expect("validated above");
-        let priority = v.priorities.get(pid).copied();
-
-        let out = patch_channel(&state, channel_id, priority, &entries).await?;
+        // 故意传 None：不要动渠道优先级。绑定（channel_id）本来就不会改。
+        let out = patch_channel(&state, channel_id, None, &entries).await?;
         let mapped = entries
             .iter()
             .map(|(a, m)| format!("{a}→{m}"))
             .collect::<Vec<_>>()
             .join("、");
         log.push(format!(
-            "{}（渠道 {} #{channel_id}）优先级 {}→{}：{mapped}",
+            "{}（渠道 {} #{channel_id}，优先级保持 {}）：{mapped}",
             p.label,
             out.channel_name,
             out.old_priority
                 .map(|x| x.to_string())
                 .unwrap_or_else(|| "?".into()),
-            priority
-                .map(|x| x.to_string())
-                .unwrap_or_else(|| "不变".into()),
+        ));
+    }
+    if !v.global_order.is_empty() {
+        log.push(format!(
+            "图上的全局顺序：{}（只排各档队列，没有写入渠道优先级）",
+            v.global_order.join(" → ")
         ));
     }
     log.push(
-        "提示：优先级是渠道级属性，会影响这些渠道服务的所有模型；\
-         另外调度图与「模型链」都会改优先级，同时用会互相覆盖。"
+        "提示：本次只写入了档位别名 → 上游模型，没有改渠道绑定，也没有改渠道优先级。\
+         两家共用一个渠道时本来就不能各写一个优先级。"
             .into(),
     );
     Ok(log)
