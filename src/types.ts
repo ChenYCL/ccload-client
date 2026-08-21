@@ -228,6 +228,13 @@ export type InjectState = {
   injected: boolean;
   /** 块内现有内容，用来回显。 */
   block: string | null;
+  /**
+   * 块里解析出来的勾选状态。**由后端解析**（`system_inject::parse_block`）——
+   * 前端按文本比对来猜哪几段开着，会在后端改一个字的那天全线失灵。
+   */
+  spec: InjectSpec | null;
+  /** 装的是旧版本的措辞：内容仍然生效，按「更新」就会用当前措辞重写。 */
+  outdated: boolean;
   /** 整个文件的字符数。Grok 到 10000 会截断。 */
   chars: number;
 };

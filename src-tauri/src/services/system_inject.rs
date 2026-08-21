@@ -55,6 +55,45 @@ const END: &str = "<!-- ccload:end -->";
 /// 免得用户在 Grok 上被静默截断还不知道。
 pub const SOFT_MAX_CHARS: usize = 10_000;
 
+/// 三个小节的标题**同时是解析锚点** —— 界面靠它们把已写进文件的块拆回
+/// 「哪几项勾着 + 用户自己写了什么」。
+///
+/// 改这三行等于把用户机器上所有已注入的块变成「不认识的内容」：勾选框回显成
+/// 没勾，而那段旧文字会被当成用户自己写的原样保留下来，下一次写入就变成一段
+/// 旧的 + 一段新的，两份说明并存。要改标题就得同时在 `parse_block` 里留下旧
+/// 标题的别名。（真发生过，见 `an_older_wording_still_counts_as_the_same_section`。）
+const VISION_HEADING: &str = "## 图片处理（ccLoad 视觉辅助）";
+const IMAGE_HEADING: &str = "## 生成与修改图片（ccLoad 生图）";
+const TOOLS_HEADING: &str = "## 本机可用的工具";
+
+/// 每一小节前面的分段标记。
+///
+/// 光有标题不够：用户自己那段写在最后、又没有标题，光按标题切的话它会被算进
+/// 前一节的正文里，回显时丢掉 —— 而丢掉的下一步是按「更新」把它从磁盘上也
+/// 抹掉。有了这行标记，边界是确定的，不用去猜哪一段是谁写的。
+const MARK_VISION: &str = "<!-- ccload:vision -->";
+const MARK_IMAGE: &str = "<!-- ccload:image -->";
+const MARK_TOOLS: &str = "<!-- ccload:tools -->";
+const MARK_CUSTOM: &str = "<!-- ccload:custom -->";
+
+fn marker_kind(line: &str) -> Option<Segment> {
+    match line.trim() {
+        MARK_VISION => Some(Segment::Vision),
+        MARK_IMAGE => Some(Segment::Image),
+        MARK_TOOLS => Some(Segment::Tools),
+        MARK_CUSTOM => Some(Segment::Custom),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Segment {
+    Vision,
+    Image,
+    Tools,
+    Custom,
+}
+
 /// 各 CLI 的全局指令文件（相对 home）。
 pub fn instructions_path(target: CliTarget) -> &'static str {
     match target {
@@ -68,7 +107,7 @@ pub fn instructions_path(target: CliTarget) -> &'static str {
 
 /// 要注入哪些内容。每一项都是用户可关的 —— 注入进系统提示的东西会花掉每一次
 /// 请求的 token，不该由我们替用户决定全都要。
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct InjectSpec {
     /// 视觉工具用法。装了 `ccload-vision` 却没人告诉模型该用，是这个功能的由来。
@@ -87,7 +126,7 @@ pub struct InjectSpec {
 /// 不是「什么时候该想起它」。装了 codegraph 不等于模型会在改代码前先去查调用链
 /// —— 那句话得有人写下来。用户为 Claude Code 手写过的这类说明，往往只存在于
 /// `~/.claude/CLAUDE.md` 里，另外四家 CLI 一个字都看不到；这里让它写一次、推五家。
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ToolNote {
     /// 扩展 id（MCP 服务器名 / skill 目录名 / agent 文件名）。
@@ -122,6 +161,12 @@ pub struct InjectState {
     pub injected: bool,
     /// 块内现有内容，用来回显。
     pub block: Option<String>,
+    /// 块里解析出来的 spec —— 界面上的勾选框、工具说明、用户那段都从它回显。
+    /// 靠磁盘上的真值，不靠按钮的记忆。
+    pub spec: Option<InjectSpec>,
+    /// 装着的是**旧版本的措辞**：内容还在生效，但和这一版渲染出来的不一样，
+    /// 按一下「更新」就能刷新。不标出来的话用户没有任何线索知道该按它。
+    pub outdated: bool,
     /// 整个文件的字符数。Grok 到 10000 会截断，界面上据此提醒。
     pub chars: usize,
 }
@@ -138,7 +183,7 @@ pub struct InjectState {
 fn vision_section() -> String {
     format!(
         "\
-## 图片处理（ccLoad 视觉辅助）
+{VISION_HEADING}
 
 你**看不见图片**。本机装了 MCP 服务器 `{server}`，它把图片交给一个多模态模型
 再把文字结果给你。凡是遇到图片，必须调用下面的工具，不要猜测图片内容，也不要
@@ -176,7 +221,7 @@ fn vision_section() -> String {
 fn image_section() -> String {
     format!(
         "\
-## 生成与修改图片（ccLoad 生图）
+{IMAGE_HEADING}
 
 本机装了 MCP 服务器 `{server}`，你可以**自己把图画出来**，不要让用户去找别的
 工具，也不要用 SVG/ASCII 凑数：
@@ -206,24 +251,155 @@ fn image_section() -> String {
 pub fn render_block(spec: &InjectSpec) -> String {
     let mut parts: Vec<String> = Vec::new();
     if spec.vision {
-        parts.push(vision_section());
+        parts.push(format!("{MARK_VISION}\n{}", vision_section()));
     }
     if spec.image {
-        parts.push(image_section());
+        parts.push(format!("{MARK_IMAGE}\n{}", image_section()));
     }
     let tools = spec.live_tools();
     if !tools.is_empty() {
-        let mut sec = String::from("## 本机可用的工具\n\n");
+        let mut sec = format!("{MARK_TOOLS}\n{TOOLS_HEADING}\n\n");
         for t in tools {
-            sec.push_str(&format!("- `{}` —— {}\n", t.name.trim(), t.note.trim()));
+            sec.push_str(&format!("- `{}` {TOOL_SEP} {}\n", t.name.trim(), t.note.trim()));
         }
         parts.push(sec.trim_end().to_string());
     }
     let custom = spec.custom.trim();
     if !custom.is_empty() {
-        parts.push(custom.to_string());
+        parts.push(format!("{MARK_CUSTOM}\n{custom}"));
     }
     parts.join("\n\n")
+}
+
+/// 工具条目里名字和说明之间的分隔。解析时按**第一个**它来切，说明本身再出现
+/// 一次也不会被截断。
+const TOOL_SEP: &str = "——";
+
+/// 把块内内容拆回一个 `InjectSpec` —— 界面上的勾选状态、每条工具说明、用户
+/// 自己那段，全靠它回显。
+///
+/// # 为什么不在前端按「渲染一遍再看包不包含」来判断
+///
+/// 那是这个函数替换掉的做法，它有一个必然发生的失效：**我们自己改一个字，
+/// 判断就失灵**。用户机器上的块是上一个版本写进去的，和这一版渲染出来的文本
+/// 不逐字相同，于是「视觉」被判成没勾，整段旧文字被当成用户手写内容 —— 再按
+/// 一次「更新」就会写出一段旧的加一段新的。措辞是会改的，标记不会。
+///
+/// 认不出来的部分一律进 `custom` 并**原样保留**：宁可把我们生成的东西错当成
+/// 用户的（顶多多留一段），也不能把用户手写的规则当成我们的给覆盖掉。
+pub fn parse_block(block: &str) -> InjectSpec {
+    let mut spec = InjectSpec::default();
+    let mut custom: Vec<String> = Vec::new();
+
+    // 先按分段标记切。没有任何标记 = 老版本写的块，走标题兜底。
+    let mut segs: Vec<(Option<Segment>, String)> = Vec::new();
+    let mut cur: Option<Segment> = None;
+    let mut buf = String::new();
+    for line in block.split_inclusive('\n') {
+        if let Some(kind) = marker_kind(line) {
+            segs.push((cur, std::mem::take(&mut buf)));
+            cur = Some(kind);
+            continue;
+        }
+        buf.push_str(line);
+    }
+    segs.push((cur, buf));
+    if segs.iter().all(|(k, _)| k.is_none()) {
+        return parse_legacy(block);
+    }
+
+    for (kind, text) in segs {
+        match kind {
+            Some(Segment::Vision) => spec.vision = true,
+            Some(Segment::Image) => spec.image = true,
+            Some(Segment::Tools) => spec.tools.extend(parse_tool_notes(&text)),
+            Some(Segment::Custom) => {
+                let t = text.trim();
+                if !t.is_empty() {
+                    custom.push(t.to_string());
+                }
+            }
+            // 标记之前的内容：可能是上个版本留下的、也可能是用户手工加的。
+            None => {
+                let old = parse_legacy(&text);
+                spec.vision |= old.vision;
+                spec.image |= old.image;
+                spec.tools.extend(old.tools);
+                if !old.custom.is_empty() {
+                    custom.push(old.custom);
+                }
+            }
+        }
+    }
+    spec.custom = custom.join("\n\n");
+    spec
+}
+
+/// 没有分段标记的老块：按小节标题认。
+///
+/// 这条路认得出「哪几项开着」，但认不出用户写在最后一节后面、又没有自己标题的
+/// 那段文字 —— 它会被算进前一节的正文里。这是老格式本身的歧义，不是可以修好的
+/// 东西；界面上那个「旧版」角标就是为它准备的：按一次「更新」重写成带标记的
+/// 格式，之后就再也不会有这个问题。
+fn parse_legacy(block: &str) -> InjectSpec {
+    let mut spec = InjectSpec::default();
+    let mut rest: Vec<&str> = Vec::new();
+    let mut cursor = 0usize;
+    for (start, len) in top_level_sections(block) {
+        let head = block[cursor..start].trim();
+        if !head.is_empty() {
+            rest.push(head);
+        }
+        cursor = start + len;
+        let section = &block[start..cursor];
+        let first_line = section.lines().next().unwrap_or_default().trim_end();
+        match first_line {
+            VISION_HEADING => spec.vision = true,
+            IMAGE_HEADING => spec.image = true,
+            TOOLS_HEADING => spec.tools.extend(parse_tool_notes(section)),
+            _ => rest.push(section.trim()),
+        }
+    }
+    let tail = block[cursor..].trim();
+    if !tail.is_empty() {
+        rest.push(tail);
+    }
+    spec.custom = rest.join("\n\n");
+    spec
+}
+
+/// 每个以 `## ` 开头的行到下一个这样的行之间算一节，返回 (起点, 长度)。
+fn top_level_sections(block: &str) -> Vec<(usize, usize)> {
+    let mut heads: Vec<usize> = Vec::new();
+    let mut at = 0usize;
+    for line in block.split_inclusive('\n') {
+        if line.starts_with("## ") {
+            heads.push(at);
+        }
+        at += line.len();
+    }
+    let end = block.len();
+    heads
+        .iter()
+        .enumerate()
+        .map(|(i, &s)| (s, heads.get(i + 1).copied().unwrap_or(end) - s))
+        .collect()
+}
+
+fn parse_tool_notes(section: &str) -> Vec<ToolNote> {
+    section
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let body = line.strip_prefix("- `")?;
+            let (name, tail) = body.split_once('`')?;
+            let note = tail.split_once(TOOL_SEP)?.1.trim();
+            (!name.trim().is_empty() && !note.is_empty()).then(|| ToolNote {
+                name: name.trim().to_string(),
+                note: note.to_string(),
+            })
+        })
+        .collect()
 }
 
 /// 把 `block` 放进 `doc` 的标记之间；`None` 表示删除这一段。
@@ -272,6 +448,12 @@ pub fn state(root: &ConfigRoot, target: CliTarget) -> InjectState {
     let path = root.join(rel);
     let doc = std::fs::read_to_string(&path).unwrap_or_default();
     let block = extract_block(&doc);
+    let spec = block.as_deref().map(parse_block);
+    // 解析出来的 spec 重新渲染一遍还原不成原样 = 块是旧版本写的。
+    let outdated = match (&block, &spec) {
+        (Some(b), Some(s)) => &render_block(s) != b,
+        _ => false,
+    };
     InjectState {
         target,
         label: target.label(),
@@ -279,6 +461,8 @@ pub fn state(root: &ConfigRoot, target: CliTarget) -> InjectState {
         exists: path.exists(),
         injected: block.is_some(),
         block,
+        spec,
+        outdated,
         chars: doc.chars().count(),
     }
 }
@@ -605,4 +789,176 @@ mod tests {
         assert!(InjectSpec::default().is_empty());
         assert!(!InjectSpec { image: true, ..Default::default() }.is_empty());
     }
+
+    // -----------------------------------------------------------------------
+    // 把块拆回 spec
+    //
+    // 界面上的勾选框要从磁盘上的块回显。以前是在前端「渲染一遍再看包不包含」
+    // ——只要我们自己改一个字，上一个版本写进用户文件的块就对不上了：勾选框
+    // 显示成没勾，那段旧文字被当成用户手写内容，再点一次「更新」就写出一段旧
+    // 的加一段新的。下面几条钉住新的做法。
+    // -----------------------------------------------------------------------
+
+    /// 渲染出去再读回来必须是同一个 spec，工具说明和用户那段一并还原。
+    #[test]
+    fn parse_round_trips_what_render_wrote() {
+        let full = InjectSpec {
+            vision: true,
+            image: true,
+            tools: vec![
+                ToolNote { name: "codegraph".into(), note: "改代码前先查调用链".into() },
+                ToolNote { name: "playwright".into(), note: "要点开页面看才算数".into() },
+            ],
+            custom: "永远说中文。\n\n提交前跑一遍测试。".into(),
+        };
+        assert_eq!(parse_block(&render_block(&full)), full);
+
+        // 单项开关的组合同样要还原，别只在「全开」这一种形状下成立。
+        for spec in [
+            InjectSpec { vision: true, ..Default::default() },
+            InjectSpec { image: true, ..Default::default() },
+            InjectSpec { custom: "只有我自己写的".into(), ..Default::default() },
+            InjectSpec::default(),
+        ] {
+            assert_eq!(parse_block(&render_block(&spec)), spec, "{spec:?}");
+        }
+    }
+
+    /// **这条是那个 bug 的回归测试。** 下面这段是 v0.1.0-beta.20260821 之前的
+    /// 视觉段原文（从真实的 `~/.claude/CLAUDE.md` 里取的），措辞和现在不一样。
+    /// 它必须仍然算「视觉段开着」，而不是掉进 custom 里。
+    #[test]
+    fn an_older_wording_still_counts_as_the_same_section() {
+        let old_block = "\
+## 图片处理（ccLoad 视觉辅助）
+
+你**看不见图片**。本机装了 MCP 服务器 `ccload-vision`，它把图片交给一个多模态模型
+再把文字结果给你。凡是遇到图片，必须调用下面的工具：
+
+- `describe_image` —— 看懂一张图。参数 `path`（绝对路径）或 `url` 二选一。
+- `read_image_text` —— 逐字抄下图上的文字。
+
+用户贴来的图片通常是本地文件路径。拿不到路径时先问用户要，不要跳过。";
+
+        let got = parse_block(old_block);
+        assert!(got.vision, "旧措辞被判成没勾视觉");
+        assert!(!got.image);
+        assert_eq!(got.custom, "", "旧的生成内容不能被当成用户手写的留下来");
+    }
+
+    /// 认不出来的小节要原样留给用户 —— 宁可把我们生成的东西错当成用户的，
+    /// 也不能反过来把用户手写的规则吃掉。
+    #[test]
+    fn unknown_sections_stay_with_the_user() {
+        let block = "\
+## 图片处理（ccLoad 视觉辅助）
+
+（正文略）
+
+## 我自己的规范
+
+- 一律 rebase，不 merge
+- 提交信息写中文
+
+末尾还有一句。";
+        let got = parse_block(block);
+        assert!(got.vision);
+        assert!(
+            got.custom.starts_with("## 我自己的规范"),
+            "用户那节丢了：{:?}",
+            got.custom
+        );
+        assert!(got.custom.contains("一律 rebase"));
+        assert!(got.custom.ends_with("末尾还有一句。"));
+        assert!(!got.custom.contains("正文略"), "视觉段的正文不该混进来");
+    }
+
+    /// 工具说明按第一个 `——` 切：说明本身再出现一次不能被截断。
+    #[test]
+    fn a_note_may_contain_the_separator() {
+        let spec = InjectSpec {
+            tools: vec![ToolNote {
+                name: "zread".into(),
+                note: "看别人的仓库 —— 不要 clone 下来再翻".into(),
+            }],
+            ..Default::default()
+        };
+        assert_eq!(parse_block(&render_block(&spec)), spec);
+    }
+
+    /// 装的是旧版本的措辞时要能看出来，界面才有理由提示「按一下更新」。
+    #[test]
+    fn outdated_is_flagged_so_the_ui_can_offer_a_refresh() {
+        let (_keep, root, bk) = sandbox();
+        let rel = instructions_path(CliTarget::ClaudeCode);
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            format!("{BEGIN}\n\n## 图片处理（ccLoad 视觉辅助）\n\n旧版本的正文。\n\n{END}\n"),
+        )
+        .unwrap();
+
+        let st = state(&root, CliTarget::ClaudeCode);
+        assert!(st.injected);
+        assert!(st.spec.as_ref().unwrap().vision, "旧块也要认出视觉段");
+        assert!(st.outdated, "措辞变了却没标成旧版");
+
+        // 按「更新」重写一遍之后就不该再报旧版了。
+        apply(
+            &root,
+            CliTarget::ClaudeCode,
+            &InjectSpec { vision: true, ..Default::default() },
+            "s1",
+            &bk,
+        )
+        .unwrap();
+        let after = state(&root, CliTarget::ClaudeCode);
+        assert!(!after.outdated, "重写之后还在报旧版");
+        assert_eq!(after.spec.unwrap(), InjectSpec { vision: true, ..Default::default() });
+    }
+
+    /// 没注入的文件不该被标成「旧版」—— 那一格只在装着东西时才有意义。
+    #[test]
+    fn a_file_without_a_block_is_not_outdated() {
+        let (_keep, root, _bk) = sandbox();
+        let st = state(&root, CliTarget::GeminiCli);
+        assert!(!st.injected);
+        assert!(!st.outdated);
+        assert!(st.spec.is_none());
+    }
+
+    /// 分段标记存在的意义：用户那段写在最后、又没有自己的标题时，边界只能靠它。
+    /// 这一条如果红了，说明有人把 `MARK_CUSTOM` 拿掉了 —— 后果是那段文字回显不
+    /// 出来，再按一次「更新」就从磁盘上没了。
+    #[test]
+    fn text_after_the_last_section_is_not_swallowed() {
+        let spec = InjectSpec {
+            vision: true,
+            image: true,
+            custom: "我自己的规则，没有标题，就跟在最后一节后面。".into(),
+            ..Default::default()
+        };
+        let block = render_block(&spec);
+        assert_eq!(parse_block(&block).custom, spec.custom);
+
+        // 同样的内容，去掉标记（= 老格式）就再也分不出来了 —— 这是老格式本身的
+        // 歧义，也正是「旧版」角标存在的理由。
+        let legacy: String = block
+            .lines()
+            .filter(|l| marker_kind(l).is_none())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let got = parse_block(&legacy);
+        assert!(got.vision && got.image, "开关还是要认得出来");
+        assert!(
+            state_is_outdated(&legacy),
+            "认不全的老块必须报旧版，用户才知道按「更新」"
+        );
+    }
+
+    fn state_is_outdated(block: &str) -> bool {
+        render_block(&parse_block(block)) != block
+    }
 }
+

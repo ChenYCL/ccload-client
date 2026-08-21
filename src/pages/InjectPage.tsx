@@ -43,38 +43,21 @@ export function InjectPage() {
   });
   const [picked, setPicked] = useState<CliTarget[]>([]);
 
-  // 视觉那段的权威文本。用它把已注入的块拆回「生成的」和「用户写的」两半 ——
-  // 前端自己按标题猜边界会在后端改一个字时就错位，而错位的后果是把生成内容
-  // 当成用户输入再写一遍，块越滚越长。
-  const visionText = useQuery({
-    queryKey: ["inject-preview", "vision-only"],
-    queryFn: () => api.injectPreview({ vision: true, image: false, tools: [], custom: "" }),
-    staleTime: Infinity,
-  });
-  // 生图那段同理。两段各自独立地从块里剥掉，剩下的才是用户自己写的。
-  const imageText = useQuery({
-    queryKey: ["inject-preview", "image-only"],
-    queryFn: () => api.injectPreview({ vision: false, image: true, tools: [], custom: "" }),
-    staleTime: Infinity,
-  });
-
-  // 已注入的块回显成用户自己那段。只在第一次读齐时填，之后不再覆盖 ——
-  // 否则用户正在编辑时一次后台 refetch 就会把输入框冲掉。
+  // 已注入的块回显成界面状态。**解析在后端做**（`system_inject::parse_block`）：
+  // 前端曾经的做法是「把某一段单独渲染一遍，再看块里包不包含这段文字」，那个
+  // 判断在我们自己改一个字的那天就失效了 —— 用户机器上的块是上个版本写的，
+  // 逐字对不上，于是勾选框显示成没勾，整段旧文字被当成用户手写内容，再按一次
+  // 「更新」就写出一段旧的加一段新的。
+  //
+  // 只在第一次读到时填，之后不再覆盖，否则用户正在编辑时一次后台 refetch 就会
+  // 把输入框冲掉。
   const [seeded, setSeeded] = useState(false);
   useEffect(() => {
     if (seeded || !states.data) return;
-    if (visionText.data === undefined || imageText.data === undefined) return;
-    const existing = states.data.find((s) => s.injected && s.block);
-    if (existing?.block) {
-      const hasVision = existing.block.includes(visionText.data);
-      const hasImage = existing.block.includes(imageText.data);
-      let rest = existing.block;
-      if (hasVision) rest = rest.replace(visionText.data, "");
-      if (hasImage) rest = rest.replace(imageText.data, "");
-      setSpec({ vision: hasVision, image: hasImage, tools: [], custom: rest.trim() });
-    }
+    const existing = states.data.find((s) => s.injected && s.spec);
+    if (existing?.spec) setSpec(existing.spec);
     setSeeded(true);
-  }, [states.data, visionText.data, imageText.data, seeded]);
+  }, [states.data, seeded]);
 
   // 五家 CLI 已装的扩展，按 id 去重并记下装在哪几家。
   //
@@ -337,6 +320,18 @@ export function InjectPage() {
                       ? t("未注入")
                       : t("文件不存在")}
               </span>
+              {/* 装着的是上个版本的措辞。不标出来的话用户没有任何线索知道该按
+                  「更新」—— 界面显示「已注入」，而模型读到的还是旧说明。 */}
+              {st?.outdated && (
+                <span
+                  className="shrink-0 rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] text-sky-700"
+                  title={t(
+                    "这段是旧版本写进去的，内容仍然生效。按「更新」会用当前措辞重写它 —— 先展开上面的预览看一眼要写什么。",
+                  )}
+                >
+                  {t("旧版")}
+                </span>
+              )}
               {willOverflow && (
                 <span
                   className="shrink-0 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-700"

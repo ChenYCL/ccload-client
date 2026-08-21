@@ -253,6 +253,9 @@ registerDict("en", {
   未注入: "Not injected",
   文件不存在: "File does not exist",
   可能超长: "May overflow",
+  旧版: "Outdated",
+  "这段是旧版本写进去的，内容仍然生效。按「更新」会用当前措辞重写它 —— 先展开上面的预览看一眼要写什么。":
+    "This block was written by an older version and is still in effect. “Update” rewrites it with the current wording — expand the preview above first to see exactly what goes in.",
   "Grok Build 会把规则文件截断到 10000 字符，超出的部分静默丢失":
     "Grok Build truncates rule files at 10,000 characters and silently drops the rest",
   写入: "Write",
