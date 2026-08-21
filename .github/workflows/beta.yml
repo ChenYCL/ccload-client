@@ -67,9 +67,11 @@ jobs:
           # Rosetta 翻译的 WebKit 会 SIGBUS（表现为白屏/闪退）。
           - os: macos-14
             label: macos-universal
+            plat: mac
             tauri_args: --target universal-apple-darwin
           - os: ubuntu-22.04
             label: linux-x86_64
+            plat: linux
             tauri_args: --bundles appimage,deb
           # beta 的 Windows 只出 NSIS，不出 MSI。MSI 的 ProductVersion 要求
           # 预发布标识「纯数字且 ≤65535」，`beta.20260819.1` 直接被拒：
@@ -81,6 +83,7 @@ jobs:
           # MSI 由 release.yml 覆盖：正式 tag 是干净的 v0.1.0，本来就合法。
           - os: windows-2022
             label: windows-x86_64
+            plat: win
             tauri_args: --bundles nsis
     steps:
       - uses: actions/checkout@v4
@@ -198,8 +201,11 @@ jobs:
           set -euo pipefail
           mkdir -p release-assets
           TAG="${{ needs.bump.outputs.tag }}"
-          KERNEL="$(tr -d '\r\n' < KERNEL_VERSION)"
-          NAME="ccLoad-${TAG}-kernel-${KERNEL}-${{ matrix.label }}"
+          # 平台放**最前面**：GitHub 的 Assets 列表按宽度截断文件名，原来的
+          # `ccLoad-<长版本号>-kernel-<长内核号>-<平台>` 正好在平台那里被截掉，
+          # 一列下来五个文件名看着一模一样，分不出哪个是 mac 哪个是 win。
+          # 内核版本从文件名里拿掉了 —— release notes 里有，不必挤在这。
+          NAME="ccLoad-${{ matrix.plat }}-${TAG}"
 
           # 各平台的产物散在不同的 bundle 子目录，统一按后缀捞。
           find src-tauri/target -type f \
@@ -231,6 +237,13 @@ jobs:
     needs: [bump, build]
     runs-on: ubuntu-22.04
     steps:
+      # 要算 changelog 就得有完整历史和已有的 tag。ref 必须和 bump/build 检出的
+      # 是同一个，否则 notes 里列的提交和包里装的代码对不上。
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
+          fetch-depth: 0
+
       - uses: actions/download-artifact@v4
         with:
           path: dist-assets
@@ -243,6 +256,79 @@ jobs:
           sha256sum * > checksums.txt
           ls -lh
 
+      # release notes 里要能看出这一版**做了什么**。原来只有一句「自动构建」+
+      # commit 号，等于让人自己去翻 git log —— 那 release 页就只是个下载页。
+      - name: Build release notes
+        id: notes
+        env:
+          TAG: ${{ needs.bump.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          # 上一枚 beta tag。本次的 tag 由 action-gh-release 在这一步之后才创建，
+          # 所以现存最新的那枚就是上一版。按创建时间排而不是版本号：beta 号带
+          # 日期段（…beta.20260821.8），跨天时 refname 排序会给出错的顺序。
+          PREV=$(git tag -l 'v*-beta.*' --sort=-creatordate | head -n1 || true)
+          if [ -n "$PREV" ]; then
+            RANGE="${PREV}..HEAD"
+            COMPARE="自 \`${PREV}\` 以来"
+          else
+            # 第一枚 beta：没有上一版可比，退到最近 20 条，别让 notes 空着。
+            RANGE="HEAD~20..HEAD"
+            COMPARE="最近的改动"
+          fi
+
+          # 只取提交标题；合并提交不要（它们没有信息量，只有「Merge branch」）。
+          git log --no-merges --pretty=format:'%s' "$RANGE" > /tmp/subjects.txt || true
+
+          KERNEL=$(cat KERNEL_VERSION 2>/dev/null | tr -d '[:space:]' || echo unknown)
+
+          {
+            echo "### ${COMPARE}"
+            echo
+            # 按 Angular 类型分组。仓库的提交规范就是这个，分完组一眼能看出
+            # 这一版是加功能还是修 bug。
+            emit() {
+              local pattern="$1" title="$2"
+              local lines
+              lines=$(grep -E "^${pattern}(\(.+\))?!?:" /tmp/subjects.txt || true)
+              [ -z "$lines" ] && return 0
+              echo "**${title}**"
+              echo
+              # 去掉类型前缀，只留人话；scope 留着，它指明改的是哪一块。
+              echo "$lines" | sed -E "s/^${pattern}(\((.+)\))?!?: */- \2 · /" \
+                            | sed -E 's/^- · /- /'
+              echo
+            }
+            emit 'feat'  '新功能'
+            emit 'fix'   '修复'
+            emit 'perf'  '性能'
+            emit 'refactor' '重构'
+            emit 'docs'  '文档'
+            emit 'chore|build|ci|test|style' '其它'
+            # 不符合规范的提交也要出现，否则会被静默吞掉。
+            OTHER=$(grep -vE '^(feat|fix|perf|refactor|docs|chore|build|ci|test|style)(\(.+\))?!?:' /tmp/subjects.txt || true)
+            if [ -n "$OTHER" ]; then
+              echo "**未分类**"
+              echo
+              echo "$OTHER" | sed 's/^/- /'
+              echo
+            fi
+
+            echo "---"
+            echo
+            echo "自动构建：\`main\` 分支每次合入都会出一个 beta 包。"
+            echo
+            echo "- 对应提交：${GITHUB_SHA}"
+            echo "- 打进本版的 ccLoad 内核：\`${KERNEL}\`"
+            echo
+            echo "macOS 包是 universal（arm64 + x86_64）。壳体与内核架构必须一致，"
+            echo "否则 Apple Silicon 上 Rosetta 翻译的 WebKit 会 SIGBUS 白屏。"
+          } > /tmp/notes.md
+
+          echo "--- 生成的 notes ---"
+          cat /tmp/notes.md
+
       - name: Publish
         uses: softprops/action-gh-release@v2
         with:
@@ -252,12 +338,5 @@ jobs:
           name: Beta ${{ needs.bump.outputs.tag }}
           prerelease: true
           draft: false
-          body: |
-            自动构建：`main` 分支每次合入都会出一个 beta 包。
-
-            - 对应提交：${{ github.sha }}
-            - 打进本版的 ccLoad 内核：仓库根目录 `KERNEL_VERSION`
-
-            macOS 包是 universal（arm64 + x86_64）。壳体与内核架构必须一致，
-            否则 Apple Silicon 上 Rosetta 翻译的 WebKit 会 SIGBUS 白屏。
+          body_path: /tmp/notes.md
           files: release-assets/*

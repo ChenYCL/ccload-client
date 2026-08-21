@@ -31,12 +31,15 @@ jobs:
           # Rosetta 翻译的 WebKit 会 SIGBUS（表现为白屏/闪退）。
           - os: macos-14
             label: macos-universal
+            plat: mac
             tauri_args: --target universal-apple-darwin
           - os: ubuntu-22.04
             label: linux-x86_64
+            plat: linux
             tauri_args: --bundles appimage,deb
           - os: windows-2022
             label: windows-x86_64
+            plat: win
             tauri_args: --bundles msi,nsis
 
     steps:
@@ -152,8 +155,9 @@ jobs:
           set -euo pipefail
           mkdir -p release-assets
           VERSION="${GITHUB_REF_NAME:-dev}"
-          KERNEL="$(tr -d '\r\n' < KERNEL_VERSION)"
-          NAME="ccLoad-${VERSION}-kernel-${KERNEL}-${{ matrix.label }}"
+          # 平台放最前面，理由同 beta.yml：Assets 列表会按宽度截断文件名，
+          # 平台放末尾正好被截掉，一列文件名看着一模一样。
+          NAME="ccLoad-${{ matrix.plat }}-${VERSION}"
 
           # 各平台的产物散在不同的 bundle 子目录，统一按后缀捞。
           find src-tauri/target -type f \
@@ -199,6 +203,9 @@ jobs:
           sha256sum * > checksums.txt
           ls -lh
 
+      - id: kernel
+        run: echo "version=$(tr -d '[:space:]' < KERNEL_VERSION)" >> "$GITHUB_OUTPUT"
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
@@ -207,7 +214,7 @@ jobs:
           # 先发草稿：包体上百 MB，发出去之前值得人眼看一下产物齐不齐。
           draft: true
           body: |
-            打进本版的 ccLoad 内核：见仓库根目录 `KERNEL_VERSION`。
+            打进本版的 ccLoad 内核：`${{ steps.kernel.outputs.version }}`
 
             macOS 包是 universal（arm64 + x86_64）。壳体与内核架构必须一致，
             否则 Apple Silicon 上 Rosetta 翻译的 WebKit 会 SIGBUS 白屏。
