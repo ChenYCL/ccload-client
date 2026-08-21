@@ -12,6 +12,7 @@ import {
   Gauge,
   Globe,
   LayoutDashboard,
+  LifeBuoy,
   ScrollText,
   Settings,
   GitBranch,
@@ -53,6 +54,7 @@ const GROUPS: { title: string; items: { id: Page; label: string; icon: typeof Ac
       { id: "dashboard", label: "总览", icon: LayoutDashboard },
       { id: "logs", label: "实时日志", icon: ScrollText },
       { id: "usage", label: "订阅用量", icon: Gauge },
+      { id: "sessions", label: "会话救援", icon: LifeBuoy },
     ],
   },
   {

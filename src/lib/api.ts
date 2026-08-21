@@ -21,8 +21,11 @@ import type {
   ImportEntry,
   ImportPreview,
   ImportResult,
+  CompactReport,
   InjectOutcome,
   InjectSpec,
+  SessionInfo,
+  SlimReport,
   InjectState,
   KernelConfig,
   KernelStatus,
@@ -197,6 +200,21 @@ export const api = {
       targets,
       source: source ?? null,
     }),
+
+  /** 扫本机所有 Claude Code 会话。读几十 MB，后端跑在 blocking 线程池上。 */
+  sessionList: () => invoke<SessionInfo[]>("session_list"),
+  /**
+   * 瘦身：砍图 + 截长工具结果。纯本地、不花 token，但信息是真丢了。
+   * `target` 是**真实**口径的目标上下文。
+   */
+  sessionSlim: (path: string, target: number, textLimit: number) =>
+    invoke<SlimReport>("session_slim", { path, target, textLimit }),
+  /**
+   * 分块总结：把活动链切成小段各自总结，再追加原生的压缩边界 + 摘要。
+   * 旧内容一个字节不动，所以出问题还能回去。
+   */
+  sessionCompact: (path: string, model: string, keepTail: number, chunkTokens: number) =>
+    invoke<CompactReport>("session_compact", { path, model, keepTail, chunkTokens }),
 
   /** Open a URL in the system browser via the opener plugin. */
   openExternal: (url: string) => openUrl(url),

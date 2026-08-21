@@ -727,4 +727,49 @@ registerDict("en", {
   "什么时候用它，例如：改代码前先查调用链，比 grep 准":
     "When to use it, e.g. check the call graph before editing — more reliable than grep",
   "{n}/5 家": "{n}/5 CLIs",
+
+  // ---- 会话救援 ----
+  会话救援: "Session rescue",
+  重新扫描: "Rescan",
+  瘦身: "Slim down",
+  分块总结: "Chunked summary",
+  瘦身完成: "Slimmed down",
+  分块总结完成: "Chunked summary done",
+  备份: "Backup",
+  正在运行: "Running",
+  瘦身目标上下文: "Target context after slimming",
+  总结用的模型: "Model used for summarising",
+  两种救法的区别: "How the two rescues differ",
+  "选一个内核里有的模型": "Pick a model the kernel actually serves",
+  "内核里没有可用模型": "No models available from the kernel",
+  "没有找到任何会话。": "No sessions found.",
+  "先在上面选一个模型": "Pick a model above first",
+  "{n} 分钟前": "{n} min ago",
+  "{n} 小时前": "{n}h ago",
+  "{n} 天前": "{n}d ago",
+  "压缩过 {n} 次": "compacted {n}\u00d7",
+  "会话撑过中转的上限之后会卡死：/compact 自己也要把整段对话发上去，所以它同样超限，从此只会报 400 too long。这里能把它弄回来。表格里的 token 数来自上游回报的用量，不是估算。":
+    "Once a session outgrows your relay's ceiling it deadlocks: /compact has to send the whole conversation too, so it overflows just the same and every request comes back 400 too long. This page gets it back. The token counts below come from usage reported by the upstream \u2014 they are not estimates.",
+  "目标要给天花板留余量 —— 压缩请求本身也要把整段对话发一遍，顶着上限做不成任何事。":
+    "Leave headroom below the ceiling \u2014 a compaction request has to resend the whole conversation, so sitting right at the limit gets you nowhere.",
+  "砍掉 {img} 张图、截短 {txt} 处文本，上下文 {before} → {after}，文件 {b1} → {b2}":
+    "Stripped {img} images, truncated {txt} texts; context {before} \u2192 {after}, file {b1} \u2192 {b2}",
+  "切成 {n} 块分别总结，保留最近 {k} 轮原文，摘要约 {s}（原 {before}）":
+    "Summarised in {n} chunks, kept the last {k} turns verbatim; summary is about {s} (was {before})",
+  "最后一次压缩之前的内容本来就不进上下文，救援只处理它之后的部分":
+    "Anything before the last compaction never enters the context anyway; rescue only touches what came after it",
+  "先退出那个 Claude Code 窗口 —— 进程里有内存态，现在改会被它盖回去":
+    "Quit that Claude Code window first \u2014 the process holds in-memory state and would write over your changes",
+  "这份记录里没有用量数据，拿不到真实上下文 —— 不敢下手":
+    "This transcript has no usage data, so the real context size is unknown \u2014 refusing to touch it",
+  "砍图 + 截长工具结果。本地完成，不花 token，但信息真的丢了":
+    "Strips images and truncates long tool results. Local, costs no tokens \u2014 but what it cuts is genuinely gone",
+  "分块总结后追加一个原生压缩边界。旧内容一个字节不动，花 token 但保信息":
+    "Summarises in chunks, then appends a native compaction boundary. Costs tokens, keeps the information, and leaves the old content untouched",
+  "瘦身 —— 把图片换成占位符、超长工具结果留首尾。纯本地、秒级、不花 token，但被砍掉的内容是真的没了。急着把会话弄活用它。":
+    "Slim down \u2014 replaces images with placeholders and keeps only the head and tail of oversized tool results. Purely local, takes seconds, costs no tokens, but whatever it cuts is gone for good. Use it when you just need the session breathing again.",
+  "分块总结 —— 把对话切成小段分别总结再合并，然后追加一个和 Claude Code 自己压缩时一模一样的边界。任何一次请求都远低于天花板，所以不会像 /compact 那样自己也超限。花 token，但信息以摘要形式留下来了。":
+    "Chunked summary \u2014 splits the conversation into small pieces, summarises each, merges them, then appends exactly the same boundary Claude Code writes when it compacts on its own. Every single request stays far below the ceiling, so unlike /compact it cannot overflow. It costs tokens, but the information survives as a summary.",
+  "两种都会先把原文件另存一份 .bak，而且都不删记录 —— transcript 是靠 uuid 串起来的链表，删行会让恢复出来的会话缺胳膊少腿。":
+    "Both save the original to a .bak first, and neither deletes any record \u2014 a transcript is a linked list held together by uuids, so dropping lines leaves the resumed session full of holes.",
 });

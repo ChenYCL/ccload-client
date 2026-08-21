@@ -131,6 +131,27 @@ cd src-tauri && cargo test
 不要直接运行 `src-tauri/binaries/ccload`：它没有 `--version` 之类的短路参数，
 任何参数都会让它启动服务器，并在当前目录建一个 `data/ccload.db`。
 
+### 会话卡在 400 too long 的时候
+
+Claude Code 按**模型声明的窗口**决定何时自动压缩，而走 ccLoad 时真正拦你的是
+**中转那一家的上限**。两个数对不上（典型：模型名挂了 `[1m]`，中转其实只给
+500k），阈值就被算在一个不存在的分母上 —— 等它触发已经越过真实天花板了。之后
+`/compact` 自己也发不出去，因为它同样要把整段 transcript 发上去。
+
+界面上在「会话救援」页；命令行等价物：
+
+```bash
+python3 scripts/rescue-session.py <session.jsonl>          # 只看报告
+python3 scripts/rescue-session.py <session.jsonl> --write  # 真的改
+```
+
+先退出那个 Claude Code 窗口再动手 —— 进程里有内存态，会把你的修改盖回去。
+
+预防的办法是把真实上限告诉客户端，在「CLI 接管」页的环境变量里填：
+`CLAUDE_CODE_MAX_CONTEXT_TOKENS` 填中转的真实上限，
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW` 填一个留足余量的值（压缩请求本身也要把整段
+对话发一遍，顶着上限做不成任何事）。
+
 ---
 
 ## 代码约定

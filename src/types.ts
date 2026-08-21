@@ -178,6 +178,7 @@ export type Page =
   | "fallback"
   | "models"
   | "inject"
+  | "sessions"
   | "extensions"
   | "graph"
   | "settings";
@@ -661,4 +662,56 @@ export type UsageProbeReport = {
   found: SelfReportedUsage[];
   /** 只有**真的出错**的才在这里；「上游没实现」不算错。 */
   errors: string[];
+};
+
+/* ---------------------------------------------------------------------------
+   会话救援。
+
+   Claude Code 按**模型声明的窗口**决定何时自动压缩，而走 ccLoad 时真正拦你的
+   是**中转那一家的上限**。两个数对不上时（模型名挂 `[1m]`、中转其实只给
+   500k），阈值被算在一个不存在的分母上，等触发时已经越过真实天花板 —— 之后
+   `/compact` 自己也发不出去，因为它同样要把整段 transcript 发上去。
+
+   字段对照 src-tauri/src/services/session_rescue.rs。
+--------------------------------------------------------------------------- */
+
+export type SessionInfo = {
+  /** 会话 uuid，也是文件名。`claude --resume` 认它。 */
+  id: string;
+  path: string;
+  cwd: string;
+  /** Claude Code 起的短名，比 uuid 好认。 */
+  slug: string;
+  entries: number;
+  bytes: number;
+  /**
+   * **真实**上下文，来自上游回报的 usage（input + 两个 cache 字段之和）——
+   * 不是估的。只看 `input_tokens` 会小一个数量级：长会话里它常年是个位数。
+   */
+  last_context: number;
+  peak_context: number;
+  /** unix 秒 */
+  modified_at: number;
+  /** 有 claude 进程正拿着它 —— 这时候改是白改，进程落盘会盖回去。 */
+  live: boolean;
+  /** 已成功压缩过几次。>0 说明最后一个边界之前的内容本来就不进上下文。 */
+  compactions: number;
+};
+
+export type SlimReport = {
+  images_stripped: number;
+  texts_truncated: number;
+  bytes_before: number;
+  bytes_after: number;
+  context_before: number;
+  context_after: number;
+  backup: string;
+};
+
+export type CompactReport = {
+  chunks: number;
+  kept_tail: number;
+  context_before: number;
+  summary_tokens: number;
+  backup: string;
 };
