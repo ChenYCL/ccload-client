@@ -621,3 +621,28 @@ export type RefreshResult = {
   failed: number;
   results: RefreshItem[];
 };
+
+/* ---------------------------------------------------------------------------
+   渠道自报用量。
+
+   内核只给 5 家 OAuth 渠道采样额度；别的渠道（api_key 型）没有任何位置拿得到
+   订阅用量。但有些上游自己知道 —— 比如 cursor2Oauth 手里有 Cursor 的凭证。
+   所以定一个自报契约：上游在根地址提供 `GET /usage`，`windows[]` 形状对齐
+   内核的 `oauth_usage.windows[]`，这一页就能把它并排画出来。
+--------------------------------------------------------------------------- */
+
+export type SelfReportedUsage = {
+  channel_id: number;
+  channel_name: string;
+  provider: string;
+  plan_type: string;
+  windows: OAuthUsageWindow[];
+  /** 上游给的原话。我们算的百分比要和它对得上。 */
+  display_message: string;
+};
+
+export type UsageProbeReport = {
+  found: SelfReportedUsage[];
+  /** 只有**真的出错**的才在这里；「上游没实现」不算错。 */
+  errors: string[];
+};

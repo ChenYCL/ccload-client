@@ -174,6 +174,7 @@ pub fn run() {
             commands::inject::inject_state,
             commands::inject::inject_preview,
             commands::inject::inject_apply,
+            commands::channel_usage::channel_usage_probe,
             commands::settings::settings_get,
             commands::settings::settings_set_kernel,
             commands::settings::settings_set_sandbox,

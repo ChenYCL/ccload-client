@@ -1,12 +1,12 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, RefreshCw } from "lucide-react";
+import { AlertTriangle, Radar, RefreshCw } from "lucide-react";
 import { api } from "../lib/api";
 import { cn } from "../lib/cn";
 import { errText } from "../lib/err";
 import { useT, type Translate } from "../i18n";
 import { fmtCost } from "../components/formatters";
-import type { OAuthUsageWindow, UsageChannel } from "../types";
+import type { OAuthUsageWindow, SelfReportedUsage, UsageChannel } from "../types";
 
 /// 订阅额度剩余。
 ///
@@ -145,6 +145,30 @@ export function UsagePage() {
     queryFn: () => api.admin<UsageChannel[]>("GET", "channels"),
   });
 
+  // 非 OAuth 渠道：内核不给它们采样额度，但上游自己可能知道（cursor2Oauth
+  // 这类代理手里有原厂凭证）。它们走「自报」那条路。
+  const otherChannels = useMemo(
+    () =>
+      (channels.data?.data ?? []).filter(
+        (c) => !(c.auth_type && OAUTH_AUTH_TYPES.has(c.auth_type)),
+      ),
+    [channels.data],
+  );
+
+  const probe = useMutation({
+    mutationFn: () => api.channelUsageProbe(otherChannels.map((c) => c.id)),
+    onSuccess: (r) => {
+      if (r.found.length === 0 && r.errors.length === 0) {
+        setMessage(t("这些渠道的上游都没有提供 /usage 接口。"));
+      } else if (r.errors.length > 0) {
+        setMessage(r.errors.join("\n"));
+      } else {
+        setMessage("");
+      }
+    },
+    onError: (e) => setMessage(errText(e)),
+  });
+
   const oauthChannels = useMemo(
     () =>
       (channels.data?.data ?? []).filter(
@@ -203,6 +227,18 @@ export function UsagePage() {
           <RefreshCw className={cn("h-4 w-4", refresh.isPending && "animate-spin")} />
           {refresh.isPending ? t("刷新中…") : t("刷新额度")}
         </button>
+        {/* 自报是另一条路：内核不管，客户端直接问上游。所以单独一个按钮，
+            而且必须是点了才发 —— 自动探测会朝一堆第三方上游发它们根本不认识
+            的 /usage 请求，是在给别人的服务器添噪声。 */}
+        <button
+          onClick={() => probe.mutate()}
+          disabled={probe.isPending || otherChannels.length === 0}
+          title={t("问非 OAuth 渠道的上游有没有自报用量的接口")}
+          className="flex shrink-0 items-center gap-1 rounded-lg border border-border bg-surface-raised px-3 py-1.5 text-sm hover:bg-surface-2 disabled:opacity-40"
+        >
+          <Radar className={cn("h-4 w-4", probe.isPending && "animate-pulse")} />
+          {probe.isPending ? t("探测中…") : t("探测自报用量")}
+        </button>
       </div>
 
       {oauthChannels.length === 0 && (
@@ -225,6 +261,10 @@ export function UsagePage() {
           />
         ))}
       </ul>
+
+      {(probe.data?.found ?? []).map((u) => (
+        <SelfReportedCard key={u.channel_id} usage={u} />
+      ))}
 
       {message && <p className="mt-4 whitespace-pre-line text-sm text-accent">{message}</p>}
     </div>
@@ -360,6 +400,60 @@ function WindowRow({ w, showExtra }: { w: OAuthUsageWindow; showExtra: boolean }
           </span>
         )}
       </div>
+    </li>
+  );
+}
+
+
+/// 上游自报的用量卡片。
+///
+/// 和上面那些 OAuth 卡片长一样，但数据来路完全不同 —— 那些是内核采样存下来的，
+/// 这些是客户端刚刚直接问上游要的。所以标一句「上游自报」，别让人以为内核也
+/// 在管它：内核对这类渠道的额度一无所知，刷新按钮对它们没用。
+function SelfReportedCard({ usage }: { usage: SelfReportedUsage }) {
+  const t = useT();
+  const dupLabels = useMemo(() => {
+    const seen = new Map<string, number>();
+    for (const w of usage.windows) {
+      const k = windowLabel(w, t);
+      seen.set(k, (seen.get(k) ?? 0) + 1);
+    }
+    return new Set([...seen].filter(([, n]) => n > 1).map(([k]) => k));
+  }, [usage.windows, t]);
+
+  return (
+    <li className="card mt-3 p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-medium">{usage.channel_name}</span>
+        <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-muted">
+          {usage.provider || t("上游自报")}
+        </span>
+        {usage.plan_type && <span className="text-xs text-muted">{usage.plan_type}</span>}
+        <span
+          className="rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] text-sky-700"
+          title={t("这份数据是客户端直接问上游要的，内核并不知道它")}
+        >
+          {t("上游自报")}
+        </span>
+      </div>
+
+      <ul className="mt-3 space-y-2.5">
+        {usage.windows.map((w) => (
+          <WindowRow
+            key={`${w.limit_name}|${w.kind}`}
+            w={w}
+            showExtra={dupLabels.has(windowLabel(w, t))}
+          />
+        ))}
+      </ul>
+
+      {/* 上游的原话。我们算出来的百分比要和它对得上 —— 对不上就是解析错了，
+          与其让用户自己发现，不如把原文摆在旁边。 */}
+      {usage.display_message && (
+        <p className="mt-2 text-[11px] text-muted">
+          {t("上游原文")}：{usage.display_message}
+        </p>
+      )}
     </li>
   );
 }

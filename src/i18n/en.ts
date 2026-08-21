@@ -709,4 +709,15 @@ registerDict("en", {
     "Use this after the upstream changed its model list (e.g. dropped a batch of old names). The kernel's default “merge” only ever adds, so retired models stay in the candidate list forever.",
   "只把上游新增的模型加进来，渠道里已有的一个都不动。":
     "Only pulls in models the upstream added; nothing already in the channel is touched.",
+  // ---- 渠道自报用量 ----
+  探测自报用量: "Probe self-reported usage",
+  "探测中…": "Probing…",
+  "问非 OAuth 渠道的上游有没有自报用量的接口":
+    "Ask non-OAuth channels whether their upstream reports usage",
+  "这些渠道的上游都没有提供 /usage 接口。":
+    "None of these upstreams expose a /usage endpoint.",
+  上游自报: "self-reported",
+  "这份数据是客户端直接问上游要的，内核并不知道它":
+    "This came straight from the upstream — the kernel knows nothing about it",
+  上游原文: "Upstream says",
 });

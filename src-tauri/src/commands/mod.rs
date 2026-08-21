@@ -2,6 +2,7 @@ pub mod graph;
 pub mod config_io;
 pub mod kernel;
 pub mod admin;
+pub mod channel_usage;
 pub mod cli;
 pub mod extensions;
 pub mod fallback;

@@ -1,6 +1,7 @@
 pub mod graph;
 pub mod channel_writer;
 pub mod admin;
+pub mod channel_usage;
 pub mod cli_advanced;
 pub mod cli_backup;
 pub mod cli_config;

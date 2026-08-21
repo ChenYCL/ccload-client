@@ -28,6 +28,7 @@ import type {
   KernelStatus,
   McpUsage,
   RefreshMode,
+  UsageProbeReport,
   RefreshResult,
   SyncOutcome,
   TakeoverOptions,
@@ -144,6 +145,13 @@ export const api = {
       query: null,
       body: { channel_ids: channelIds, mode },
     }),
+
+  /**
+   * 问这些渠道的上游有没有自报用量（根地址下的 `GET /usage`）。
+   * 没实现的渠道会被静默跳过 —— 那是绝大多数渠道的正常状态。
+   */
+  channelUsageProbe: (channelIds: number[]) =>
+    invoke<UsageProbeReport>("channel_usage_probe", { channelIds }),
 
   /** 自带 MCP 工具（ccload-vision）的调用次数与耗时。别家 MCP 不在口径内。 */
   mcpUsageStats: () => invoke<McpUsage>("mcp_usage_stats"),
