@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Check, Eye, FileText } from "lucide-react";
+import { Boxes, Check, Eye, FileText } from "lucide-react";
 import { api } from "../lib/api";
 import { cn } from "../lib/cn";
 import { errText } from "../lib/err";
 import { useT } from "../i18n";
 import { ALL_TARGETS, TARGET_LABELS } from "../lib/targets";
-import { TextArea } from "../components/ui/Input";
+import { TextArea, TextInput } from "../components/ui/Input";
 import type { CliTarget, InjectSpec, InjectState } from "../types";
 
 /// 系统注入。
@@ -35,7 +35,7 @@ export function InjectPage() {
     return m;
   }, [states.data]);
 
-  const [spec, setSpec] = useState<InjectSpec>({ vision: true, custom: "" });
+  const [spec, setSpec] = useState<InjectSpec>({ vision: true, tools: [], custom: "" });
   const [picked, setPicked] = useState<CliTarget[]>([]);
 
   // 视觉那段的权威文本。用它把已注入的块拆回「生成的」和「用户写的」两半 ——
@@ -43,7 +43,7 @@ export function InjectPage() {
   // 当成用户输入再写一遍，块越滚越长。
   const visionText = useQuery({
     queryKey: ["inject-preview", "vision-only"],
-    queryFn: () => api.injectPreview({ vision: true, custom: "" }),
+    queryFn: () => api.injectPreview({ vision: true, tools: [], custom: "" }),
     staleTime: Infinity,
   });
 
@@ -57,6 +57,7 @@ export function InjectPage() {
       const hasVision = existing.block.includes(visionText.data);
       setSpec({
         vision: hasVision,
+        tools: [],
         custom: (hasVision
           ? existing.block.replace(visionText.data, "")
           : existing.block
@@ -66,8 +67,52 @@ export function InjectPage() {
     setSeeded(true);
   }, [states.data, visionText.data, seeded]);
 
+  // 五家 CLI 已装的扩展，按 id 去重并记下装在哪几家。
+  //
+  // 这一块的价值不是「再列一遍扩展管理」，而是：用户为 Claude Code 手写过的
+  // 用法说明（「codegraph 要在 grep 之前用」这类）往往只存在于
+  // ~/.claude/CLAUDE.md，另外四家一个字都看不到。在这里写一次，五家一起推。
+  const installed = useQuery({
+    queryKey: ["inject-installed"],
+    queryFn: async () => {
+      const per = await Promise.all(
+        ALL_TARGETS.map(async (tg) => {
+          try {
+            const items = await Promise.all([
+              api.extensionsList(tg, "mcp"),
+              api.extensionsList(tg, "skill"),
+            ]);
+            return items.flat().map((i) => ({ id: i.id, kind: i.kind, target: tg }));
+          } catch {
+            // 某家配置读不动只影响它自己那份清单，其余照常列。
+            return [];
+          }
+        }),
+      );
+      const byId = new Map<string, { id: string; kind: string; targets: CliTarget[] }>();
+      for (const it of per.flat()) {
+        // 自家的视觉 MCP 不进这张表：它上面已经有专门的一段，列两次只会让人
+        // 以为要写两遍说明。
+        if (it.id === "ccload-vision") continue;
+        const cur = byId.get(it.id) ?? { id: it.id, kind: it.kind, targets: [] };
+        if (!cur.targets.includes(it.target)) cur.targets.push(it.target);
+        byId.set(it.id, cur);
+      }
+      return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
+    },
+  });
+
+  const noteOf = (id: string) => spec.tools.find((t) => t.name === id)?.note ?? "";
+  const setNote = (id: string, note: string) => {
+    const rest = spec.tools.filter((t) => t.name !== id);
+    setSpec({ ...spec, tools: note ? [...rest, { name: id, note }] : rest });
+  };
+
   const preview = useQuery({
-    queryKey: ["inject-preview", spec.vision, spec.custom],
+    // key 必须覆盖 spec 的**每一个**字段。漏掉 tools 的后果是：改工具说明时
+    // 预览纹丝不动，用户以为没写进去 —— 而写入用的是 spec 本身，真按下「写入」
+    // 又确实生效了，于是预览和实际不一致，比没有预览更坏。
+    queryKey: ["inject-preview", spec.vision, spec.custom, JSON.stringify(spec.tools)],
     queryFn: () => api.injectPreview(spec),
   });
 
@@ -90,7 +135,7 @@ export function InjectPage() {
 
   const remove = useMutation({
     mutationFn: (targets: CliTarget[]) =>
-      api.injectApply(targets, { vision: false, custom: "" }),
+      api.injectApply(targets, { vision: false, tools: [], custom: "" }),
     onSuccess: async (rs) => {
       setMessage(
         rs
@@ -141,6 +186,45 @@ export function InjectPage() {
           </span>
         </label>
       </div>
+
+      {(installed.data?.length ?? 0) > 0 && (
+        <div className="mt-3 card p-4">
+          <div className="flex items-center gap-1.5 text-sm font-medium">
+            <Boxes className="h-4 w-4 text-accent" />
+            {t("已装的扩展")}
+          </div>
+          <p className="mt-1 text-xs leading-relaxed text-muted">
+            {t(
+              "MCP 的工具描述只说「它是干什么的」，不说「什么时候该想起它」。给一条你自己的判断标准，五家 CLI 一起生效 —— 不填的不会写进去。",
+            )}
+          </p>
+          <ul className="mt-2 divide-y divide-border/60 rounded-xl border border-border">
+            {installed.data?.map((it) => (
+              <li key={it.id} className="flex items-center gap-2 px-3 py-2">
+                <span className="w-40 shrink-0 truncate font-mono text-[11px]" title={it.id}>
+                  {it.id}
+                </span>
+                <span className="w-12 shrink-0 text-[10px] text-muted">{it.kind}</span>
+                {/* 装在哪几家：不同 CLI 装的扩展并不一致，写的说明却是五家共用的，
+                    不标出来会让人以为某条说明只对某一家生效。 */}
+                <span
+                  className="w-16 shrink-0 text-[10px] text-muted"
+                  title={it.targets.map((x) => TARGET_LABELS[x]).join(t("、"))}
+                >
+                  {t("{n}/5 家", { n: it.targets.length })}
+                </span>
+                <TextInput
+                  small
+                  value={noteOf(it.id)}
+                  onChange={(e) => setNote(it.id, e.target.value)}
+                  placeholder={t("什么时候用它，例如：改代码前先查调用链，比 grep 准")}
+                  className="flex-1"
+                />
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <div className="mt-3 card p-4">
         <div className="flex items-center gap-1.5 text-sm font-medium">

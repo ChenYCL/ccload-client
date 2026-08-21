@@ -720,4 +720,11 @@ registerDict("en", {
   "这份数据是客户端直接问上游要的，内核并不知道它":
     "This came straight from the upstream — the kernel knows nothing about it",
   上游原文: "Upstream says",
+  // ---- 系统注入：已装扩展的用法说明 ----
+  已装的扩展: "Installed extensions",
+  "MCP 的工具描述只说「它是干什么的」，不说「什么时候该想起它」。给一条你自己的判断标准，五家 CLI 一起生效 —— 不填的不会写进去。":
+    "An MCP's tool description says what it does, never when to reach for it. Write your own rule of thumb once and it applies to all five CLIs — anything left blank is not written.",
+  "什么时候用它，例如：改代码前先查调用链，比 grep 准":
+    "When to use it, e.g. check the call graph before editing — more reliable than grep",
+  "{n}/5 家": "{n}/5 CLIs",
 });

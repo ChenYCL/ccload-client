@@ -69,13 +69,38 @@ pub fn instructions_path(target: CliTarget) -> &'static str {
 pub struct InjectSpec {
     /// 视觉工具用法。装了 `ccload-vision` 却没人告诉模型该用，是这个功能的由来。
     pub vision: bool,
+    /// 给已装的第三方扩展写的「什么时候用它」。
+    pub tools: Vec<ToolNote>,
     /// 用户自己的规则，原样写进块里。
     pub custom: String,
 }
 
+/// 一条第三方扩展的用法说明。
+///
+/// 为什么需要它：MCP 的工具描述只有一句话，而且是写给「这个工具是干什么的」，
+/// 不是「什么时候该想起它」。装了 codegraph 不等于模型会在改代码前先去查调用链
+/// —— 那句话得有人写下来。用户为 Claude Code 手写过的这类说明，往往只存在于
+/// `~/.claude/CLAUDE.md` 里，另外四家 CLI 一个字都看不到；这里让它写一次、推五家。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ToolNote {
+    /// 扩展 id（MCP 服务器名 / skill 目录名 / agent 文件名）。
+    pub name: String,
+    /// 什么时候用它。空的条目直接跳过 —— 只写名字对模型没有任何增量信息，
+    /// 反而白占 token。
+    pub note: String,
+}
+
 impl InjectSpec {
+    fn live_tools(&self) -> Vec<&ToolNote> {
+        self.tools
+            .iter()
+            .filter(|t| !t.name.trim().is_empty() && !t.note.trim().is_empty())
+            .collect()
+    }
+
     pub fn is_empty(&self) -> bool {
-        !self.vision && self.custom.trim().is_empty()
+        !self.vision && self.custom.trim().is_empty() && self.live_tools().is_empty()
     }
 }
 
@@ -132,6 +157,14 @@ pub fn render_block(spec: &InjectSpec) -> String {
     let mut parts: Vec<String> = Vec::new();
     if spec.vision {
         parts.push(vision_section());
+    }
+    let tools = spec.live_tools();
+    if !tools.is_empty() {
+        let mut sec = String::from("## 本机可用的工具\n\n");
+        for t in tools {
+            sec.push_str(&format!("- `{}` —— {}\n", t.name.trim(), t.note.trim()));
+        }
+        parts.push(sec.trim_end().to_string());
     }
     let custom = spec.custom.trim();
     if !custom.is_empty() {
@@ -256,8 +289,41 @@ mod tests {
     fn spec() -> InjectSpec {
         InjectSpec {
             vision: true,
+            tools: vec![ToolNote {
+                name: "codegraph".into(),
+                note: "改代码前先查调用链，比 grep 准".into(),
+            }],
             custom: "永远说中文。".into(),
         }
+    }
+
+    /// 只有名字没有说明的条目要跳过：光写个工具名对模型没有任何增量信息
+    /// （工具清单它本来就看得到），白占每次请求的 token。
+    #[test]
+    fn tool_without_a_note_is_dropped() {
+        let spec = InjectSpec {
+            tools: vec![
+                ToolNote { name: "has-note".into(), note: "用它做 X".into() },
+                ToolNote { name: "no-note".into(), note: "   ".into() },
+                ToolNote { name: "  ".into(), note: "没有名字".into() },
+            ],
+            ..Default::default()
+        };
+        let out = render_block(&spec);
+        assert!(out.contains("has-note"), "{out}");
+        assert!(!out.contains("no-note"), "{out}");
+        assert!(!out.contains("没有名字"), "{out}");
+    }
+
+    /// 全是空说明时整个 spec 视为空 —— 不该因为勾了几个没写说明的工具就往
+    /// 用户文件里塞一个只有标题的空块。
+    #[test]
+    fn tools_with_no_notes_do_not_make_a_block() {
+        let spec = InjectSpec {
+            tools: vec![ToolNote { name: "x".into(), note: "".into() }],
+            ..Default::default()
+        };
+        assert!(spec.is_empty());
     }
 
     /// 这个模块的全部承诺：块外一个字节都不动。

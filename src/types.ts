@@ -193,8 +193,24 @@ export type Page =
 export type InjectSpec = {
   /** 视觉工具用法。文本模型不知道自己「看不见」，得明说。 */
   vision: boolean;
+  /** 给已装的第三方扩展写的「什么时候用它」。没写说明的条目会被后端丢掉。 */
+  tools: ToolNote[];
   /** 用户自己的规则，原样写进块里。 */
   custom: string;
+};
+
+/**
+ * 一条第三方扩展的用法说明。
+ *
+ * MCP 的工具描述只有一句「这个工具是干什么的」，不是「什么时候该想起它」。
+ * 装了 codegraph 不等于模型会在改代码前先查调用链 —— 那句话得有人写下来，
+ * 而且写一次要能推给五家 CLI。
+ */
+export type ToolNote = {
+  /** 扩展 id（MCP 服务器名 / skill 目录名 / agent 文件名）。 */
+  name: string;
+  /** 什么时候用它。留空 = 不写进去。 */
+  note: string;
 };
 
 export type InjectState = {
