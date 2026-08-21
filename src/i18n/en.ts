@@ -860,4 +860,14 @@ registerDict("en", {
   "改 Hook": "Hook change",
   "首次接管前的用户配置 —— 这一条永远不会被新快照挤掉":
     "Your config from before the first takeover — this one is never evicted by newer snapshots",
+
+  // ---- 系统注入：勾选不等于写入 ----
+  "{n} 个，可选填用法说明": "{n} installed — usage notes optional",
+  "已写 {n} 条": "{n} written",
+  "上面的改动还没写进文件。已注入的 {n} 家里存的还是旧内容。":
+    "The changes above are not written yet — the {n} injected CLI(s) still hold the old content.",
+  "更新这 {n} 家": "Update those {n}",
+  写到哪几家: "Write to which CLIs",
+  "上面勾的内容按下这一行的「写入 / 更新」才落到文件里":
+    "What you ticked above only reaches the file when you press Write / Update on one of these rows",
 });
