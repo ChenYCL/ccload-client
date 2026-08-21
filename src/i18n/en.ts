@@ -679,4 +679,15 @@ registerDict("en", {
   "{cli} 没有 {kind} 的配置位置": "{cli} has nowhere to put a {kind}",
   "第 {n} 层 · 优先级 {p}": "Hop {n} · priority {p}",
   " · 渠道 {c}": " · channel {c}",
+  // ---- 可搜索的上游模型选择器 ----
+  "第 {n} 层的上游模型": "Upstream model for hop {n}",
+  "先选右边的渠道，这里会列出它能服务的模型":
+    "Pick a channel on the right first and its models will be listed here",
+  "这个渠道还没配模型；点「校验上游模型」去问一次上游":
+    "This channel has no models configured yet — hit “Verify upstream models” to ask upstream",
+  展开候选: "Show suggestions",
+  收起候选: "Hide suggestions",
+  没有候选模型: "No suggestions",
+  "没有匹配的模型，可直接用你输入的名字":
+    "No match — what you typed will be used as-is",
 });

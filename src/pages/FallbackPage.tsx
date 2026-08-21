@@ -20,6 +20,7 @@ import { errText } from "../lib/err";
 import { Modal } from "../components/Modal";
 import { useReorder } from "../lib/useReorder";
 import { Select, TextInput } from "../components/ui/Input";
+import { ComboBox } from "../components/ui/ComboBox";
 
 /// Multi-layer model fallback. The kernel only does one hop (redirect_model)
 /// and then retries channels; this page turns a chain like
@@ -33,7 +34,30 @@ const hopPriority = (i: number) => 100 - i * 10;
 
 /// 编辑器里用得到的渠道字段。`enabled` 是关键：被禁用的渠道内核根本不会选，
 /// 绑在上面的那一层等于不存在。
-type ChannelLite = { id: number; name: string; enabled?: boolean };
+type ChannelLite = {
+  id: number;
+  name: string;
+  enabled?: boolean;
+  /// 渠道已配的模型条目。`redirect_model` 非空时它才是真正发给上游的名字，
+  /// 否则 `model` 自己就是。这一层填的是**上游模型名**，所以要取前者。
+  models?: { model?: string; redirect_model?: string; disabled?: boolean }[];
+};
+
+/// 一层的候选上游模型。
+///
+/// 两个来源，优先级有讲究：
+///   1. **探测回来的真实清单**（点过「校验上游模型」）—— 上游亲口说的，最准。
+///   2. 渠道**已配**的模型条目 —— 免费、即时，`GET /admin/channels` 本来就带
+///      回来了，不用为了看一眼候选去打一次上游（有的按次计费）。
+///
+/// 都没有就返回空，此时 ComboBox 退化成普通输入框 —— 候选缺失不该挡住手填。
+function candidatesFor(channel: ChannelLite | undefined, probe: Probe | undefined): string[] {
+  if (probe?.models.length) return probe.models;
+  return (channel?.models ?? [])
+    .filter((m) => !m.disabled)
+    .map((m) => (m.redirect_model?.trim() || m.model?.trim() || ""))
+    .filter(Boolean);
+}
 
 /// `GET /admin/channels/:id/models/fetch` 的响应。内核按渠道声明的协议去问上游
 /// 要真实清单，客户端不自己实现拉取。
@@ -369,12 +393,21 @@ function ChainEditor({
                     {i + 1}
                   </span>
 
-                  <TextInput
-                    mono
-                    value={hop.upstream}
-                    onChange={(e) => setHop(i, { upstream: e.target.value })}
-                    placeholder={t("上游模型，例如 kimi-k3")}
+                  <ComboBox
                     className="flex-1"
+                    aria-label={t("第 {n} 层的上游模型", { n: i + 1 })}
+                    value={hop.upstream}
+                    onChange={(v) => setHop(i, { upstream: v })}
+                    placeholder={t("上游模型，例如 kimi-k3")}
+                    options={candidatesFor(
+                      channelOf(hop.channel_id),
+                      hop.channel_id == null ? undefined : probes[hop.channel_id],
+                    )}
+                    emptyHint={
+                      hop.channel_id == null
+                        ? t("先选右边的渠道，这里会列出它能服务的模型")
+                        : t("这个渠道还没配模型；点「校验上游模型」去问一次上游")
+                    }
                   />
 
                   <Select
