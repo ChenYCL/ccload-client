@@ -254,7 +254,14 @@ if let Err(e) = carry_permissions(path, &tmp) { … }
 两条线，互不干扰。
 
 **beta —— 不打 tag，跑 workflow。** Actions → **Beta Release** → Run workflow，填
-分支即可（`workflow_dispatch`，见 `.github/workflows/beta.yml`）。版本号由流水线
+分支即可（`workflow_dispatch`，见 `.github/workflows/beta.yml`）。命令行等价物是
+
+```bash
+gh workflow run beta.yml -f ref=main
+```
+
+输入项叫 **`ref`** 不是 `branch` —— 名字写错的话 GitHub 直接回 422
+`Unexpected inputs provided`，网页上是下拉选所以碰不到这个坑。版本号由流水线
 自己算：`package.json` 的 version + 当天日期 + 该日第 N 次，形如
 `v0.1.0-beta.20260819.2`，tag 也由它创建。只发 **prerelease**，`latest` 永远不会
 指到它。
