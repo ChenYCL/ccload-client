@@ -173,10 +173,7 @@ pub async fn config_import(
 /// promise 也不落（用户侧表现为「点了没反应」）。Rust 侧的对话框挂在 app 上，
 /// 是 app-modal，行为可靠；顺手把权限依赖也从渲染端拿掉了。
 #[tauri::command]
-pub async fn pick_save_path(
-    app: tauri::AppHandle,
-    default_name: String,
-) -> Option<String> {
+pub async fn pick_save_path(app: tauri::AppHandle, default_name: String) -> Option<String> {
     use tauri_plugin_dialog::DialogExt;
     let picked = tauri::async_runtime::spawn_blocking(move || {
         app.dialog()
@@ -188,7 +185,23 @@ pub async fn pick_save_path(
     .await
     .ok()
     .flatten();
-    picked.and_then(|p| p.into_path().ok()).map(|p| p.display().to_string())
+    picked
+        .and_then(|p| p.into_path().ok())
+        .map(|p| p.display().to_string())
+}
+
+/// 原生「选一个目录」对话框。会话预设要的是 cwd，不是某个文件。
+#[tauri::command]
+pub async fn pick_folder(app: tauri::AppHandle) -> Option<String> {
+    use tauri_plugin_dialog::DialogExt;
+    let picked =
+        tauri::async_runtime::spawn_blocking(move || app.dialog().file().blocking_pick_folder())
+            .await
+            .ok()
+            .flatten();
+    picked
+        .and_then(|p| p.into_path().ok())
+        .map(|p| p.display().to_string())
 }
 
 /// 原生「选一个文件」对话框，同上。
@@ -204,5 +217,7 @@ pub async fn pick_open_path(app: tauri::AppHandle) -> Option<String> {
     .await
     .ok()
     .flatten();
-    picked.and_then(|p| p.into_path().ok()).map(|p| p.display().to_string())
+    picked
+        .and_then(|p| p.into_path().ok())
+        .map(|p| p.display().to_string())
 }

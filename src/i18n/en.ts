@@ -18,6 +18,7 @@ registerDict("en", {
   模型链: "Model chain",
   模型导入: "Model import",
   系统注入: "System injection",
+  破禁: "Unlock",
   扩展管理: "Extensions",
   内核后台: "Kernel admin",
   设置: "Settings",
@@ -226,8 +227,8 @@ registerDict("en", {
   "把一段受管的说明写进每个 CLI 的全局指令文件（CLAUDE.md / AGENTS.md / GEMINI.md），启动时无条件进系统提示。只替换我们自己那对标记之间的内容，块外一个字节都不动 —— 你原有的规则不会被覆盖。":
     "Writes a managed block into each CLI's global instructions file (CLAUDE.md / AGENTS.md / GEMINI.md), which is loaded into the system prompt on every launch. Only the content between our own markers is replaced — not a byte outside the block is touched, so your existing rules stay intact.",
   "告诉 CLI 怎么用视觉辅助 MCP": "Tell the CLI how to use the vision-assist MCP",
-  "装上 ccload-vision 不等于模型会用它 —— 它只看得见工具名和一句描述，遇到图片会不会想起来调全看运气，而文本模型甚至不知道自己「看不见」。这段会明确告诉它：你看不见图片，遇到图片必须调这四个工具，并说清各自的分工（看图 / 逐字抄 / 比对 / 截屏）。":
-    "Installing ccload-vision does not mean the model will use it — all it sees is a tool name and one line of description, so whether it remembers to call the tool on an image is luck, and a text-only model does not even know it is blind. This block says it plainly: you cannot see images, you must call these four tools, and here is what each one is for (describe / transcribe / compare / capture screen).",
+  "装上 ccload-vision 不等于模型会用它 —— 它只看得见工具名和一句描述，遇到图片会不会想起来调全看运气，而文本模型甚至不知道自己「看不见」。这段会明确告诉它：你看不见图片，遇到 [Image 1] 这种没有路径的占位符时必须调工具并把 image 设成对应编号，不要让用户把图另存一份。":
+    "Installing ccload-vision does not mean the model will use it — all it sees is a tool name and one line of description, so whether it remembers to call the tool on an image is luck, and a text-only model does not even know it is blind. This block says it plainly: you cannot see images; when the chat only shows [Image 1] with no path you must call the tool and set image to that number — do not ask the user to save the file somewhere else.",
   你自己的规则: "Your own rules",
   "原样写进块里，五个 CLI 共用同一份。留空则只写上面勾选的内容。":
     "Written into the block verbatim and shared by all five CLIs. Leave empty to inject only what is ticked above.",
@@ -580,8 +581,9 @@ registerDict("en", {
     "'s extension list could not be read, so it is missing from the list below:",
   "第": "Slot",
   "经": "via",
-  "给文本模型装上「眼睛」：本客户端自带一个 MCP 服务器，把图片交给一个多模态模型描述，再把文字交给当前模型。已支持多模态的模型不需要。四个工具：":
-    "Gives text-only models eyes: this client ships an MCP server that hands the image to a multimodal model and passes the description back as text. Models that already handle images do not need it. Four tools:",
+  "给文本模型装上「眼睛」：本客户端自带一个 MCP 服务器，把图片交给一个多模态模型描述，再把文字交给当前模型。已支持多模态的模型不需要。对话里只有 [Image 1] 没有路径时，把 image 设成 \"1\"，不要让用户把图另存一份。":
+    "Gives text-only models eyes: this client ships an MCP server that hands the image to a multimodal model and passes the description back as text. Models that already handle images do not need it. When the chat only shows [Image 1] with no path, set image to \"1\" — do not ask the user to save a copy.",
+  列出刚贴的图: "List pasted images",
   "编辑配置": "Edit config",
   "表示默认模型。留空则不写入。": "means the default model. Leave empty to skip.",
   "被标记时先问一句，不自动换模型（": "Ask before switching when a request is flagged (",
@@ -772,4 +774,41 @@ registerDict("en", {
     "Chunked summary \u2014 splits the conversation into small pieces, summarises each, merges them, then appends exactly the same boundary Claude Code writes when it compacts on its own. Every single request stays far below the ceiling, so unlike /compact it cannot overflow. It costs tokens, but the information survives as a summary.",
   "两种都会先把原文件另存一份 .bak，而且都不删记录 —— transcript 是靠 uuid 串起来的链表，删行会让恢复出来的会话缺胳膊少腿。":
     "Both save the original to a .bak first, and neither deletes any record \u2014 a transcript is a linked list held together by uuids, so dropping lines leaves the resumed session full of holes.",
+
+  // ---- 破禁 / 会话预设 ----
+  新建预设: "New preset",
+  编辑预设: "Edit preset",
+  工作目录: "Working directory",
+  选目录: "Choose folder",
+  内置: "Built-in",
+  "{n} 轮": "{n} turns",
+  "开一个新会话": "Start a new session",
+  "复制一份": "Duplicate",
+  "先选一个工作目录": "Pick a working directory first",
+  "Claude Code 打开的那个仓库路径": "The repo path Claude Code should open",
+  "写在末尾的第一条任务（可选）": "First task to append (optional)",
+  "会作为最后一条用户消息追加。留空就只写入预设对白。":
+    "Appended as the last user message. Leave empty to write only the preset dialogue.",
+  "写完后拉起终端跑 resume": "Open a terminal and run each CLI's resume command when done",
+  "写给哪些 CLI": "Which CLIs to write",
+  "至少勾选一个 CLI": "Tick at least one CLI",
+  "要打开的那个仓库路径": "The repo path to open",
+  "已经在终端里拉起。先退出正在跑的同目录窗口，免得两份抢同一份文件。":
+    "Launched in a terminal. Quit any live window on the same repo first, or the two will fight over the file.",
+  已经写好: "Written",
+  "已经在终端里拉起 Claude Code。先退出正在跑的同目录窗口，免得两份抢同一份文件。":
+    "Claude Code is launching in a terminal. Quit any live window on the same repo first, or the two will fight over the file.",
+  "文件写好了，但终端没拉起来：{err}。把上面这条命令自己跑。":
+    "The file is written, but the terminal didn't launch: {err}. Run the command above yourself.",
+  "把上面这条命令丢进终端。": "Paste the command above into a terminal.",
+  "点一下按勾选的 CLI 各写一份已经带好背景的新会话，然后用那一家自己的 resume 接着干。内置几份公开的破禁预设；你也可以自己写一轮对白。拦不拦得住取决于对面那家模型，壳体只负责把历史写进文件。":
+    "One click writes a primed session for each CLI you tick, then you resume with that CLI's own command. A few public unlock presets are built in; you can also write your own dialogue. Whether the model plays along depends on the model \u2014 the shell only writes the history.",
+  "{title}（副本）": "{title} (copy)",
+  标题: "Title",
+  摘要: "Summary",
+  用户: "User",
+  助手: "Assistant",
+  删这轮: "Remove turn",
+  加一轮: "Add a turn",
+  已删除: "Deleted",
 });

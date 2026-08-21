@@ -138,16 +138,18 @@ fn vision_section() -> String {
 再把文字结果给你。凡是遇到图片，必须调用下面的工具，不要猜测图片内容，也不要
 让用户改用文字描述：
 
-- `describe_image` —— 看懂一张图（截图、照片、示意图、图表）。参数 `path`（绝对
-  路径）或 `url` 二选一。
+- `describe_image` —— 看懂一张图（截图、照片、示意图、图表）。
 - `read_image_text` —— 逐字抄下图上的文字。报错截图、终端输出、日志、代码、
   表单一律用它，`describe_image` 会概括，而这些场景要的是原文。
-- `compare_images` —— 比对两张图的差异。改动前后、视觉回归用它，参数是
-  `before_path`/`before_url` 与 `after_path`/`after_url`。
-- `describe_screen` —— 直接截取当前屏幕再描述。用户说「看看这个」「这个弹窗写
-  的什么」却没给文件时用它（仅 macOS）。
+- `compare_images` —— 比对两张图的差异。改动前后、视觉回归用它。
+- `list_pasted_images` —— 列出用户刚贴进来的图和它们在磁盘上的路径。
+- `describe_screen` —— 截取当前屏幕再描述。用户说「看看这个」却没贴文件时用
+  它（仅 macOS）。
 
-用户贴来的图片通常是本地文件路径。拿不到路径时先问用户要，不要跳过。",
+取图参数：有本地路径用 `path`，有网址用 `url`。对话里只有 `[Image 1]` 这种占位
+符、没有路径时，把 `image` 设成 1（对应 `[Image 1]`），**不要让用户把图另存
+到 Downloads 再把路径发回来** —— 图已经在会话目录里，工具自己能找到。一张图、
+或用户说「看看这张」时 `image` 可以省略。",
         server = crate::services::vision_mcp::MCP_NAME,
     )
 }
@@ -487,10 +489,19 @@ mod tests {
             "describe_image",
             "read_image_text",
             "compare_images",
+            "list_pasted_images",
             "describe_screen",
         ] {
             assert!(text.contains(name), "缺少 {name}");
         }
         assert!(text.contains(crate::services::vision_mcp::MCP_NAME));
+        assert!(
+            text.contains("[Image 1]"),
+            "必须教模型用 image 编号，而不是去问用户要路径"
+        );
+        assert!(
+            !text.contains("先问用户要"),
+            "旧文案会让模型把「把图存到 Downloads」当成标准流程：{text}"
+        );
     }
 }

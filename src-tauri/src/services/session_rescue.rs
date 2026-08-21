@@ -100,8 +100,8 @@ pub struct CompactReport {
     pub backup: String,
 }
 
-/// `~/.claude/projects`。
-fn sessions_root() -> Result<PathBuf, AppError> {
+/// `~/.claude/projects`。造新会话和扫旧会话走同一个根，slug 对不上 `--resume` 就找不着。
+pub(crate) fn sessions_root() -> Result<PathBuf, AppError> {
     let home = dirs::home_dir().ok_or_else(|| AppError::Config("找不到用户主目录".into()))?;
     Ok(home.join(".claude").join("projects"))
 }
@@ -530,7 +530,7 @@ fn truncate_texts(entry: &mut Value, limit: usize) -> u64 {
 }
 
 /// 造一个 v4 uuid。只为了给新记录一个不撞的 id，不需要密码学强度。
-fn uuid_v4() -> String {
+pub(crate) fn uuid_v4() -> String {
     let mut b = [0u8; 16];
     rand::thread_rng().fill(&mut b);
     b[6] = (b[6] & 0x0f) | 0x40;
@@ -546,7 +546,7 @@ fn uuid_v4() -> String {
     )
 }
 
-fn now_iso() -> String {
+pub(crate) fn now_iso() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())

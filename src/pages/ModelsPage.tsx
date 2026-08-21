@@ -702,9 +702,9 @@ export function ModelsPage() {
           <Eye className="h-4 w-4 text-accent" /> {t("视觉辅助 MCP")}
         </div>
         <p className="mt-1 text-sm text-muted">
-          {t("给文本模型装上「眼睛」：本客户端自带一个 MCP 服务器，把图片交给一个多模态模型描述，再把文字交给当前模型。已支持多模态的模型不需要。四个工具：")}
-          <code>describe_image</code>{t("（看图）、")}<code>read_image_text</code>{t("（逐字抄下图上的文字，报错截图用它）、")}<code>compare_images</code>{t("（比对改动前后）、")}
-          <code>describe_screen</code>{t("（直接截当前屏幕，仅 macOS）。")}
+          {t(
+            "给文本模型装上「眼睛」：本客户端自带一个 MCP 服务器，把图片交给一个多模态模型描述，再把文字交给当前模型。已支持多模态的模型不需要。对话里只有 [Image 1] 没有路径时，把 image 设成 \"1\"，不要让用户把图另存一份。",
+          )}
         </p>
 
         <label className="mt-3 flex flex-wrap items-center gap-2 text-sm">

@@ -179,6 +179,7 @@ export type Page =
   | "models"
   | "inject"
   | "sessions"
+  | "unlock"
   | "extensions"
   | "graph"
   | "settings";
@@ -714,4 +715,40 @@ export type CompactReport = {
   context_before: number;
   summary_tokens: number;
   backup: string;
+};
+
+/* ---------------------------------------------------------------------------
+   会话预设 / 破禁：按 CLI 各写各的 resume 文件。
+--------------------------------------------------------------------------- */
+
+export type SessionTurn = {
+  role: "user" | "assistant";
+  text: string;
+};
+
+export type SessionPreset = {
+  id: string;
+  title: string;
+  summary: string;
+  builtin: boolean;
+  turns: SessionTurn[];
+};
+
+export type SpawnItem = {
+  target: CliTarget;
+  session_id: string;
+  path: string;
+  command: string;
+  launched: boolean;
+  launch_error?: string;
+};
+
+export type SpawnResult = {
+  cwd: string;
+  items: SpawnItem[];
+};
+
+export type PresetPrefs = {
+  last_cwd: string;
+  last_targets: CliTarget[];
 };

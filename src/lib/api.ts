@@ -22,6 +22,9 @@ import type {
   ImportPreview,
   ImportResult,
   CompactReport,
+  SessionPreset,
+  PresetPrefs,
+  SpawnResult,
   InjectOutcome,
   InjectSpec,
   SessionInfo,
@@ -215,6 +218,27 @@ export const api = {
    */
   sessionCompact: (path: string, model: string, keepTail: number, chunkTokens: number) =>
     invoke<CompactReport>("session_compact", { path, model, keepTail, chunkTokens }),
+
+  pickFolder: () => invoke<string | null>("pick_folder"),
+
+  presetList: () => invoke<SessionPreset[]>("preset_list"),
+  presetPrefs: () => invoke<PresetPrefs>("preset_prefs"),
+  presetSave: (preset: SessionPreset) => invoke<SessionPreset[]>("preset_save", { preset }),
+  presetDelete: (id: string) => invoke<SessionPreset[]>("preset_delete", { id }),
+  presetSpawn: (
+    id: string,
+    cwd: string,
+    extraUser: string,
+    launch: boolean,
+    targets: CliTarget[],
+  ) =>
+    invoke<SpawnResult>("preset_spawn", {
+      id,
+      cwd,
+      extraUser: extraUser || null,
+      launch,
+      targets,
+    }),
 
   /** Open a URL in the system browser via the opener plugin. */
   openExternal: (url: string) => openUrl(url),

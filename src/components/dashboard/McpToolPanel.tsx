@@ -23,6 +23,7 @@ const TOOL_LABELS: Record<string, string> = {
   describe_image: "看图",
   read_image_text: "抄图上的字",
   compare_images: "比对两张图",
+  list_pasted_images: "列出刚贴的图",
   describe_screen: "看当前屏幕",
 };
 

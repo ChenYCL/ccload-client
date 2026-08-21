@@ -3,9 +3,11 @@
 //! The kernel routes text fine, but a model like deepseek-r1 cannot read an
 //! image the user pastes into the CLI. Instead of forcing a multimodal model
 //! everywhere, this ships a tiny stdio MCP server *inside the client binary*
-//! (`ccload-client vision-mcp`) exposing one tool, `describe_image`: it reads
-//! the image, sends it to a vision-capable model through the kernel, and
-//! returns the description as text. The host model then works with that text.
+//! (`ccload-client vision-mcp`) exposing vision tools: they read the image,
+//! send it to a vision-capable model through the kernel, and return text.
+//! Pasted images often show up in the transcript as `[Image 1]` with no path;
+//! the tools resolve that to the file the CLI already wrote into the session
+//! directory, so the host model does not have to ask the user to save a copy.
 //!
 //! Each CLI gets the server registered in its own MCP format. The per-CLI
 //! shapes (JSON vs TOML, `mcpServers` vs `mcp` vs `mcp_servers`, OpenCode's
@@ -20,6 +22,8 @@
 //! the CLI, possibly long after the client UI closed).
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use serde_json::{json, Value};
 
@@ -271,7 +275,17 @@ fn tool_specs() -> Value {
                 "type": "string",
                 "description": "Absolute path to a local image file (png/jpg/gif/webp)",
             },
-            "url": { "type": "string", "description": "Remote URL of the image" },
+            "url": {
+                "type": "string",
+                "description": "Remote URL or a data:image/...;base64,... URL of the image",
+            },
+            "image": {
+                "type": "string",
+                "description":
+                    "Pasted-image index when the transcript only shows [Image 1] with no path. \
+                     \"1\" is [Image 1], \"2\" is [Image 2], \"latest\" is the most recent paste. \
+                     Omit to use the latest paste.",
+            },
         })
     };
     json!([
@@ -280,12 +294,17 @@ fn tool_specs() -> Value {
             "description":
                 "Describe an image with a vision-capable model. Use this whenever the user \
                  pastes or mentions an image (screenshot, photo, diagram, chart) and you \
-                 cannot see images yourself.",
+                 cannot see images yourself. If the chat only shows [Image 1] with no file \
+                 path, pass image=\"1\" — do not ask the user to save the file.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Absolute path to the image file" },
-                    "url": { "type": "string", "description": "Remote URL of the image" },
+                    "url": { "type": "string", "description": "Remote URL or data: URL of the image" },
+                    "image": {
+                        "type": "string",
+                        "description": "Pasted-image index: \"1\" for [Image 1], \"latest\" for the newest. Omit to use the latest paste.",
+                    },
                     "prompt": {
                         "type": "string",
                         "description": "What to look for; default is a detailed description",
@@ -299,7 +318,8 @@ fn tool_specs() -> Value {
             "description":
                 "Transcribe every piece of text in an image, verbatim and in reading order. \
                  Use this for screenshots of errors, stack traces, logs, terminal output, \
-                 code, forms, or any image where the exact characters matter.",
+                 code, forms, or any image where the exact characters matter. For a pasted \
+                 [Image N] placeholder, pass image=\"N\".",
             "inputSchema": { "type": "object", "properties": source_props() },
             "required": [],
         },
@@ -321,6 +341,15 @@ fn tool_specs() -> Value {
                     },
                 },
             },
+            "required": [],
+        },
+        {
+            "name": "list_pasted_images",
+            "description":
+                "List images the user recently pasted into this CLI session, with the on-disk \
+                 paths the other vision tools accept. Call this when you see [Image 1] / \
+                 [Image 2] and need to know which file is which.",
+            "inputSchema": { "type": "object", "properties": {} },
             "required": [],
         },
         {
@@ -370,6 +399,7 @@ async fn dispatch(name: &str, params: &Value) -> Result<Value, String> {
             let after = load_source(params, "after_path", "after_url").await?;
             ask_vision(&[before, after], prompt_or(params, PROMPT_COMPARE)).await
         }
+        "list_pasted_images" => Ok(mcp_text(format_pasted_list(&collect_pasted()))),
         "describe_screen" => {
             let shot = capture_screen()?;
             ask_vision(&[shot], prompt_or(params, PROMPT_DESCRIBE)).await
@@ -392,6 +422,10 @@ struct Image {
     media_type: &'static str,
 }
 
+fn mcp_text(s: String) -> Value {
+    json!({ "content": [{ "type": "text", "text": s }] })
+}
+
 async fn load_source(params: &Value, path_key: &str, url_key: &str) -> Result<Image, String> {
     let path = params.get(path_key).and_then(Value::as_str).filter(|s| !s.is_empty());
     let url = params.get(url_key).and_then(Value::as_str).filter(|s| !s.is_empty());
@@ -400,10 +434,246 @@ async fn load_source(params: &Value, path_key: &str, url_key: &str) -> Result<Im
         return Ok(Image { bytes, media_type });
     }
     if let Some(u) = url {
-        let (bytes, media_type) = fetch_image(u).await?;
+        let (bytes, media_type) = if u.starts_with("data:") {
+            decode_data_url(u)?
+        } else {
+            fetch_image(u).await?
+        };
         return Ok(Image { bytes, media_type });
     }
-    Err(format!("provide either {path_key} or {url_key}"))
+    // 对话里只有 `[Image 1]` 时模型手里没有路径。图其实已经落在会话目录，
+    // 按编号从那里取，不要把「请存到 Downloads」当成标准流程。
+    let files = collect_pasted();
+    let refer = match params.get("image") {
+        Some(Value::String(s)) => parse_image_ref(s).unwrap_or(PasteRef::Latest),
+        Some(Value::Number(n)) => n
+            .as_u64()
+            .filter(|&v| v >= 1)
+            .map(|v| PasteRef::Index(v as usize))
+            .unwrap_or(PasteRef::Latest),
+        _ => PasteRef::Latest,
+    };
+    let picked = pick_pasted(&files, refer)?;
+    let (bytes, media_type) = read_image_file(&picked.to_string_lossy())?;
+    Ok(Image { bytes, media_type })
+}
+
+/// `[Image 1]` / `1` / `latest` → 取第几张贴进来的图。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PasteRef {
+    Latest,
+    Index(usize),
+}
+
+fn parse_image_ref(raw: &str) -> Option<PasteRef> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if s.eq_ignore_ascii_case("latest") || s.eq_ignore_ascii_case("last") {
+        return Some(PasteRef::Latest);
+    }
+    let mut t = s.trim_matches(|c: char| c == '[' || c == ']').trim().to_string();
+    for prefix in ["Image", "image", "IMAGE"] {
+        if let Some(rest) = t.strip_prefix(prefix) {
+            t = rest.trim().to_string();
+            break;
+        }
+    }
+    let t = t.trim_start_matches('#').trim();
+    t.parse::<usize>().ok().filter(|&n| n >= 1).map(PasteRef::Index)
+}
+
+fn pick_pasted(files: &[PathBuf], refer: PasteRef) -> Result<PathBuf, String> {
+    if files.is_empty() {
+        return Err(
+            "没有找到最近贴进来的图。有本地路径用 path，有网址用 url；\
+             只有 [Image N] 时用 image=\"N\"。"
+                .into(),
+        );
+    }
+    match refer {
+        PasteRef::Latest => Ok(files[files.len() - 1].clone()),
+        PasteRef::Index(n) => files.get(n - 1).cloned().ok_or_else(|| {
+            format!(
+                "没有 [Image {n}]。{}\n改用 image=\"latest\" 或先调 list_pasted_images。",
+                format_pasted_list(files)
+            )
+        }),
+    }
+}
+
+fn format_pasted_list(files: &[PathBuf]) -> String {
+    if files.is_empty() {
+        return "没有最近贴进来的图。".into();
+    }
+    let now = SystemTime::now();
+    let mut lines = vec![format!("最近贴进来的图（{} 张，[Image 1] 是最早那张）：", files.len())];
+    for (i, p) in files.iter().enumerate() {
+        let ago = std::fs::metadata(p)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| now.duration_since(t).ok())
+            .map(|d| {
+                let s = d.as_secs();
+                if s < 60 {
+                    format!("{s}s 前")
+                } else {
+                    format!("{}min 前", s / 60)
+                }
+            })
+            .unwrap_or_else(|| "?".into());
+        lines.push(format!("{}. {} ({ago})", i + 1, p.display()));
+    }
+    lines.join("\n")
+}
+
+const PASTE_WINDOW_SECS: u64 = 30 * 60;
+
+/// 当前会话里刚贴进来的图，按时间从早到晚 = [Image 1] … [Image N]。
+fn collect_pasted() -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    grok_paste_dirs().into_iter().for_each(|d| collect_images_in(&d, &mut files));
+    claude_paste_dirs().into_iter().for_each(|d| collect_images_in(&d, &mut files));
+    finalize_pasted(files)
+}
+
+fn collect_images_in(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for ent in rd.flatten() {
+        let p = ent.path();
+        if !p.is_file() {
+            continue;
+        }
+        if is_image_file(&p) {
+            out.push(p);
+        }
+    }
+}
+
+fn is_image_file(p: &Path) -> bool {
+    matches!(
+        p.extension().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase().as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "webp"
+    )
+}
+
+fn finalize_pasted(mut files: Vec<PathBuf>) -> Vec<PathBuf> {
+    files.sort_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok());
+    files.dedup();
+    let now = SystemTime::now();
+    let recent: Vec<PathBuf> = files
+        .iter()
+        .filter(|p| {
+            std::fs::metadata(p)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| now.duration_since(t).ok())
+                .is_some_and(|d| d.as_secs() <= PASTE_WINDOW_SECS)
+        })
+        .cloned()
+        .collect();
+    if !recent.is_empty() {
+        return recent;
+    }
+    let n = files.len();
+    files.into_iter().skip(n.saturating_sub(10)).collect()
+}
+
+fn grok_paste_dirs() -> Vec<PathBuf> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    let sessions = home.join(".grok/sessions");
+    let mut dirs = Vec::new();
+    if let Ok(sid) = std::env::var("GROK_SESSION_ID") {
+        if !sid.is_empty() {
+            if let Ok(rd) = std::fs::read_dir(&sessions) {
+                for proj in rd.flatten() {
+                    let cand = proj.path().join(&sid);
+                    if cand.is_dir() {
+                        dirs.push(cand.join("images"));
+                        dirs.push(cand.join("assets"));
+                    }
+                }
+            }
+        }
+    }
+    if dirs.is_empty() {
+        if let Some(cwd) = std::env::var("GROK_WORKSPACE_ROOT")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .or_else(|| std::env::current_dir().ok().map(|p| p.display().to_string()))
+        {
+            let slug = grok_cwd_slug(Path::new(&cwd));
+            let proj = sessions.join(&slug);
+            if let Some(latest) = newest_subdir(&proj) {
+                dirs.push(latest.join("images"));
+                dirs.push(latest.join("assets"));
+            }
+        }
+    }
+    dirs
+}
+
+fn claude_paste_dirs() -> Vec<PathBuf> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    let cache = home.join(".claude/image-cache");
+    if let Some(latest) = newest_subdir(&cache) {
+        return vec![latest];
+    }
+    Vec::new()
+}
+
+fn newest_subdir(parent: &Path) -> Option<PathBuf> {
+    let rd = std::fs::read_dir(parent).ok()?;
+    rd.flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+}
+
+/// Grok 把 cwd 编进 `~/.grok/sessions/<slug>/`：除字母数字 `.-_~` 以外都百分号编码，
+/// `/Users/foo` → `%2FUsers%2Ffoo`。编错就会扫到别人的会话。
+fn grok_cwd_slug(cwd: &Path) -> String {
+    let mut out = String::new();
+    for b in cwd.to_string_lossy().bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+fn decode_data_url(url: &str) -> Result<(Vec<u8>, &'static str), String> {
+    let rest = url
+        .strip_prefix("data:")
+        .ok_or_else(|| "not a data: URL".to_string())?;
+    let (meta, payload) = rest
+        .split_once(',')
+        .ok_or_else(|| "data: URL missing comma".to_string())?;
+    let media_type = if meta.contains("png") {
+        "image/png"
+    } else if meta.contains("gif") {
+        "image/gif"
+    } else if meta.contains("webp") {
+        "image/webp"
+    } else {
+        "image/jpeg"
+    };
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, payload)
+        .map_err(|e| format!("data: URL base64: {e}"))?;
+    if bytes.is_empty() {
+        return Err("data: URL decoded to empty".into());
+    }
+    Ok((bytes, media_type))
 }
 
 /// 抓一张全屏截图。
@@ -797,12 +1067,13 @@ mod tests {
                 "describe_image",
                 "read_image_text",
                 "compare_images",
+                "list_pasted_images",
                 "describe_screen"
             ]
         );
 
-        // dispatch 对未知名字必须报错，对已知名字必须走到取图那一步
-        // （这里没有真图，所以预期是「缺参数」而不是「unknown tool」）。
+        // dispatch 对未知名字必须报错，对已知名字必须走到取图那一步。
+        // 给一个不存在的 path，这样不会扫到本机真的贴图再去打网关。
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -811,11 +1082,28 @@ mod tests {
             if *name == "describe_screen" {
                 continue; // 会真的去截屏，不在单测里跑
             }
+            if *name == "list_pasted_images" {
+                let out = rt
+                    .block_on(dispatch(name, &serde_json::json!({})))
+                    .unwrap();
+                assert!(
+                    out.pointer("/content/0/text")
+                        .and_then(Value::as_str)
+                        .is_some(),
+                    "{name} 应当返回文本列表"
+                );
+                continue;
+            }
             let err = rt
-                .block_on(dispatch(name, &serde_json::json!({})))
+                .block_on(dispatch(
+                    name,
+                    &serde_json::json!({ "path": "/no/such/ccload-vision-test.png",
+                        "before_path": "/no/such/ccload-vision-test.png",
+                        "after_path": "/no/such/ccload-vision-test-2.png" }),
+                ))
                 .unwrap_err();
             assert!(
-                err.contains("provide either"),
+                err.contains("cannot read"),
                 "{name} 应当落到取图那一步，实际：{err}"
             );
         }
@@ -834,5 +1122,63 @@ mod tests {
         // 守的是那个选择本身。
         assert!(PROMPT_OCR.contains("verbatim"));
         assert!(PROMPT_OCR.contains("Do not summarise"));
+    }
+
+    #[test]
+    fn image_ref_parses_placeholder_and_number() {
+        assert_eq!(parse_image_ref("1"), Some(PasteRef::Index(1)));
+        assert_eq!(parse_image_ref("2"), Some(PasteRef::Index(2)));
+        assert_eq!(parse_image_ref("[Image 1]"), Some(PasteRef::Index(1)));
+        assert_eq!(parse_image_ref("[Image #2]"), Some(PasteRef::Index(2)));
+        assert_eq!(parse_image_ref("Image 3"), Some(PasteRef::Index(3)));
+        assert_eq!(parse_image_ref("latest"), Some(PasteRef::Latest));
+        assert_eq!(parse_image_ref("LAST"), Some(PasteRef::Latest));
+        assert_eq!(parse_image_ref(""), None);
+        assert_eq!(parse_image_ref("0"), None);
+    }
+
+    #[test]
+    fn grok_cwd_slug_percent_encodes_slashes() {
+        assert_eq!(
+            grok_cwd_slug(Path::new("/Users/light/Documents/2026-project/ccload-client")),
+            "%2FUsers%2Flight%2FDocuments%2F2026-project%2Fccload-client"
+        );
+    }
+
+    #[test]
+    fn pasted_burst_is_numbered_oldest_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.png");
+        let b = dir.path().join("b.png");
+        std::fs::write(&a, b"a").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&b, b"b").unwrap();
+        let mut files = Vec::new();
+        collect_images_in(dir.path(), &mut files);
+        let files = finalize_pasted(files);
+        assert_eq!(files.len(), 2);
+        assert_eq!(pick_pasted(&files, PasteRef::Index(1)).unwrap(), files[0]);
+        assert_eq!(pick_pasted(&files, PasteRef::Index(2)).unwrap(), files[1]);
+        assert_eq!(pick_pasted(&files, PasteRef::Latest).unwrap(), files[1]);
+        let err = pick_pasted(&files, PasteRef::Index(9)).unwrap_err();
+        assert!(err.contains("[Image 9]"), "{err}");
+        assert!(err.contains("list_pasted_images"), "{err}");
+    }
+
+    #[test]
+    fn data_url_decodes_base64_payload() {
+        let raw = b"hello-img";
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, raw);
+        let url = format!("data:image/png;base64,{b64}");
+        let (bytes, media) = decode_data_url(&url).unwrap();
+        assert_eq!(bytes, raw);
+        assert_eq!(media, "image/png");
+    }
+
+    #[test]
+    fn pick_pasted_empty_tells_the_model_what_to_pass() {
+        let err = pick_pasted(&[], PasteRef::Latest).unwrap_err();
+        assert!(err.contains("image="), "{err}");
+        assert!(!err.contains("Downloads"), "{err}");
     }
 }

@@ -13,6 +13,7 @@ import { FallbackPage } from "./pages/FallbackPage";
 import { ModelsPage } from "./pages/ModelsPage";
 import { InjectPage } from "./pages/InjectPage";
 import { SessionsPage } from "./pages/SessionsPage";
+import { UnlockPage } from "./pages/UnlockPage";
 import { ExtensionsPage } from "./pages/ExtensionsPage";
 import { GraphPage } from "./pages/GraphPage";
 import { errText } from "./lib/err";
@@ -29,6 +30,7 @@ const PAGES: Record<Page, () => JSX.Element> = {
   models: ModelsPage,
   inject: InjectPage,
   sessions: SessionsPage,
+  unlock: UnlockPage,
   extensions: ExtensionsPage,
   graph: GraphPage,
 };

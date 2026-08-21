@@ -1,8 +1,8 @@
 //! Library crate so commands stay unit-testable without launching a window.
 
-pub mod platform;
 mod commands;
 pub mod error;
+pub mod platform;
 pub mod services;
 pub mod state;
 
@@ -72,14 +72,13 @@ pub fn run() {
                     // macOS 的 tauri 上存在 —— 不加守卫的话 Linux/Windows 直接
                     // 编不过（cannot find `ActivationPolicy` in `tauri`）。
                     #[cfg(target_os = "macos")]
-                    let _ = app_handle.set_activation_policy(
-                        tauri::ActivationPolicy::Accessory,
-                    );
+                    let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
                 }
             });
 
             // Tray: the only way to fully quit after close-hides-window.
-            let quit = tauri::menu::MenuItem::with_id(app, "quit", "退出 ccLoad", true, None::<&str>)?;
+            let quit =
+                tauri::menu::MenuItem::with_id(app, "quit", "退出 ccLoad", true, None::<&str>)?;
             let show = tauri::menu::MenuItem::with_id(app, "show", "显示窗口", true, None::<&str>)?;
             let menu = tauri::menu::Menu::with_items(app, &[&show, &quit])?;
             let _tray = tauri::tray::TrayIconBuilder::new()
@@ -136,6 +135,7 @@ pub fn run() {
             commands::config_io::config_import,
             commands::config_io::pick_save_path,
             commands::config_io::pick_open_path,
+            commands::config_io::pick_folder,
             commands::graph::graph_list,
             commands::graph::graph_save,
             commands::graph::graph_validate,
@@ -178,6 +178,11 @@ pub fn run() {
             commands::session::session_list,
             commands::session::session_slim,
             commands::session::session_compact,
+            commands::preset::preset_list,
+            commands::preset::preset_prefs,
+            commands::preset::preset_save,
+            commands::preset::preset_delete,
+            commands::preset::preset_spawn,
             commands::settings::settings_get,
             commands::settings::settings_set_kernel,
             commands::settings::settings_set_sandbox,
