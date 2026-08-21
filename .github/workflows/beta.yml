@@ -291,13 +291,19 @@ jobs:
             emit() {
               local pattern="$1" title="$2"
               local lines
-              lines=$(grep -E "^${pattern}(\(.+\))?!?:" /tmp/subjects.txt || true)
+              # pattern 里有 `a|b|c` 这种交替，**必须整体括起来**再接后面的
+              # `(\(scope\))?:`。不括的话 ERE 的交替优先级最低，`^chore|ci|…`
+              # 会被读成「行首 chore」或「任意位置 ci」—— `ci(release): x` 就只
+              # 剥掉一个 `ci`，scope 落不进捕获组，输出成 `-  · (release): x`。
+              lines=$(grep -E "^(${pattern})(\(.+\))?!?:" /tmp/subjects.txt || true)
               [ -z "$lines" ] && return 0
               echo "**${title}**"
               echo
               # 去掉类型前缀，只留人话；scope 留着，它指明改的是哪一块。
-              echo "$lines" | sed -E "s/^${pattern}(\((.+)\))?!?: */- \2 · /" \
-                            | sed -E 's/^- · /- /'
+              # \1=类型 \2=(scope) \3=scope。没有 scope 时 \3 为空，会留下
+              # `-  · 正文`（两个空格），第二条 sed 就是收这个尾的。
+              echo "$lines" | sed -E "s/^(${pattern})(\((.+)\))?!?: */- \3 · /" \
+                            | sed -E 's/^- *· /- /'
               echo
             }
             emit 'feat'  '新功能'
