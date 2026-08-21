@@ -24,11 +24,8 @@ import type {
   InjectOutcome,
   InjectSpec,
   InjectState,
-  ChannelSpec,
   KernelConfig,
   KernelStatus,
-  MixOutcome,
-  ProbeResult,
   McpUsage,
   SyncOutcome,
   TakeoverOptions,
@@ -144,15 +141,6 @@ export const api = {
   /** spec 全空即移除。逐目标独立成败。 */
   injectApply: (targets: CliTarget[], spec: InjectSpec) =>
     invoke<InjectOutcome[]>("inject_apply", { targets, spec }),
-
-  /* --- 本地混用：本机服务 + 远端 ccLoad 拼成一个渠道池 ------------------- */
-
-  /** 问一次 {base}/v1/models，确认通不通并带回模型清单（建渠道必填）。 */
-  localMixProbe: (baseUrl: string, apiKey?: string) =>
-    invoke<ProbeResult>("local_mix_probe", { baseUrl, apiKey: apiKey ?? null }),
-  /** 把探测通过的来源建成**当前内核**的渠道。逐个独立成败。 */
-  localMixSetup: (channels: ChannelSpec[]) =>
-    invoke<MixOutcome[]>("local_mix_setup", { channels }),
 
   /* --- 扩展管理：MCP / Skill / Agent / Hook 跨 5 个 CLI ------------------ */
 

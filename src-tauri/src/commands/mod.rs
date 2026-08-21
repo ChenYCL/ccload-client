@@ -6,6 +6,5 @@ pub mod cli;
 pub mod extensions;
 pub mod fallback;
 pub mod inject;
-pub mod local_mix;
 pub mod models;
 pub mod settings;
