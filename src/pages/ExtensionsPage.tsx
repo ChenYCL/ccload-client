@@ -1,3 +1,4 @@
+import { useT } from "../i18n";
 /// 扩展管理：MCP / Skill / Agent / Hook 在 5 个 CLI 之间的统一视图。
 ///
 /// 页面按「一行一个扩展、右侧徽章标出它装在哪几家」组织，而不是「一个 CLI 一
@@ -28,6 +29,7 @@ import {
 } from "../components/extensions/useExtensions";
 
 export function ExtensionsPage() {
+  const t = useT();
   const [kind, setKind] = useState<ExtensionKind>("mcp");
   const [query, setQuery] = useState("");
   const [modal, setModal] = useState<SpecModalMode | null>(null);
@@ -59,7 +61,7 @@ export function ExtensionsPage() {
     <div>
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="t-display">扩展管理</h1>
+          <h1 className="t-display">{t("扩展管理")}</h1>
           <p className="mt-1 text-sm text-muted">
             MCP / Skill / Agent / Hook 一处配置，推给装了它们的每一个 CLI —— 各家的原生
             格式（JSON、TOML、markdown 目录）由后端转换，写入前自动快照。
@@ -95,7 +97,7 @@ export function ExtensionsPage() {
           <TextInput
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="搜索名称或描述"
+            placeholder={t("搜索名称或描述")}
             className="w-56 pl-8"
           />
         </div>
@@ -145,7 +147,7 @@ export function ExtensionsPage() {
                 ? total > 0
                   ? `清空搜索可看到全部 ${total} 项`
                   : undefined
-                : "点右上角「新建」装一个，或先在某个 CLI 里装好再回来同步"
+                : t("点右上角「新建」装一个，或先在某个 CLI 里装好再回来同步")
             }
             skeletonLines={5}
           >
@@ -191,7 +193,7 @@ export function ExtensionsPage() {
               装在其他 CLI 上的同名扩展不受影响。
             </>
           }
-          confirmText="删除"
+          confirmText={t("删除")}
           pending={remove.isPending}
           error={remove.isError ? remove.error : null}
           onConfirm={() => remove.mutate(pendingRemove)}

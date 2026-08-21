@@ -1,3 +1,4 @@
+import { useT } from "../i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import {
@@ -76,6 +77,7 @@ function hopVerdict(
 }
 
 export function FallbackPage() {
+  const t = useT();
   const qc = useQueryClient();
   const chains = useQuery({ queryKey: ["fallback"], queryFn: api.fallbackList });
   const channels = useQuery({
@@ -104,7 +106,7 @@ export function FallbackPage() {
     <div>
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h1 className="t-display">模型链</h1>
+          <h1 className="t-display">{t("模型链")}</h1>
           <p className="mt-1 text-sm text-muted">
             ccLoad 内核只做一层模型重定向，然后按优先级切渠道。这里把一条
             fallback 链（例如 fable-5 → kimi-k3 → opus-5）写成一组按优先级
@@ -184,6 +186,7 @@ export function FallbackPage() {
 /// 列表页上的链摘要。以前是 `a → b → c` 一串纯文本，节点和箭头一样重，长一点
 /// 就读不出「有几层、哪层在前」。这里用和编辑器同一套节点造型，横向排布、可换行。
 function ChainStrip({ hops, channels }: { hops: FallbackHop[]; channels: ChannelLite[] }) {
+  const t = useT();
   return (
     <ol className="mt-1.5 flex flex-wrap items-center gap-x-1 gap-y-1.5">
       {hops.map((h, i) => {
@@ -203,7 +206,7 @@ function ChainStrip({ hops, channels }: { hops: FallbackHop[]; channels: Channel
               )}
               title={`第 ${i + 1} 层 · 优先级 ${hopPriority(i)}${
                 h.channel_name ? ` · 渠道 ${h.channel_name}` : ""
-              }${dead ? " · 渠道已禁用，这一层不会被选中" : ""}`}
+              }${dead ? t(" · 渠道已禁用，这一层不会被选中") : ""}`}
             >
               {dead && <XCircle className="h-3 w-3 shrink-0 text-red-600" />}
               <span
@@ -212,7 +215,7 @@ function ChainStrip({ hops, channels }: { hops: FallbackHop[]; channels: Channel
                   dead && "text-red-700 line-through decoration-red-500/50",
                 )}
               >
-                {h.upstream || "（未填）"}
+                {h.upstream || t("（未填）")}
               </span>
               {h.channel_name && (
                 <span className={cn("text-[10px]", dead ? "text-red-700/80" : "text-muted")}>
@@ -261,6 +264,7 @@ function ChainEditor({
   onClose: () => void;
   onSave: (c: FallbackChain) => void;
 }) {
+  const t = useT();
   const [draft, setDraft] = useState<FallbackChain>(chain);
 
   const setHops = (hops: FallbackHop[]) => setDraft({ ...draft, hops });
@@ -291,7 +295,7 @@ function ChainEditor({
             // 内核对拉取失败是返回 200 + success=false 的（上游报错属预期内），
             // 所以「拿到 0 个」要当成「没给出清单」，不能当成空集去判定「都不存在」——
             // 那会把每一层都误报成红的。
-            return [id, models.length ? { models, err: "" } : { models: [], err: "上游没有返回任何模型" }] as const;
+            return [id, models.length ? { models, err: "" } : { models: [], err: t("上游没有返回任何模型") }] as const;
           } catch (e) {
             return [id, { models: [], err: errText(e) }] as const;
           }
@@ -307,14 +311,14 @@ function ChainEditor({
   return (
     <Modal onClose={onClose} className="max-w-3xl">
       <>
-        <h2 className="t-title">编辑模型链</h2>
+        <h2 className="t-title">{t("编辑模型链")}</h2>
         <p className="mt-1 text-xs text-muted">
           从上到下依次尝试。上面的层优先级更高，拖住左侧手柄可以换顺序
           （也可以聚焦手柄后按 ↑ ↓）。
         </p>
 
         <label className="mt-4 block text-xs">
-          <div className="text-muted">别名（CLI 里写的模型名）</div>
+          <div className="text-muted">{t("别名（CLI 里写的模型名）")}</div>
           <TextInput
             value={draft.alias}
             onChange={(e) => setDraft({ ...draft, alias: e.target.value })}
@@ -355,7 +359,7 @@ function ChainEditor({
                     onPointerDown={reorder.start(i)}
                     onKeyDown={reorder.onKeyDown(i)}
                     aria-label={`第 ${i + 1} 层，拖动或按上下键调整顺序`}
-                    title="拖动排序"
+                    title={t("拖动排序")}
                     className="flex cursor-grab touch-none items-center rounded-md p-1 text-muted hover:bg-surface-2 active:cursor-grabbing"
                   >
                     <GripVertical className="h-4 w-4" />
@@ -369,7 +373,7 @@ function ChainEditor({
                     mono
                     value={hop.upstream}
                     onChange={(e) => setHop(i, { upstream: e.target.value })}
-                    placeholder="上游模型，例如 kimi-k3"
+                    placeholder={t("上游模型，例如 kimi-k3")}
                     className="flex-1"
                   />
 
@@ -387,7 +391,7 @@ function ChainEditor({
                       });
                     }}
                   >
-                    <option value="">选择渠道</option>
+                    <option value="">{t("选择渠道")}</option>
                     {channelList.map((c) => (
                       <option key={c.id} value={c.id}>
                         {c.name} (#{c.id})
@@ -407,7 +411,7 @@ function ChainEditor({
 
                 <div className="mt-1 pl-[3.4rem] text-[11px] text-muted">
                   应用后会把该渠道的优先级写成 {hopPriority(i)}
-                  <span className="text-muted/70">（影响该渠道服务的所有模型）</span>
+                  <span className="text-muted/70">{t("（影响该渠道服务的所有模型）")}</span>
                 </div>
                 <HopStatus
                   verdict={hopVerdict(
@@ -434,11 +438,11 @@ function ChainEditor({
           <button
             onClick={() => check.mutate()}
             disabled={check.isPending}
-            title="逐个渠道去问上游要真实模型清单，核对每一层的模型名"
+            title={t("逐个渠道去问上游要真实模型清单，核对每一层的模型名")}
             className="flex items-center gap-1 rounded-lg border border-border bg-surface-raised px-2.5 py-1.5 text-xs hover:bg-surface-2 disabled:opacity-40"
           >
             <Radar className="h-3.5 w-3.5" />
-            {check.isPending ? "校验中…" : "校验上游模型"}
+            {check.isPending ? t("校验中…") : t("校验上游模型")}
           </button>
           {check.isError && (
             <span className="text-[11px] text-red-600">{errText(check.error)}</span>

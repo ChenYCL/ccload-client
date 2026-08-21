@@ -1,3 +1,4 @@
+import { useT } from "../i18n";
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowUp, Pause, RefreshCw, Radio } from "lucide-react";
@@ -38,6 +39,7 @@ const LIMIT_ERRORS_ONLY = 500;
 const LIVE_KEY = "ccload.logs.live";
 
 export function LogsPage() {
+  const t = useT();
   const [filters, setFilters] = useState<LogFilterState>(EMPTY_FILTERS);
   const [selected, setSelected] = useState<LogEntry | null>(null);
 
@@ -102,11 +104,11 @@ export function LogsPage() {
     <div className="space-y-5">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="t-display">实时日志</h1>
+          <h1 className="t-display">{t("实时日志")}</h1>
           <p className="mt-0.5 text-sm text-muted">
             {live
               ? `内核没有日志推送通道，这里是轮询：进行中 ${ACTIVE_POLL_MS / 1000}s、历史 ${LOGS_POLL_MS / 1000}s，窗口切走时自动暂停。`
-              : "实时已关闭，不再向内核发起任何轮询；下面显示的是最后一次取到的数据。"}
+              : t("实时已关闭，不再向内核发起任何轮询；下面显示的是最后一次取到的数据。")}
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -131,14 +133,14 @@ export function LogsPage() {
 
       {!running ? (
         <div className="card bg-surface-raised px-4 py-8 text-center">
-          <p className="text-sm text-muted">内核未运行，没有日志可看。</p>
-          <p className="mt-1 text-xs text-muted/70">从左下角「启动内核」开始。</p>
+          <p className="text-sm text-muted">{t("内核未运行，没有日志可看。")}</p>
+          <p className="mt-1 text-xs text-muted/70">{t("从左下角「启动内核」开始。")}</p>
         </div>
       ) : (
         <>
           <Panel
-            title="进行中"
-            hint="GET /admin/active-requests · 内核内存态"
+            title={t("进行中")}
+            hint={t("GET /admin/active-requests · 内核内存态")}
             right={
               activeItems.length > 0 ? (
                 <span className="flex items-center gap-1.5 rounded-full bg-emerald-500/12 px-2 py-0.5 text-xs font-medium text-emerald-700">
@@ -160,7 +162,7 @@ export function LogsPage() {
           </Panel>
 
           <Panel
-            title="历史日志"
+            title={t("历史日志")}
             hint={
               filters.errorsOnly
                 ? `在最近 ${fmtInt(fetched.length)} 条中筛出 ${fmtInt(visible.length)} 条错误`
@@ -179,11 +181,11 @@ export function LogsPage() {
                 isLoading={logs.isPending}
                 error={logs.error}
                 isEmpty={feed.logs.length === 0}
-                emptyText={filters.errorsOnly ? "最近的日志里没有错误" : "本日还没有日志"}
+                emptyText={filters.errorsOnly ? t("最近的日志里没有错误") : t("本日还没有日志")}
                 emptyHint={
                   filters.errorsOnly
                     ? `已检查最近 ${fmtInt(fetched.length)} 条`
-                    : "让 CLI 发一次请求就会出现"
+                    : t("让 CLI 发一次请求就会出现")
                 }
                 skeletonLines={6}
               >
@@ -225,12 +227,13 @@ export function LogsPage() {
 /// 轮询总开关。做成开关而不是按钮：它表达的是一个持续状态（正在/没有在轮询），
 /// 而按钮表达的是一次动作。
 function LiveSwitch({ on, onToggle }: { on: boolean; onToggle: () => void }) {
+  const t = useT();
   return (
     <button
       role="switch"
       aria-checked={on}
       onClick={onToggle}
-      title={on ? "关闭实时轮询，省下持续的内核请求" : "开启实时轮询"}
+      title={on ? t("关闭实时轮询，省下持续的内核请求") : t("开启实时轮询")}
       className={cn(
         "flex items-center gap-2 rounded-full border px-2.5 py-1.5 text-xs font-medium",
         on
@@ -256,7 +259,7 @@ function LiveSwitch({ on, onToggle }: { on: boolean; onToggle: () => void }) {
           )}
         />
       </span>
-      {on ? "实时开" : "实时关"}
+      {on ? t("实时开") : t("实时关")}
     </button>
   );
 }

@@ -1,3 +1,4 @@
+import { useT } from "../i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import type { BackupEntry, CliTarget, ConfigFileView, TakeoverOptions, TakeoverPreview } from "../types";
@@ -9,6 +10,7 @@ import { TextArea, TextInput } from "../components/ui/Input";
 import { cn } from "../lib/cn";
 
 export function CliPage() {
+  const t = useT();
   const qc = useQueryClient();
   const kernel = useQuery({ queryKey: ["kernel"], queryFn: api.kernelStatus });
   const settings = useQuery({ queryKey: ["app-settings"], queryFn: api.settingsGet });
@@ -47,7 +49,7 @@ export function CliPage() {
     <div>
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="t-display">CLI 接管</h1>
+          <h1 className="t-display">{t("CLI 接管")}</h1>
           <p className="mt-1 text-sm text-muted">
             把各 CLI 的配置指到内核。写入前自动快照，可在「快照历史」回滚；
             不确定时先在设置里打开「沙箱写入」，改动只落到
@@ -58,7 +60,7 @@ export function CliPage() {
           onClick={() => setShowBackups(!showBackups)}
           className="rounded-lg border border-border bg-surface-raised px-3 py-1.5 text-sm hover:bg-surface-2"
         >
-          {showBackups ? "← 返回接管" : "快照历史"}
+          {showBackups ? t("← 返回接管") : t("快照历史")}
         </button>
       </div>
       {settings.data?.sandbox_cli_writes && (
@@ -104,12 +106,12 @@ export function CliPage() {
 
       {showBackups && (
         <div className="mt-6">
-          <h2 className="t-title">快照历史</h2>
+          <h2 className="t-title">{t("快照历史")}</h2>
           <p className="mt-1 text-xs text-muted">
             每次接管前会自动快照。标记「原始」的是首次接管前的用户配置。
           </p>
           {backups.data && backups.data.length === 0 && (
-            <p className="mt-4 text-sm text-muted">还没有任何快照。</p>
+            <p className="mt-4 text-sm text-muted">{t("还没有任何快照。")}</p>
           )}
           <ul className="mt-4 space-y-2">
             {(backups.data ?? []).map((b) => (
@@ -158,6 +160,7 @@ function CliCard({
   onApply: () => void;
   onEdit: () => void;
 }) {
+  const t = useT();
   const [expanded, setExpanded] = useState(false);
   const isClaude = p.target === "claude-code";
 
@@ -168,7 +171,7 @@ function CliCard({
           <div className="font-medium">{p.label}</div>
           <div className="mt-1 font-mono text-[11px] text-muted">{p.path}</div>
           <div className="mt-1 text-xs text-muted">
-            当前 {p.current_endpoint ?? "（未配置）"} → {p.next_endpoint}
+            当前 {p.current_endpoint ?? t("（未配置）")} → {p.next_endpoint}
           </div>
           {p.token_stale && (
             <div className="mt-1 text-xs text-amber-700">
@@ -208,7 +211,7 @@ function CliCard({
                 : "rounded-lg bg-accent px-3.5 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-accent/90 disabled:opacity-40"
             }
           >
-            {pending ? "写入中…" : p.already_active ? "重新写入" : "写入"}
+            {pending ? t("写入中…") : p.already_active ? t("重新写入") : t("写入")}
           </button>
         </div>
       </div>
@@ -226,7 +229,7 @@ function CliCard({
               {isClaude && (
                 <div className="mb-4 grid grid-cols-2 gap-3">
                   <ModelField
-                    label="默认模型 (ANTHROPIC_MODEL)"
+                    label={t("默认模型 (ANTHROPIC_MODEL)")}
                     envKey="ANTHROPIC_MODEL"
                     target={p.target}
                     value={options.anthropic_model}
@@ -298,6 +301,7 @@ function KnownKeysEditor({
   options: TakeoverOptions;
   onOptionsChange: (o: TakeoverOptions) => void;
 }) {
+  const t = useT();
   const [filter, setFilter] = useState("");
   const keys = useQuery({
     queryKey: ["cli-env-keys", target],
@@ -353,7 +357,7 @@ function KnownKeysEditor({
         <TextInput
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
-          placeholder="筛选变量名或说明…"
+          placeholder={t("筛选变量名或说明…")}
           className="mb-2"
         />
       )}
@@ -371,7 +375,7 @@ function KnownKeysEditor({
               <TextInput
                 mono
                 value={shown}
-                placeholder={k.default || "未设置"}
+                placeholder={k.default || t("未设置")}
                 onChange={(e) =>
                   isCodex
                     ? setCodex(k.key, e.target.value)
@@ -384,7 +388,7 @@ function KnownKeysEditor({
               />
               <button
                 onClick={() => reset(k.key)}
-                title={k.current ? "恢复为本机现值" : "清空"}
+                title={k.current ? t("恢复为本机现值") : t("清空")}
                 className="rounded-md border border-border px-2 py-1 text-[10px] text-muted hover:bg-surface-2"
               >
                 复原
@@ -414,6 +418,7 @@ function CustomEnvRows({
   value: Record<string, string>;
   onChange: (v: Record<string, string>) => void;
 }) {
+  const t = useT();
   // Only keys the catalog does not already render, or they would show twice.
   const custom = Object.entries(value).filter(([k]) => !known.includes(k));
 
@@ -425,7 +430,7 @@ function CustomEnvRows({
 
   return (
     <div className="mt-3 border-t border-border pt-3">
-      <div className="mb-2 text-xs text-muted">清单之外的项（点路径或自定义 KEY）</div>
+      <div className="mb-2 text-xs text-muted">{t("清单之外的项（点路径或自定义 KEY）")}</div>
       <div className="space-y-1">
         {custom.map(([k, v], i) => (
           <div key={i} className="flex items-center gap-2">
@@ -520,6 +525,7 @@ function FallbackFields({
   options: TakeoverOptions;
   onOptionsChange: (o: TakeoverOptions) => void;
 }) {
+  const t = useT();
   // 读回 settings.json 顶层的现值。`cliEnvKeys` 只覆盖 env，这两个键不在里面。
   const files = useQuery({
     queryKey: ["cli-files", "claude-code"],
@@ -564,9 +570,9 @@ function FallbackFields({
 
   return (
     <div className="mb-4 rounded-xl border border-border bg-surface-2/40 p-3">
-      <div className="text-xs font-medium">强制 fallback 模型</div>
+      <div className="text-xs font-medium">{t("强制 fallback 模型")}</div>
       <p className="mt-1 text-[11px] leading-relaxed text-muted">
-        主力<strong>过载或不可用</strong>时，按下面的顺序换人（写进 settings.json 顶层的{" "}
+        主力<strong>{t("过载或不可用")}</strong>时，按下面的顺序换人（写进 settings.json 顶层的{" "}
         <code>fallbackModel</code>）。去重后最多 3 个，多余的 Claude Code 会忽略；
         填 <code>default</code> 表示默认模型。留空则不写入。
       </p>
@@ -578,7 +584,7 @@ function FallbackFields({
               mono
               value={shown[i] ?? ""}
               onChange={(e) => setSlot(i, e.target.value)}
-              placeholder={i === 0 ? "fable-5" : "留空则不写入"}
+              placeholder={i === 0 ? "fable-5" : t("留空则不写入")}
               className={cn(
                 "mt-1",
                 draft !== undefined && (draft[i] ?? "") !== (current.chain[i] ?? "") &&
@@ -592,9 +598,9 @@ function FallbackFields({
       {/* 用户真正抱怨的那个症状在这里解释。放在 fallbackModel 下面是有意的：
           他们会先在这一格里找，找不到就以为客户端没这个能力。 */}
       <p className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-[11px] leading-relaxed text-amber-900">
-        <strong>总是跳到 claude-opus-4-8？</strong>那不是上面这条链干的。请求被 Claude Code
-        的安全分类器标记时，它会跳到<strong>写死的</strong> Opus 4.8 / Opus 5，完全不看{" "}
-        <code>fallbackModel</code>。而 ccLoad 上游没有 <code>claude-opus-4-8</code> 这个名字，
+        <strong>{t("总是跳到 claude-opus-4-8？")}</strong>那不是上面这条链干的。请求被 Claude Code
+        的安全分类器标记时，它会跳到<strong>{t("写死的")}</strong> Opus 4.8 / Opus 5，完全不看{" "}
+        <code>fallbackModel</code>{t("。而 ccLoad 上游没有")} <code>claude-opus-4-8</code> 这个名字，
         于是每次都跳进一个不存在的模型。唯一的改法是把上面的{" "}
         <strong>Opus tier（ANTHROPIC_DEFAULT_OPUS_MODEL）</strong>
         钉成你自己有的模型 —— 设了它之后，所有有 fallback 的分类都改跑这一个。
@@ -631,6 +637,7 @@ function ModelField({
   value: string | undefined;
   onChange: (v: string) => void;
 }) {
+  const t = useT();
   const keys = useQuery({
     queryKey: ["cli-env-keys", target],
     queryFn: () => api.cliEnvKeys(target),
@@ -645,7 +652,7 @@ function ModelField({
       <TextInput
         value={shown}
         onChange={(e) => onChange(e.target.value)}
-        placeholder="留空则不写入"
+        placeholder={t("留空则不写入")}
         className={cn("mt-1", dirty && "!border-accent")}
       />
     </label>
@@ -713,6 +720,7 @@ function ConfigEditor({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const t = useT();
   const files = useQuery({
     queryKey: ["cli-files", target],
     queryFn: () => api.cliReadFiles(target),
@@ -794,14 +802,14 @@ function ConfigEditor({
             />
             <div className="mt-3 flex items-center justify-between">
               <div className="text-xs text-muted">
-                {selected.exists ? "文件已存在" : "文件将创建"}
+                {selected.exists ? t("文件已存在") : t("文件将创建")}
               </div>
               <button
                 disabled={save.isPending || body === selected.body}
                 onClick={() => save.mutate({ rel: selected.rel, body })}
                 className="rounded-lg bg-accent px-3.5 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-accent/90 disabled:opacity-40"
               >
-                {save.isPending ? "保存中…" : "保存"}
+                {save.isPending ? t("保存中…") : t("保存")}
               </button>
             </div>
             {save.isError && (

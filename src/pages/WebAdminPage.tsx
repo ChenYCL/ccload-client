@@ -1,3 +1,4 @@
+import { useT } from "../i18n";
 //! Launcher panel for ccLoad's stock admin UI in a standalone window.
 //!
 //! History, so we don't re-litigate it: iframe→blocked by the kernel's
@@ -49,6 +50,7 @@ const PAGES: Page[] = [
 ];
 
 export function WebAdminPage() {
+  const t = useT();
   const kernel = useQuery({ queryKey: ["kernel"], queryFn: api.kernelStatus });
   const settings = useQuery({ queryKey: ["app-settings"], queryFn: api.settingsGet });
 
@@ -62,7 +64,7 @@ export function WebAdminPage() {
     <div>
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="t-display">内核后台</h1>
+          <h1 className="t-display">{t("内核后台")}</h1>
           <p className="mt-1 text-xs text-muted">
             ccLoad 自带的管理界面，在独立窗口中打开，字段随内核升级自动跟进。
           </p>
@@ -70,7 +72,7 @@ export function WebAdminPage() {
         <div className="flex items-center gap-2">
           <button
             onClick={() => open("channels.html")}
-            title="重新打开管理窗口"
+            title={t("重新打开管理窗口")}
             className="rounded-lg border border-border bg-surface-raised p-2 hover:bg-surface-2"
           >
             <RefreshCw className="h-4 w-4" />
@@ -78,7 +80,7 @@ export function WebAdminPage() {
           {baseUrl && (
             <button
               onClick={() => api.openExternal(`${baseUrl}/web/`)}
-              title="在浏览器中打开"
+              title={t("在浏览器中打开")}
               className="rounded-lg border border-border bg-surface-raised p-2 hover:bg-surface-2"
             >
               <ExternalLink className="h-4 w-4" />
@@ -101,8 +103,8 @@ export function WebAdminPage() {
           <div className="flex items-center gap-2">
             <span className="text-muted">
               {settings.data.kernel.mode === "managed"
-                ? "管理密码（本机生成）"
-                : "管理密码（你在设置里填的 CCLOAD_PASS）"}
+                ? t("管理密码（本机生成）")
+                : t("管理密码（你在设置里填的 CCLOAD_PASS）")}
             </span>
             <code className="min-w-0 flex-1 truncate select-all font-mono text-accent">
               {settings.data.kernel.admin_password || "—"}

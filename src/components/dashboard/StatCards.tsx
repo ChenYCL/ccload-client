@@ -1,3 +1,4 @@
+import { useT } from "../../i18n";
 import type { ReactNode } from "react";
 import { cn } from "../../lib/cn";
 import type { RpmStats } from "../../types";
@@ -39,12 +40,13 @@ export function StatCards({
   rpm?: RpmStats;
   isToday: boolean;
 }) {
+  const t = useT();
   const tone = rateTone(totals.rate, totals.requests);
 
   return (
     <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
       <Card
-        label="请求数"
+        label={t("请求数")}
         value={fmtInt(totals.requests)}
         sub={
           totals.requests > 0 ? (
@@ -55,20 +57,20 @@ export function StatCards({
               </span>
             </>
           ) : (
-            "该时间段没有请求"
+            t("该时间段没有请求")
           )
         }
       />
 
       <Card
-        label="成功率"
+        label={t("成功率")}
         value={totals.requests === 0 ? "—" : fmtPct(totals.rate)}
         tone={TONE_TEXT[tone]}
         sub={
           totals.error > 0
             ? `${fmtInt(totals.error)} 次失败待排查`
             : totals.requests > 0
-              ? "无失败请求"
+              ? t("无失败请求")
               : undefined
         }
       />
@@ -76,7 +78,7 @@ export function StatCards({
       {/* rpm_stats 的 recent_rpm 只在 range=today 有效，其他区间内核不计算，
           所以这里换成 avg_rpm 并把标题改掉，而不是显示一个假的「近期」。 */}
       <Card
-        label={isToday ? "近一分钟 RPM" : "平均 RPM"}
+        label={isToday ? t("近一分钟 RPM") : t("平均 RPM")}
         value={rpm ? fmtInt(isToday ? rpm.recent_rpm : rpm.avg_rpm) : "—"}
         sub={
           rpm ? (
@@ -90,7 +92,7 @@ export function StatCards({
       />
 
       <Card
-        label="费用（倍率后）"
+        label={t("费用（倍率后）")}
         value={fmtCost(totals.effectiveCost)}
         sub={
           <>

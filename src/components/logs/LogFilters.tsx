@@ -1,3 +1,4 @@
+import { useT } from "../../i18n";
 import { AlertOctagon, RotateCcw } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { Select } from "../ui/Input";
@@ -36,6 +37,7 @@ export function LogFilters({
   onChange: (next: LogFilterState) => void;
   bootstrap?: LogsBootstrap;
 }) {
+  const t = useT();
   const set = <K extends keyof LogFilterState>(k: K, v: LogFilterState[K]) =>
     onChange({ ...value, [k]: v });
 
@@ -43,11 +45,11 @@ export function LogFilters({
     <div className="flex flex-wrap items-center gap-2">
       <Select
         small
-        aria-label="按模型筛选"
+        aria-label={t("按模型筛选")}
         value={value.model}
         onChange={(e) => set("model", e.target.value)}
       >
-        <option value="">全部模型</option>
+        <option value="">{t("全部模型")}</option>
         {(bootstrap?.models ?? []).map((m) => (
           <option key={m} value={m}>
             {m}
@@ -57,11 +59,11 @@ export function LogFilters({
 
       <Select
         small
-        aria-label="按渠道筛选"
+        aria-label={t("按渠道筛选")}
         value={value.channelId}
         onChange={(e) => set("channelId", e.target.value)}
       >
-        <option value="">全部渠道</option>
+        <option value="">{t("全部渠道")}</option>
         {(bootstrap?.channels ?? []).map((c) => (
           <option key={c.id} value={String(c.id)}>
             {c.name}
@@ -71,11 +73,11 @@ export function LogFilters({
 
       <Select
         small
-        aria-label="按状态码筛选"
+        aria-label={t("按状态码筛选")}
         value={value.statusCode}
         onChange={(e) => set("statusCode", e.target.value)}
       >
-        <option value="">全部状态码</option>
+        <option value="">{t("全部状态码")}</option>
         {(bootstrap?.status_codes ?? []).map((s) => (
           <option key={s} value={String(s)}>
             {s}

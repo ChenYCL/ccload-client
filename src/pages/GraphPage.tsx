@@ -1,3 +1,4 @@
+import { useT } from "../i18n";
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Check, GripVertical, Play, Save, X, Zap } from "lucide-react";
@@ -17,6 +18,7 @@ import type { GraphDoc, GraphProvider, GraphTier } from "../types";
 /// 折不出来就拒绝保存，并指出是哪两档打架。
 
 export function GraphPage() {
+  const t = useT();
   const qc = useQueryClient();
   const graphs = useQuery({ queryKey: ["graphs"], queryFn: api.graphList });
   const kernel = useQuery({ queryKey: ["kernel"], queryFn: api.kernelStatus });
@@ -69,9 +71,9 @@ export function GraphPage() {
   if (!current) {
     return (
       <div>
-        <h1 className="t-display">调度图</h1>
+        <h1 className="t-display">{t("调度图")}</h1>
         <p className="mt-2 text-sm text-muted">
-          {graphs.isPending ? "读取中…" : "还没有调度图。"}
+          {graphs.isPending ? t("读取中…") : t("还没有调度图。")}
         </p>
       </div>
     );
@@ -85,7 +87,7 @@ export function GraphPage() {
     <div className="space-y-5">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <h1 className="t-display">调度图</h1>
+          <h1 className="t-display">{t("调度图")}</h1>
           <p className="mt-0.5 max-w-3xl text-sm text-muted">
             把「哪种活用哪家的哪个模型」配成一张表，应用后写进内核渠道：档位别名
             落成 <code className="font-mono text-xs">redirect_model</code>，队列顺序落成渠道优先级。
@@ -98,7 +100,7 @@ export function GraphPage() {
             disabled={!dirty || save.isPending}
             className="flex items-center gap-1.5 rounded-lg border border-border bg-surface-raised px-3 py-1.5 text-sm hover:bg-surface-2 disabled:opacity-40"
           >
-            <Save className="h-4 w-4" /> {dirty ? "保存改动" : "已保存"}
+            <Save className="h-4 w-4" /> {dirty ? t("保存改动") : t("已保存")}
           </button>
           <button
             onClick={() => {
@@ -111,14 +113,14 @@ export function GraphPage() {
             disabled={apply.isPending || dirty || !v?.ok}
             title={
               dirty
-                ? "先保存再应用"
+                ? t("先保存再应用")
                 : !v?.ok
-                  ? "校验未通过，不能应用"
-                  : "写入内核渠道"
+                  ? t("校验未通过，不能应用")
+                  : t("写入内核渠道")
             }
             className="flex items-center gap-1.5 rounded-lg bg-accent px-3.5 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-accent/90 disabled:opacity-40"
           >
-            <Zap className="h-4 w-4" /> {apply.isPending ? "写入中…" : "应用到内核"}
+            <Zap className="h-4 w-4" /> {apply.isPending ? t("写入中…") : t("应用到内核")}
           </button>
         </div>
       </header>
@@ -152,7 +154,7 @@ export function GraphPage() {
             内核未运行，读不到渠道列表
           </div>
           <p className="mt-1">
-            调度图要把 provider 绑到内核里<strong className="font-medium">已有的</strong>渠道上，
+            调度图要把 provider 绑到内核里<strong className="font-medium">{t("已有的")}</strong>渠道上，
             所以得先从左下角「启动内核」。下面的下拉框在那之前是空的，与配置本身无关。
           </p>
         </div>
@@ -189,7 +191,7 @@ export function GraphPage() {
           });
           setMessage(
             hit === 0
-              ? "按名称和 URL 没猜出任何一家，需要手动选。"
+              ? t("按名称和 URL 没猜出任何一家，需要手动选。")
               : `按名称和 URL 猜中 ${hit} 家，已填进下拉框 —— 请自己核对一遍再保存。`,
           );
         }}
@@ -252,6 +254,7 @@ function ProviderTable({
   onChange: (p: GraphProvider[]) => void;
   onAutoBind: () => void;
 }) {
+  const t = useT();
   const set = (i: number, patch: Partial<GraphProvider>) => {
     const next = [...doc.providers];
     next[i] = { ...next[i], ...patch };
@@ -265,14 +268,14 @@ function ProviderTable({
         <h2 className="t-title">Provider</h2>
         <p className="mt-0.5 text-xs text-muted">
           每家绑一个内核里已有的渠道（客户端不替你建渠道、不发明凭据），
-          再填它在各档的<strong className="font-medium text-content">真实上游模型名</strong>
+          再填它在各档的<strong className="font-medium text-content">{t("真实上游模型名")}</strong>
           —— 这些名字必须是该渠道上游认识的。
         </p>
         </div>
         <button
           onClick={onAutoBind}
           disabled={channels.length === 0}
-          title="按渠道名称和 URL 里的关键词猜，填完仍需自己核对"
+          title={t("按渠道名称和 URL 里的关键词猜，填完仍需自己核对")}
           className="shrink-0 rounded-lg border border-border bg-surface-raised px-2.5 py-1.5 text-xs hover:bg-surface-2 disabled:opacity-40"
         >
           按名称自动匹配
@@ -281,12 +284,12 @@ function ProviderTable({
       <table className="w-full table-fixed text-sm">
         <thead>
           <tr className="border-b border-border bg-surface-2 text-left text-xs text-muted">
-            <th className="w-16 px-3 py-2">启用</th>
+            <th className="w-16 px-3 py-2">{t("启用")}</th>
             <th className="w-24 px-2 py-2">Provider</th>
-            <th className="w-52 px-2 py-2">渠道</th>
-            {doc.tiers.map((t) => (
-              <th key={t.id} className="px-2 py-2">
-                {t.label}
+            <th className="w-52 px-2 py-2">{t("渠道")}</th>
+            {doc.tiers.map((tier) => (
+              <th key={tier.id} className="px-2 py-2">
+                {tier.label}
               </th>
             ))}
           </tr>
@@ -315,7 +318,7 @@ function ProviderTable({
                   }
                 >
                   <option value="">
-                    {channels.length === 0 ? "（内核未运行 / 无渠道）" : "未绑定"}
+                    {channels.length === 0 ? t("（内核未运行 / 无渠道）") : t("未绑定")}
                   </option>
                   {channels
                     .filter((c) => c.id !== undefined)
@@ -326,16 +329,16 @@ function ProviderTable({
                     ))}
                 </Select>
               </td>
-              {doc.tiers.map((t) => (
-                <td key={t.id} className="px-2 py-2">
+              {doc.tiers.map((tier) => (
+                <td key={tier.id} className="px-2 py-2">
                   <TextInput
                     small
                     mono
-                    aria-label={`${p.label} 在 ${t.label} 档的模型`}
-                    value={p.models[t.id] ?? ""}
-                    placeholder="上游模型名"
+                    aria-label={`${p.label} 在 ${tier.label} 档的模型`}
+                    value={p.models[tier.id] ?? ""}
+                    placeholder={t("上游模型名")}
                     onChange={(e) =>
-                      set(i, { models: { ...p.models, [t.id]: e.target.value } })
+                      set(i, { models: { ...p.models, [tier.id]: e.target.value } })
                     }
                   />
                 </td>
@@ -357,6 +360,7 @@ function TierTable({
   onChange: (t: GraphTier[]) => void;
   priorities?: Record<string, number>;
 }) {
+  const t = useT();
   const setTier = (i: number, patch: Partial<GraphTier>) => {
     const next = [...doc.tiers];
     next[i] = { ...next[i], ...patch };
@@ -367,9 +371,9 @@ function TierTable({
 
   return (
     <section className="card p-4">
-      <h2 className="t-title">档位与队列</h2>
+      <h2 className="t-title">{t("档位与队列")}</h2>
       <p className="mt-0.5 text-xs text-muted">
-        别名是 CLI 侧实际请求的模型名。队列从上到下依次尝试 —— 但内核只有<strong className="font-medium text-content">渠道级</strong>
+        别名是 CLI 侧实际请求的模型名。队列从上到下依次尝试 —— 但内核只有<strong className="font-medium text-content">{t("渠道级")}</strong>
         优先级，所以所有档的顺序必须能折成一个全局顺序，折不出来上面会报冲突。
       </p>
 
@@ -417,6 +421,7 @@ function ProviderQueue({
   priorities?: Record<string, number>;
   onChange: (p: string[]) => void;
 }) {
+  const t = useT();
   const reorder = useReorder(tier.providers, onChange);
   const unused = all.filter((p) => !tier.providers.includes(p.id));
 
@@ -449,7 +454,7 @@ function ProviderQueue({
               </span>
               <span className="font-medium">{labelOf(pid)}</span>
               <span className="font-mono text-[10px] text-muted">
-                {all.find((p) => p.id === pid)?.models[tier.id] || "（未填模型）"}
+                {all.find((p) => p.id === pid)?.models[tier.id] || t("（未填模型）")}
               </span>
               {priorities?.[pid] != null && (
                 <span className="text-[10px] text-muted">优先级 {priorities[pid]}</span>
@@ -468,7 +473,7 @@ function ProviderQueue({
 
       {unused.length > 0 && (
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-          <span className="text-[10px] text-muted">加入：</span>
+          <span className="text-[10px] text-muted">{t("加入：")}</span>
           {unused.map((p) => (
             <button
               key={p.id}
@@ -487,6 +492,7 @@ function ProviderQueue({
 /// 角色 → 档位。这一段只是说明：真正让角色生效要在扩展管理里装对应的 agent
 /// 文件，把 `model:` 写成这里的别名。客户端不越俎代庖去猜用户想装哪些 agent。
 function RolePanel({ doc }: { doc: GraphDoc }) {
+  const t = useT();
   const aliasOf = (tierId: string) =>
     doc.tiers.find((t) => t.id === tierId)?.alias ?? "?";
   const rows = useMemo(() => doc.roles ?? [], [doc.roles]);
@@ -494,7 +500,7 @@ function RolePanel({ doc }: { doc: GraphDoc }) {
 
   return (
     <section className="card p-4">
-      <h2 className="t-title">角色映射</h2>
+      <h2 className="t-title">{t("角色映射")}</h2>
       <p className="mt-0.5 text-xs text-muted">
         角色靠 CLI 侧表达：在「扩展管理」里建一个同名 agent，把它的{" "}
         <code className="font-mono">model</code> 写成下面这个别名，请求就会落到对应档。

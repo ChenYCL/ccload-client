@@ -88,7 +88,7 @@ export function DashboardPage() {
     <div className="space-y-5">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="t-display">总览</h1>
+          <h1 className="t-display">{t("总览")}</h1>
           <p className="mt-0.5 text-sm text-muted">
             全部数字来自内核 Admin API 的真实字段，客户端只做聚合，不做估算。
           </p>
@@ -106,8 +106,8 @@ export function DashboardPage() {
 
       {!running ? (
         <div className="card bg-surface-raised px-4 py-8 text-center">
-          <p className="text-sm text-muted">内核未运行，没有可展示的数据。</p>
-          <p className="mt-1 text-xs text-muted/70">从左下角「启动内核」开始。</p>
+          <p className="text-sm text-muted">{t("内核未运行，没有可展示的数据。")}</p>
+          <p className="mt-1 text-xs text-muted/70">{t("从左下角「启动内核」开始。")}</p>
         </div>
       ) : (
         <>
@@ -129,15 +129,15 @@ export function DashboardPage() {
           <AnomalyPanel items={anomalies} />
 
           <Panel
-            title="请求量与成功率"
+            title={t("请求量与成功率")}
             hint={`GET /admin/metrics · 每桶 ${BUCKET_MIN[range]} 分钟`}
           >
             <AsyncBlock
               isLoading={metrics.isPending}
               error={metrics.error}
               isEmpty={points.length === 0}
-              emptyText="该时间段没有任何请求"
-              emptyHint="内核已按桶补齐时间轴，空数组说明区间内确实没有流量"
+              emptyText={t("该时间段没有任何请求")}
+              emptyHint={t("内核已按桶补齐时间轴，空数组说明区间内确实没有流量")}
               skeletonLines={5}
             >
               <TrendChart points={points} bucketMin={BUCKET_MIN[range]} />
@@ -145,25 +145,25 @@ export function DashboardPage() {
           </Panel>
 
           <div className="grid gap-5 lg:grid-cols-2">
-            <Panel title="渠道健康" hint="stats.channel_health">
+            <Panel title={t("渠道健康")} hint="stats.channel_health">
               <AsyncBlock
                 isLoading={stats.isPending}
                 error={stats.error}
                 isEmpty={Object.keys(health).length === 0}
-                emptyText="没有渠道健康数据"
-                emptyHint="该时间段内没有任何渠道产生过请求"
+                emptyText={t("没有渠道健康数据")}
+                emptyHint={t("该时间段内没有任何渠道产生过请求")}
               >
                 <ChannelHealthPanel health={health} rows={rows} />
               </AsyncBlock>
             </Panel>
 
-            <Panel title="模型消耗" hint="stats[] 按模型聚合">
+            <Panel title={t("模型消耗")} hint={t("stats[] 按模型聚合")}>
               <AsyncBlock
                 isLoading={stats.isPending}
                 error={stats.error}
                 isEmpty={models.length === 0}
-                emptyText="没有模型用量"
-                emptyHint="换个时间范围，或先让 CLI 发一次请求"
+                emptyText={t("没有模型用量")}
+                emptyHint={t("换个时间范围，或先让 CLI 发一次请求")}
               >
                 <ModelBreakdown rows={models} />
               </AsyncBlock>
@@ -173,13 +173,13 @@ export function DashboardPage() {
           {/* 明细表独占整行：模型名（含 claude-fable-5[1m] 这类）在半列里会被
               截成「claude-fable…」，而左边是大片空白。列表本身可能几十行，
               限高内滚，避免整页被拉得很长。 */}
-          <Panel title="模型明细" hint="stats[] 按模型聚合">
+          <Panel title={t("模型明细")} hint={t("stats[] 按模型聚合")}>
             <AsyncBlock
               isLoading={stats.isPending}
               error={stats.error}
               isEmpty={models.length === 0}
-              emptyText="没有模型用量"
-              emptyHint="换个时间范围，或先让 CLI 发一次请求"
+              emptyText={t("没有模型用量")}
+              emptyHint={t("换个时间范围，或先让 CLI 发一次请求")}
             >
               <div className="max-h-[26rem] overflow-y-auto">
                 <ModelTable rows={models} />
@@ -192,7 +192,7 @@ export function DashboardPage() {
       {/* MCP 工具统计不挂在 `running` 里面：流水是各 MCP 进程自己写的文件，
           内核停着也读得到，而且这正是「内核关了为什么工具还在动」最该被看见
           的时候。时间范围开关同样管不到它 —— 那三个范围是内核日志的口径。 */}
-      <Panel title={t("MCP 工具调用")} hint="ccload-vision · 本地流水">
+      <Panel title={t("MCP 工具调用")} hint={t("ccload-vision · 本地流水")}>
         <McpToolPanel />
       </Panel>
     </div>

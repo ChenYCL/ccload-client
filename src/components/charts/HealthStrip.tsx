@@ -1,3 +1,4 @@
+import { useT } from "../../i18n";
 import type { HealthPoint } from "../../types";
 import { fmtDuration, fmtInt, fmtPct, rateTone, TONE_FILL, TONE_TEXT } from "../formatters";
 
@@ -8,8 +9,9 @@ import { fmtDuration, fmtInt, fmtPct, rateTone, TONE_FILL, TONE_TEXT } from "../
 /// 空闲和全挂看起来必须不一样。
 
 export function HealthStrip({ points }: { points: HealthPoint[] }) {
+  const t = useT();
   return (
-    <div className="flex h-5 items-stretch gap-[1px]" role="img" aria-label="健康时间线">
+    <div className="flex h-5 items-stretch gap-[1px]" role="img" aria-label={t("健康时间线")}>
       {points.map((p) => {
         const sample = p.success + p.error;
         const tone = rateTone(p.rate, sample);
@@ -37,6 +39,7 @@ export function ChannelHealthRow(props: {
   points: HealthPoint[];
   avgDurationSeconds?: number;
 }) {
+  const t = useT();
   const success = props.points.reduce((s, p) => s + p.success, 0);
   const error = props.points.reduce((s, p) => s + p.error, 0);
   const limited = props.points.reduce((s, p) => s + p.rate_limited, 0);
@@ -59,7 +62,7 @@ export function ChannelHealthRow(props: {
           )}
           <span className="text-muted">{fmtInt(total)} 次</span>
           <span className={`w-12 text-right font-medium ${TONE_TEXT[tone]}`}>
-            {total === 0 ? "闲置" : fmtPct(rate)}
+            {total === 0 ? t("闲置") : fmtPct(rate)}
           </span>
         </span>
       </div>

@@ -247,34 +247,34 @@ export function ModelsPage() {
         }));
       // 逐个写：并行会和视觉 MCP 一样把备份清单踩坏。一家失败不影响其余。
       const rs: TargetOutcome[] = [];
-      for (const t of targets) {
+      for (const tg of targets) {
         try {
           // Claude Code 没选槽位时后端会整次失败；其它 CLI 不认 tier，
           // 混选时跳过 Claude，让 Codex/OpenCode 照常写入。
           if (
-            t === "claude-code" &&
+            tg === "claude-code" &&
             entries.every((e) => !e.tier || e.tier === "none")
           ) {
             rs.push({
-              t,
+              t: tg,
               status: "skipped",
-              text: "没给任何模型选 Tier 槽位，配置未改动；其它 CLI 见各自那行",
+              text: t("没给任何模型选 Tier 槽位，配置未改动；其它 CLI 见各自那行"),
             });
             continue;
           }
           // tier 只有 Claude Code 认；别家传 null，避免写进不认识的字段。
           const forTarget =
-            t === "claude-code"
+            tg === "claude-code"
               ? entries
               : entries.map((e) => ({ ...e, tier: null }));
-          const r = await api.modelImport(t, forTarget);
+          const r = await api.modelImport(tg, forTarget);
           const note =
             r.skipped.length > 0
               ? `（${r.skipped.length} 个模型没选 Tier 槽位，未写入）`
               : "";
-          rs.push({ t, status: "ok", text: r.written.join("、") + note });
+          rs.push({ t: tg, status: "ok", text: r.written.join("、") + note });
         } catch (e) {
-          rs.push({ t, status: "failed", text: errText(e) });
+          rs.push({ t: tg, status: "failed", text: errText(e) });
         }
       }
       return rs;
@@ -318,7 +318,7 @@ export function ModelsPage() {
   const vision = useMutation({
     mutationFn: (ts: CliTarget[]) => visionBatch(ts, true, visionModel || undefined),
     onSuccess: async (rs) => {
-      setMessage(summarize(rs, "已安装", "安装失败"));
+      setMessage(summarize(rs, t("已安装"), t("安装失败")));
       // 先把磁盘上的新值取回来，**再**把选择权交还给它。顺序反了的话中间那一
       // 帧读到的还是旧数据（首次安装时是「什么都没装」），下拉会闪回占位符
       // ——正好是这次要修的那个 bug 的样子。
@@ -330,7 +330,7 @@ export function ModelsPage() {
   const visionOff = useMutation({
     mutationFn: (ts: CliTarget[]) => visionBatch(ts, false),
     onSuccess: (rs) => {
-      setMessage(summarize(rs, "已移除", "移除失败"));
+      setMessage(summarize(rs, t("已移除"), t("移除失败")));
       visionState.refetch();
     },
     onError: (e) => setMessage(errText(e)),
@@ -415,10 +415,10 @@ export function ModelsPage() {
     <div>
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="t-display">模型导入</h1>
+          <h1 className="t-display">{t("模型导入")}</h1>
           <p className="mt-1 text-sm text-muted">
-            从内核渠道聚合所有可用模型别名，<strong>追加</strong>进各 CLI 的模型目录：
-            Codex 每个别名一个 <code>[profiles.别名]</code>（<code>codex --profile</code> 选用）、
+            从内核渠道聚合所有可用模型别名，<strong>{t("追加")}</strong>进各 CLI 的模型目录：
+            Codex 每个别名一个 <code>{t("[profiles.别名]")}</code>（<code>codex --profile</code> 选用）、
             OpenCode 合并进 <code>provider.ccload.models</code>。
             两者都不会动你当前正在用的模型。Claude Code 没有目录文件，只有 5 个槽位，
             所以要在 Tier 列显式指定 —— 没指定的行不写。
@@ -427,7 +427,7 @@ export function ModelsPage() {
         <div className="flex shrink-0 items-center gap-2">
           <button
             onClick={resetDefaults}
-            title="按 models.dev 目录与本地预设重填所有行的上下文窗口"
+            title={t("按 models.dev 目录与本地预设重填所有行的上下文窗口")}
             className="flex items-center gap-1 rounded-lg border border-border bg-surface-raised px-3 py-1.5 text-sm hover:bg-surface-2"
           >
             <Wand2 className="h-4 w-4" /> 填充默认值
@@ -435,11 +435,11 @@ export function ModelsPage() {
           <button
             onClick={() => catalog.refetch()}
             disabled={catalog.isFetching}
-            title="重新拉取 models.dev 模型目录"
+            title={t("重新拉取 models.dev 模型目录")}
             className="flex items-center gap-1 rounded-lg border border-border bg-surface-raised px-3 py-1.5 text-sm hover:bg-surface-2 disabled:opacity-40"
           >
             <RefreshCw className={"h-4 w-4" + (catalog.isFetching ? " animate-spin" : "")} />
-            {catalog.isSuccess ? "已同步" : catalog.isError ? "目录不可用" : "同步中"}
+            {catalog.isSuccess ? t("已同步") : catalog.isError ? t("目录不可用") : t("同步中")}
           </button>
         </div>
       </div>
@@ -454,21 +454,21 @@ export function ModelsPage() {
       {aliases.length === 0 && (
         <p className="mt-6 text-sm text-muted">
           {channels.isLoading
-            ? "读取渠道中…"
-            : "内核里还没有渠道或渠道没有配置模型，先去「内核后台」添加。"}
+            ? t("读取渠道中…")
+            : t("内核里还没有渠道或渠道没有配置模型，先去「内核后台」添加。")}
         </p>
       )}
 
       {aliases.length > 0 && (
         <>
           <div className="mt-5 flex flex-wrap items-center gap-2">
-            <span className="text-xs text-muted">写入到</span>
-            {IMPORT_TARGETS.map((t) => {
-              const on = targets.includes(t);
+            <span className="text-xs text-muted">{t("写入到")}</span>
+            {IMPORT_TARGETS.map((tg) => {
+              const on = targets.includes(tg);
               return (
                 <button
-                  key={t}
-                  onClick={() => toggleTarget(t)}
+                  key={tg}
+                  onClick={() => toggleTarget(tg)}
                   aria-pressed={on}
                   className={cn(
                     "flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm",
@@ -478,7 +478,7 @@ export function ModelsPage() {
                   )}
                 >
                   {on ? <Check className="h-3.5 w-3.5" /> : null}
-                  {TARGET_LABELS[t]}
+                  {TARGET_LABELS[tg]}
                 </button>
               );
             })}
@@ -496,14 +496,14 @@ export function ModelsPage() {
               }
               title={
                 importBlocked
-                  ? "Claude Code 没有模型目录文件：请在 Tier 列给至少一个模型选一个槽位"
+                  ? t("Claude Code 没有模型目录文件：请在 Tier 列给至少一个模型选一个槽位")
                   : undefined
               }
               className="ml-auto flex items-center gap-1 rounded-lg bg-accent px-3.5 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-accent/90 disabled:opacity-40"
             >
               <Download className="h-4 w-4" />
               {apply.isPending
-                ? "写入中…"
+                ? t("写入中…")
                 : `导入到 ${targets.length} 个 CLI`}
             </button>
           </div>
@@ -542,12 +542,12 @@ export function ModelsPage() {
             <button
               onClick={() => probe.mutate()}
               disabled={probe.isPending || liveChannels.length === 0}
-              title="逐个渠道向上游要一次模型列表，然后取并集"
+              title={t("逐个渠道向上游要一次模型列表，然后取并集")}
               className="rounded-lg border border-border bg-surface-raised px-2.5 py-1 text-xs hover:bg-surface-2 disabled:opacity-40"
             >
               {probe.isPending
                 ? `拉取中…（${liveChannels.length} 个渠道）`
-                : "拉取全部渠道的上游模型"}
+                : t("拉取全部渠道的上游模型")}
             </button>
 
             {matches && (
@@ -581,7 +581,7 @@ export function ModelsPage() {
                       {probedFail.map((f) => (
                         <li key={f.name} className="break-all">
                           {f.name}
-                          {f.err ? `：${f.err}` : "：上游没有可用的 /v1/models 或返回为空"}
+                          {f.err ? `：${f.err}` : t("：上游没有可用的 /v1/models 或返回为空")}
                         </li>
                       ))}
                     </ul>
@@ -600,8 +600,8 @@ export function ModelsPage() {
                         选中比例的指示器（部分选中时显示 indeterminate）。 */}
                     <input
                       type="checkbox"
-                      aria-label={allChecked ? "全不选" : "全选"}
-                      title={allChecked ? "全不选" : "全选"}
+                      aria-label={allChecked ? t("全不选") : t("全选")}
+                      title={allChecked ? t("全不选") : t("全选")}
                       checked={allChecked}
                       ref={(el) => {
                         if (el) el.indeterminate = !allChecked && checkedCount > 0;
@@ -610,11 +610,11 @@ export function ModelsPage() {
                       className="h-4 w-4"
                     />
                   </th>
-                  <th className="px-2 py-2 text-left">模型别名</th>
-                  <th className="w-56 px-2 py-2 text-left">上下文窗口</th>
+                  <th className="px-2 py-2 text-left">{t("模型别名")}</th>
+                  <th className="w-56 px-2 py-2 text-left">{t("上下文窗口")}</th>
                   {showTier && <th className="w-32 px-2 py-2 text-left">Tier</th>}
-                  <th className="w-24 px-2 py-2 text-left">视觉</th>
-                  {matches && <th className="w-28 px-2 py-2 text-left">上游</th>}
+                  <th className="w-24 px-2 py-2 text-left">{t("视觉")}</th>
+                  {matches && <th className="w-28 px-2 py-2 text-left">{t("上游")}</th>}
                 </tr>
               </thead>
               <tbody>
@@ -653,7 +653,7 @@ export function ModelsPage() {
                           {r.fromCatalog && (
                             <span
                               className="shrink-0 whitespace-nowrap rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] text-emerald-700"
-                              title="来自 models.dev 目录"
+                              title={t("来自 models.dev 目录")}
                             >
                               目录
                             </span>
@@ -669,9 +669,9 @@ export function ModelsPage() {
                             value={r.tier}
                             onChange={(e) => setRow(a, { tier: e.target.value })}
                           >
-                            {TIERS.map((t) => (
-                              <option key={t} value={t}>
-                                {TIER_LABELS[t] ?? t}
+                            {TIERS.map((tier) => (
+                              <option key={tier} value={tier}>
+                                {TIER_LABELS[tier] ?? tier}
                               </option>
                             ))}
                           </Select>
@@ -705,19 +705,19 @@ export function ModelsPage() {
         <p className="mt-1 text-sm text-muted">
           给文本模型装上「眼睛」：本客户端自带一个 MCP 服务器，把图片交给一个多模态模型
           描述，再把文字交给当前模型。已支持多模态的模型不需要。四个工具：
-          <code>describe_image</code>（看图）、<code>read_image_text</code>（逐字抄下图上的文字，
+          <code>describe_image</code>{t("（看图）、")}<code>read_image_text</code>（逐字抄下图上的文字，
           报错截图用它）、<code>compare_images</code>（比对改动前后）、
           <code>describe_screen</code>（直接截当前屏幕，仅 macOS）。
         </p>
 
         <label className="mt-3 flex flex-wrap items-center gap-2 text-sm">
-          <span className="text-muted">用哪个模型看图</span>
+          <span className="text-muted">{t("用哪个模型看图")}</span>
           <Select
             className="w-64"
             value={visionModel}
             onChange={(e) => setVisionPick(e.target.value)}
           >
-            <option value="">选择多模态模型</option>
+            <option value="">{t("选择多模态模型")}</option>
             {visionOptions.map((a) => (
               <option key={a} value={a}>
                 {a}
@@ -731,7 +731,7 @@ export function ModelsPage() {
             <span className="text-xs text-muted">
               已装：{installedModels.join("、")}
               {visionPick !== null && visionPick !== installedModels[0] && (
-                <span className="ml-1 text-amber-700">（改动尚未写入，点下面的安装才生效）</span>
+                <span className="ml-1 text-amber-700">{t("（改动尚未写入，点下面的安装才生效）")}</span>
               )}
             </span>
           )}
@@ -748,18 +748,18 @@ export function ModelsPage() {
             两个按钮并排且状态未知，点哪个全靠猜。
             最左侧的复选框用于批量：五家都要装时不必点五次。 */}
         <ul className="mt-3 divide-y divide-border/60 rounded-xl border border-border">
-          {VISION_TARGETS.map((t) => {
-            const st = visionByTarget.get(t);
+          {VISION_TARGETS.map((tg) => {
+            const st = visionByTarget.get(tg);
             const on = st?.installed === true;
             return (
-              <li key={t} className="flex items-center gap-3 px-3 py-2">
+              <li key={tg} className="flex items-center gap-3 px-3 py-2">
                 <input
                   type="checkbox"
-                  aria-label={`选中 ${TARGET_LABELS[t]}`}
-                  checked={visionPicked.includes(t)}
+                  aria-label={`选中 ${TARGET_LABELS[tg]}`}
+                  checked={visionPicked.includes(tg)}
                   onChange={() =>
                     setVisionPicked((p) =>
-                      p.includes(t) ? p.filter((x) => x !== t) : [...p, t],
+                      p.includes(tg) ? p.filter((x) => x !== tg) : [...p, tg],
                     )
                   }
                   className="h-3.5 w-3.5"
@@ -770,30 +770,30 @@ export function ModelsPage() {
                     !on ? "bg-border" : st?.stale ? "bg-amber-500" : "bg-emerald-500",
                   )}
                 />
-                <span className="text-sm">{TARGET_LABELS[t]}</span>
+                <span className="text-sm">{TARGET_LABELS[tg]}</span>
                 <span className="text-xs text-muted">
                   {visionState.isPending
-                    ? "读取中…"
+                    ? t("读取中…")
                     : on
                       ? `已安装${st?.model ? ` · ${st.model}` : ""}`
-                      : "未安装"}
+                      : t("未安装")}
                 </span>
                 {/* 装了但凭证过期，和「没装」是两回事：配置看着是好的，每次
                     看图却都 401。不点破的话用户只会看到工具莫名其妙不工作。 */}
                 {on && st?.stale && (
                   <span
                     className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-700"
-                    title="里面存的内核地址或令牌已经不是当前这个内核的了，重新安装即可修好"
+                    title={t("里面存的内核地址或令牌已经不是当前这个内核的了，重新安装即可修好")}
                   >
                     凭证过期
                   </span>
                 )}
                 <button
-                  onClick={() => (on ? visionOff.mutate([t]) : vision.mutate([t]))}
+                  onClick={() => (on ? visionOff.mutate([tg]) : vision.mutate([tg]))}
                   disabled={
                     vision.isPending || visionOff.isPending || (!on && !visionModel)
                   }
-                  title={!on && !visionModel ? "先在上面选一个多模态模型" : undefined}
+                  title={!on && !visionModel ? t("先在上面选一个多模态模型") : undefined}
                   className={cn(
                     "ml-auto rounded-lg border px-2.5 py-1 text-xs disabled:opacity-40",
                     on
@@ -801,17 +801,17 @@ export function ModelsPage() {
                       : "border-border bg-surface-raised hover:bg-surface-2",
                   )}
                 >
-                  {on ? "移除" : "安装"}
+                  {on ? t("移除") : t("安装")}
                 </button>
                 {/* 已装的也要能改模型/修凭证，否则只能先移除再装一遍。 */}
                 {on && (
                   <button
-                    onClick={() => vision.mutate([t])}
+                    onClick={() => vision.mutate([tg])}
                     disabled={vision.isPending || visionOff.isPending || !visionModel}
                     title={
                       !visionModel
-                        ? "先在上面选一个多模态模型"
-                        : "用当前选中的模型和内核凭证重写这一条"
+                        ? t("先在上面选一个多模态模型")
+                        : t("用当前选中的模型和内核凭证重写这一条")
                     }
                     className="rounded-lg border border-border bg-surface-raised px-2.5 py-1 text-xs hover:bg-surface-2 disabled:opacity-40"
                   >
@@ -833,7 +833,7 @@ export function ModelsPage() {
               <button
                 onClick={() => vision.mutate(visionPicked)}
                 disabled={vision.isPending || !visionModel}
-                title={!visionModel ? "先在上面选一个多模态模型" : undefined}
+                title={!visionModel ? t("先在上面选一个多模态模型") : undefined}
                 className="ml-auto rounded-lg bg-accent px-2.5 py-1 font-medium text-white hover:bg-accent/90 disabled:opacity-40"
               >
                 批量安装

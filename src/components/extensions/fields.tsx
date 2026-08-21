@@ -1,3 +1,4 @@
+import { useT } from "../../i18n";
 /// 表单原子。MCP 的 args/env/headers 都是「一堆可增删的行」，Skill/Agent 是大
 /// 段 markdown，Hook 是几个单值 —— 共用的只有外观，所以这里只抽外观。
 
@@ -12,11 +13,12 @@ export function Field(props: {
   required?: boolean;
   children: ReactNode;
 }) {
+  const t = useT();
   return (
     <label className="block">
       <div className="flex items-baseline gap-1.5">
         <span className="text-xs font-medium text-content">{props.label}</span>
-        {props.required && <span className="text-xs text-accent">必填</span>}
+        {props.required && <span className="text-xs text-accent">{t("必填")}</span>}
         {props.hint && <span className="text-[11px] text-muted">{props.hint}</span>}
       </div>
       <div className="mt-1">{props.children}</div>
@@ -32,6 +34,7 @@ export function KeyValueRows(props: {
   value: Record<string, string>;
   onChange: (v: Record<string, string>) => void;
 }) {
+  const t = useT();
   const rows = Object.entries(props.value);
 
   const rename = (oldKey: string, newKey: string) => {
@@ -65,7 +68,7 @@ export function KeyValueRows(props: {
             />
             <button
               type="button"
-              aria-label={`删除 ${k || "这一行"}`}
+              aria-label={`删除 ${k || t("这一行")}`}
               onClick={() => {
                 const next = { ...props.value };
                 delete next[k];

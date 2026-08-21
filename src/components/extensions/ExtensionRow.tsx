@@ -1,3 +1,4 @@
+import { useT } from "../../i18n";
 /// 一行一个扩展，右侧 5 个徽章标出它装在哪几个 CLI 上——「同一个 id 装在多处」
 /// 一眼就能看出来，这正是统一管理相对于逐个 CLI 翻配置文件的意义。
 ///
@@ -15,6 +16,7 @@ export function ExtensionRow(props: {
   onEdit: (target: CliTarget, id: string) => void;
   onRemove: (item: ExtensionItem) => void;
 }) {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const { group, supports } = props;
   const supportedCount = supports.filter((s) => s.supported).length;
@@ -54,7 +56,7 @@ export function ExtensionRow(props: {
         <div className="space-y-3 border-t border-border px-4 py-3.5">
           <SyncPanel group={group} supports={supports} />
           <div>
-            <div className="mb-1.5 text-xs font-medium">已装位置</div>
+            <div className="mb-1.5 text-xs font-medium">{t("已装位置")}</div>
             <ul className="space-y-1.5">
               {group.items.map((item) => (
                 <InstallRow
@@ -122,6 +124,7 @@ function InstallRow({
   onEdit: () => void;
   onRemove: () => void;
 }) {
+  const t = useT();
   const [rawOpen, setRawOpen] = useState(false);
   return (
     <li className="rounded-xl border border-border bg-surface-raised px-3 py-2">
@@ -158,7 +161,7 @@ function InstallRow({
         onClick={() => setRawOpen(!rawOpen)}
         className="mt-1 text-[10px] text-muted hover:text-content"
       >
-        {rawOpen ? "收起原始配置" : "查看原始配置"}
+        {rawOpen ? t("收起原始配置") : t("查看原始配置")}
       </button>
       {rawOpen && (
         <pre className="mt-1 max-h-48 overflow-auto rounded-lg bg-surface-2 p-2 font-mono text-[10px] leading-relaxed">

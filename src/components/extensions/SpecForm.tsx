@@ -1,3 +1,4 @@
+import { useT } from "../../i18n";
 /// 按 kind 换一套字段的表单。四类扩展在配置文件里的形状差得很远，硬做成一个
 /// 通用键值编辑器只会让每一类都难填 —— 所以这里就是四个分支。
 
@@ -14,6 +15,7 @@ export function SpecForm(props: {
   /** 编辑已装条目时名称就是主键，改名等于新建，所以锁死。 */
   idLocked: boolean;
 }) {
+  const t = useT();
   const { draft, kind } = props;
   const set = (patch: Partial<SpecDraft>) => props.onChange({ ...draft, ...patch });
 
@@ -21,14 +23,14 @@ export function SpecForm(props: {
     <div className="space-y-4">
       {kind !== "hook" && (
         <Field
-          label="名称（id）"
+          label={t("名称（id）")}
           required
           hint={
             kind === "mcp"
-              ? "配置里的服务器名"
+              ? t("配置里的服务器名")
               : kind === "skill"
-                ? "技能目录名"
-                : "文件名（不含 .md）"
+                ? t("技能目录名")
+                : t("文件名（不含 .md）")
           }
         >
           <TextInput
@@ -42,11 +44,11 @@ export function SpecForm(props: {
       )}
 
       {kind !== "hook" && (
-        <Field label="描述" hint="可留空">
+        <Field label={t("描述")} hint={t("可留空")}>
           <TextInput
             value={draft.description}
             onChange={(e) => set({ description: e.target.value })}
-            placeholder="一句话说明它是干什么的"
+            placeholder={t("一句话说明它是干什么的")}
           />
         </Field>
       )}
@@ -54,16 +56,16 @@ export function SpecForm(props: {
       {kind === "mcp" && <McpFields draft={draft} set={set} />}
       {(kind === "skill" || kind === "agent") && (
         <Field
-          label="正文（markdown）"
+          label={t("正文（markdown）")}
           required
-          hint="开头带 --- frontmatter 就原样写入，否则用名称 + 描述合成一份最小的"
+          hint={t("开头带 --- frontmatter 就原样写入，否则用名称 + 描述合成一份最小的")}
         >
           <TextArea
             mono
             value={draft.body}
             onChange={(e) => set({ body: e.target.value })}
             rows={14}
-            placeholder={"---\nname: my-skill\ndescription: …\n---\n\n正文…"}
+            placeholder={t("---\nname: my-skill\ndescription: …\n---\n\n正文…")}
             className="leading-relaxed"
           />
         </Field>
@@ -80,26 +82,27 @@ function McpFields({
   draft: SpecDraft;
   set: (p: Partial<SpecDraft>) => void;
 }) {
+  const t = useT();
   return (
     <>
       <div>
-        <div className="text-xs font-medium text-content">传输方式</div>
+        <div className="text-xs font-medium text-content">{t("传输方式")}</div>
         {/* 后端的 McpTransport 只有 stdio / http 两个变体 —— SSE 类型的服务器
             也走 http 这一支，填它的 URL 即可。 */}
         <div className="mt-1 flex gap-2">
-          {(["stdio", "http"] as const).map((t) => (
+          {(["stdio", "http"] as const).map((tr) => (
             <button
-              key={t}
+              key={tr}
               type="button"
-              onClick={() => set({ transport: t })}
-              aria-pressed={draft.transport === t}
+              onClick={() => set({ transport: tr })}
+              aria-pressed={draft.transport === tr}
               className={
-                draft.transport === t
+                draft.transport === tr
                   ? "rounded-lg bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent"
                   : "rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:bg-surface-2"
               }
             >
-              {t === "stdio" ? "stdio（本地进程）" : "http / sse（远端 URL）"}
+              {tr === "stdio" ? t("stdio（本地进程）") : t("http / sse（远端 URL）")}
             </button>
           ))}
         </div>
@@ -107,7 +110,7 @@ function McpFields({
 
       {draft.transport === "stdio" ? (
         <>
-          <Field label="command" required hint="可执行文件，如 npx">
+          <Field label="command" required hint={t("可执行文件，如 npx")}>
             <TextInput
               mono
               value={draft.command}
@@ -117,14 +120,14 @@ function McpFields({
           </Field>
           <StringListRows
             label="args"
-            hint="一行一个参数，顺序即命令行顺序"
+            hint={t("一行一个参数，顺序即命令行顺序")}
             placeholder="-y"
             value={draft.args}
             onChange={(args) => set({ args })}
           />
           <KeyValueRows
             label="env"
-            hint="传给该进程的环境变量"
+            hint={t("传给该进程的环境变量")}
             value={draft.env}
             onChange={(env) => set({ env })}
           />
@@ -141,7 +144,7 @@ function McpFields({
           </Field>
           <KeyValueRows
             label="headers"
-            hint="如 Authorization"
+            hint={t("如 Authorization")}
             value={draft.headers}
             onChange={(headers) => set({ headers })}
           />
@@ -155,7 +158,7 @@ function McpFields({
           onChange={(e) => set({ enabled: e.target.checked })}
           className="h-3.5 w-3.5 accent-accent"
         />
-        <span>启用（取消勾选会把 enabled: false 写进配置）</span>
+        <span>{t("启用（取消勾选会把 enabled: false 写进配置）")}</span>
       </label>
     </>
   );
@@ -168,12 +171,13 @@ function HookFields({
   draft: SpecDraft;
   set: (p: Partial<SpecDraft>) => void;
 }) {
+  const t = useT();
   return (
     <>
       <Field
         label="event"
         required
-        hint="规范事件名，写入时按目标 CLI 翻译（Gemini 的 PreToolUse 叫 BeforeTool）"
+        hint={t("规范事件名，写入时按目标 CLI 翻译（Gemini 的 PreToolUse 叫 BeforeTool）")}
       >
         <Select
           className="w-full"
@@ -187,7 +191,7 @@ function HookFields({
           ))}
         </Select>
       </Field>
-      <Field label="matcher" hint="匹配哪些工具，如 Bash|Write；留空等于全部">
+      <Field label="matcher" hint={t("匹配哪些工具，如 Bash|Write；留空等于全部")}>
         <TextInput
           mono
           value={draft.matcher}
@@ -195,7 +199,7 @@ function HookFields({
           placeholder="*"
         />
       </Field>
-      <Field label="命令" required hint="事件触发时执行的 shell 命令">
+      <Field label={t("命令")} required hint={t("事件触发时执行的 shell 命令")}>
         <TextArea
           mono
           value={draft.hookCommand}
@@ -204,7 +208,7 @@ function HookFields({
           placeholder="~/.claude/hooks/lint.sh"
         />
       </Field>
-      <Field label="超时（秒）" hint="留空用 CLI 默认值">
+      <Field label={t("超时（秒）")} hint={t("留空用 CLI 默认值")}>
         <TextInput
           value={draft.timeout}
           onChange={(e) => set({ timeout: e.target.value })}

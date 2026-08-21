@@ -1,3 +1,4 @@
+import { useT } from "../../i18n";
 import { AlertTriangle } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { fmtClock, fmtInt, fmtPct } from "../formatters";
@@ -15,6 +16,7 @@ const MAX_MODELS = 5;
 const MAX_MESSAGE = 200;
 
 export function AnomalyPanel({ items }: { items: ChannelAnomaly[] }) {
+  const t = useT();
   if (items.length === 0) return null;
   const shown = items.slice(0, MAX_CHANNELS);
   const failing = items.reduce((s, g) => s + g.models.length, 0);
@@ -26,7 +28,7 @@ export function AnomalyPanel({ items }: { items: ChannelAnomaly[] }) {
         <h2 className="t-title text-amber-900">
           {items.length} 个渠道上有 {failing} 个模型正在失败
         </h2>
-        <span className="text-[11px] text-amber-700/80">成功率低于 90%</span>
+        <span className="text-[11px] text-amber-700/80">{t("成功率低于 90%")}</span>
       </header>
 
       <ul className="divide-y divide-amber-200/60">

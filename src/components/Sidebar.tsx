@@ -213,7 +213,7 @@ export function Sidebar(props: {
           )}
         >
           <Languages className="h-3.5 w-3.5 shrink-0" />
-          {!collapsed && <span className="text-[11px]">{lang === "zh-CN" ? "中文" : "English"}</span>}
+          {!collapsed && <span className="text-[11px]">{lang === "zh-CN" ? t("中文") : "English"}</span>}
         </button>
         <StatusDot status={props.status} collapsed={collapsed} />
         {running ? (

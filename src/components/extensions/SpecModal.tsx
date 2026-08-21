@@ -1,3 +1,4 @@
+import { useT } from "../../i18n";
 /// 安装 / 编辑的模态。install 是**单目标**命令，所以这里只往一个 CLI 写；
 /// 铺开到其他 CLI 是列表行里「同步」的活，两件事分开才说得清各自的成败。
 
@@ -24,6 +25,7 @@ export function SpecModal(props: {
   supports: TargetSupport[];
   onClose: () => void;
 }) {
+  const t = useT();
   const { kind, mode, supports } = props;
   const editing = mode.type === "edit" ? mode : null;
   const invalidate = useInvalidateExtensions();
@@ -50,7 +52,7 @@ export function SpecModal(props: {
     onSuccess: invalidate,
   });
 
-  const problem = draft ? draftProblem(draft, kind) : "加载中";
+  const problem = draft ? draftProblem(draft, kind) : t("加载中");
   const chosen = supports.find((s) => s.target === target);
   const title = editing
     ? `编辑 ${KIND_LABELS[kind]} · ${editing.id}`
@@ -77,7 +79,7 @@ export function SpecModal(props: {
             <>
               {!editing && (
                 <div className="mb-5">
-                  <div className="text-xs font-medium text-content">装到哪个 CLI</div>
+                  <div className="text-xs font-medium text-content">{t("装到哪个 CLI")}</div>
                   <p className="mt-0.5 text-[11px] text-muted">
                     先装一处，再用列表里的「同步」推给其他 CLI。
                   </p>
@@ -138,14 +140,14 @@ export function SpecModal(props: {
           )}
           <div className="flex items-center justify-between gap-3">
             <span className="text-[11px] text-muted">
-              {problem && draft ? problem : "写入前会自动快照，可在 CLI 接管页回滚"}
+              {problem && draft ? problem : t("写入前会自动快照，可在 CLI 接管页回滚")}
             </span>
             <button
               disabled={!draft || !target || problem !== null || install.isPending}
               onClick={() => draft && target && install.mutate({ target, draft })}
               className="shrink-0 rounded-lg bg-accent px-4 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-accent/90 disabled:opacity-40"
             >
-              {install.isPending ? "写入中…" : editing ? "保存" : "安装"}
+              {install.isPending ? t("写入中…") : editing ? t("保存") : t("安装")}
             </button>
           </div>
         </div>

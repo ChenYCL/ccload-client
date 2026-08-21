@@ -1,3 +1,4 @@
+import { useT } from "../../i18n";
 /// 二次确认。删除会改用户正在用的真实配置文件，所以不做「点了就没」的按钮。
 
 import type { ReactNode } from "react";
@@ -14,6 +15,7 @@ export function ConfirmDialog(props: {
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  const t = useT();
   return (
     // 走 Overlay/portal：就地渲染的 fixed 会被主区的 mask 裁掉，见 Modal.tsx。
     <Overlay onClose={props.onCancel} className="animate-scrim flex items-center justify-center bg-black/40 p-6">
@@ -46,7 +48,7 @@ export function ConfirmDialog(props: {
             onClick={props.onConfirm}
             className="rounded-lg bg-red-600 px-3.5 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-red-700 disabled:opacity-40"
           >
-            {props.pending ? "处理中…" : props.confirmText}
+            {props.pending ? t("处理中…") : props.confirmText}
           </button>
         </div>
       </div>

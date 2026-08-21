@@ -1,3 +1,4 @@
+import { useT } from "../i18n";
 import type { ReactNode } from "react";
 import { AlertCircle, Inbox } from "lucide-react";
 import { cn } from "../lib/cn";
@@ -30,8 +31,9 @@ export function Panel(props: {
 
 /** 骨架屏：宽度按行递减，读起来像正在成形的内容而不是一堆等宽条。 */
 export function LoadingBlock({ lines = 3 }: { lines?: number }) {
+  const t = useT();
   return (
-    <div className="space-y-2" role="status" aria-label="加载中">
+    <div className="space-y-2" role="status" aria-label={t("加载中")}>
       {Array.from({ length: lines }).map((_, i) => (
         <div
           key={i}

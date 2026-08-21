@@ -1,3 +1,4 @@
+import { useT } from "../../i18n";
 import { fmtCompact, fmtCost, fmtDuration, fmtInt, fmtPct, rateTone, TONE_TEXT } from "../formatters";
 import { RankBars, type RankItem } from "../charts/RankBars";
 import type { ModelRow } from "./derive";
@@ -11,6 +12,7 @@ import type { ModelRow } from "./derive";
 const TOP_N = 6;
 
 export function ModelBreakdown({ rows }: { rows: ModelRow[] }) {
+  const t = useT();
   const costTotal = rows.reduce((s, r) => s + r.effectiveCost, 0);
   const byCost = costTotal > 0;
 
@@ -34,8 +36,8 @@ export function ModelBreakdown({ rows }: { rows: ModelRow[] }) {
       <div>
         <p className="mb-2.5 text-[11px] text-muted">
           {byCost
-            ? "条长 = effective_cost（乘过渠道倍率的实付费用），颜色 = 该模型成功率"
-            : "该时间段费用全部为 0，改按请求数排序"}
+            ? t("条长 = effective_cost（乘过渠道倍率的实付费用），颜色 = 该模型成功率")
+            : t("该时间段费用全部为 0，改按请求数排序")}
         </p>
         <RankBars items={items} />
       </div>
@@ -46,18 +48,19 @@ export function ModelBreakdown({ rows }: { rows: ModelRow[] }) {
 /** 完整明细。列的选取标准是「能支撑一个决策」：要不要换渠道、要不要换模型。
  *  单独导出：它需要整行宽度，塞进两列栅格里模型名会被截断。 */
 export function ModelTable({ rows }: { rows: ModelRow[] }) {
+  const t = useT();
   return (
     <div className="-mx-1 overflow-x-auto px-1">
       <table className="w-full min-w-[38rem] text-sm">
         <thead>
           <tr className="border-b border-border text-left text-[11px] text-muted">
-            <th className="py-1.5 font-normal">模型</th>
-            <th className="w-16 py-1.5 text-right font-normal">渠道</th>
-            <th className="w-20 py-1.5 text-right font-normal">请求</th>
-            <th className="w-20 py-1.5 text-right font-normal">成功率</th>
-            <th className="w-20 py-1.5 text-right font-normal">首字节</th>
-            <th className="w-24 py-1.5 text-right font-normal">输出 tok</th>
-            <th className="w-24 py-1.5 text-right font-normal">费用</th>
+            <th className="py-1.5 font-normal">{t("模型")}</th>
+            <th className="w-16 py-1.5 text-right font-normal">{t("渠道")}</th>
+            <th className="w-20 py-1.5 text-right font-normal">{t("请求")}</th>
+            <th className="w-20 py-1.5 text-right font-normal">{t("成功率")}</th>
+            <th className="w-20 py-1.5 text-right font-normal">{t("首字节")}</th>
+            <th className="w-24 py-1.5 text-right font-normal">{t("输出 tok")}</th>
+            <th className="w-24 py-1.5 text-right font-normal">{t("费用")}</th>
           </tr>
         </thead>
         <tbody>

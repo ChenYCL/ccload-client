@@ -1,3 +1,4 @@
+import { useT } from "../../i18n";
 /// 同步面板：一处配置推到多个 CLI。这是整个扩展管理的主功能，所以它是行展开
 /// 后的第一块内容，不是藏在二级菜单里的动作。
 ///
@@ -22,6 +23,7 @@ export function SyncPanel({
   group: ExtensionGroup;
   supports: TargetSupport[];
 }) {
+  const t = useT();
   const invalidate = useInvalidateExtensions();
   // 默认勾上「支持但还没装」的那几家——同步最常见的意图就是补齐缺口，这样
   // 主操作只要一次点击；已装的要覆盖则需用户自己勾，免得手滑改掉在用的配置。
@@ -48,7 +50,7 @@ export function SyncPanel({
   return (
     <div className="rounded-xl border border-border bg-surface p-3.5">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <span className="text-xs font-medium">同步到其他 CLI</span>
+        <span className="text-xs font-medium">{t("同步到其他 CLI")}</span>
         <label className="flex items-center gap-1.5 text-[11px] text-muted">
           来源
           <Select
@@ -56,7 +58,7 @@ export function SyncPanel({
             value={source}
             onChange={(e) => setSource(e.target.value as CliTarget | "auto")}
           >
-            <option value="auto">自动（第一个装了它的）</option>
+            <option value="auto">{t("自动（第一个装了它的）")}</option>
             {group.items.map((i) => (
               <option key={i.target} value={i.target}>
                 {supports.find((s) => s.target === i.target)?.label ?? i.target}
@@ -90,7 +92,7 @@ export function SyncPanel({
           }
           className="shrink-0 rounded-lg bg-accent px-3.5 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-accent/90 disabled:opacity-40"
         >
-          {sync.isPending ? "同步中…" : `同步到 ${picked.length} 个 CLI`}
+          {sync.isPending ? t("同步中…") : `同步到 ${picked.length} 个 CLI`}
         </button>
       </div>
 
@@ -125,6 +127,7 @@ function TargetChoice({
   checked: boolean;
   onToggle: () => void;
 }) {
+  const t = useT();
   if (!support.supported) {
     return (
       <div
@@ -154,7 +157,7 @@ function TargetChoice({
       <span className="min-w-0">
         <span className="font-medium">{support.label}</span>
         <span className={`ml-1.5 text-[10px] ${installed ? "text-amber-700" : "text-muted"}`}>
-          {installed ? "已装 · 会覆盖" : "未装"}
+          {installed ? t("已装 · 会覆盖") : t("未装")}
         </span>
         {support.path && (
           <span className="block truncate font-mono text-[10px] text-muted">~/{support.path}</span>

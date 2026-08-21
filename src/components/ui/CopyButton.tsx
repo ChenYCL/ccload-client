@@ -1,3 +1,4 @@
+import { useT } from "../../i18n";
 import { useState } from "react";
 import { cn } from "../../lib/cn";
 
@@ -9,13 +10,14 @@ import { cn } from "../../lib/cn";
 export function CopyButton({
   value,
   className,
-  label = "复制",
+  label,
 }: {
   value: string;
   className?: string;
   /** 图标位紧张的地方可以传更短的文案。 */
   label?: string;
 }) {
+  const t = useT();
   const [copied, setCopied] = useState(false);
 
   return (
@@ -36,7 +38,7 @@ export function CopyButton({
         className,
       )}
     >
-      {copied ? "已复制" : label}
+      {copied ? t("已复制") : (label ?? t("复制"))}
     </button>
   );
 }

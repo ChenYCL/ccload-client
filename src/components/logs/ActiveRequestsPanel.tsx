@@ -1,3 +1,4 @@
+import { useT } from "../../i18n";
 import { useEffect, useState } from "react";
 import { Radio } from "lucide-react";
 import type { ActiveRequest } from "../../types";
@@ -21,6 +22,7 @@ function useTick(active: boolean) {
 }
 
 export function ActiveRequestsPanel({ items }: { items: ActiveRequest[] }) {
+  const t = useT();
   useTick(items.length > 0);
 
   // 空态和「一条进行中」占一样高。请求每 1.5s 来去一次，如果空态塌成一行、
@@ -51,7 +53,7 @@ export function ActiveRequestsPanel({ items }: { items: ActiveRequest[] }) {
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
                 <span className="truncate font-mono text-xs font-medium">
-                  {r.model ?? "（未知模型）"}
+                  {r.model ?? t("（未知模型）")}
                 </span>
                 <span className="text-[11px] text-muted">
                   经 {r.channel_name ?? `#${r.channel_id ?? "?"}`}

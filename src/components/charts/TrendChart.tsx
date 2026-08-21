@@ -1,3 +1,4 @@
+import { useT } from "../../i18n";
 import { useState } from "react";
 import type { MetricPoint } from "../../types";
 import { fmtCost, fmtDuration, fmtHm, fmtInt, fmtPct } from "../formatters";
@@ -20,6 +21,7 @@ type Props = {
 };
 
 export function TrendChart({ points, bucketMin }: Props) {
+  const t = useT();
   const [hover, setHover] = useState<number | null>(null);
 
   const totals = points.map((p) => (p.success ?? 0) + (p.error ?? 0));
@@ -135,9 +137,9 @@ export function TrendChart({ points, bucketMin }: Props) {
       </div>
 
       <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted">
-        <Legend className="bg-accent/55" label="成功请求" />
-        <Legend className="bg-red-600" label="失败请求" />
-        <Legend className="h-0.5 w-3 rounded-none bg-emerald-500" label="成功率（右轴）" />
+        <Legend className="bg-accent/55" label={t("成功请求")} />
+        <Legend className="bg-red-600" label={t("失败请求")} />
+        <Legend className="h-0.5 w-3 rounded-none bg-emerald-500" label={t("成功率（右轴）")} />
       </div>
     </div>
   );
@@ -191,6 +193,7 @@ function Tooltip(props: {
   count: number;
   bucketMin: number;
 }) {
+  const t = useT();
   const { point: p, index, count } = props;
   const total = (p.success ?? 0) + (p.error ?? 0);
   const left = ((index + 0.5) / count) * 100;
@@ -211,12 +214,12 @@ function Tooltip(props: {
         <span className="ml-1 font-normal text-muted">起 {props.bucketMin} 分钟</span>
       </div>
       <dl className="mt-1.5 space-y-0.5 text-muted">
-        <Row k="请求" v={fmtInt(total)} />
-        <Row k="成功" v={fmtInt(p.success)} tone="text-emerald-600" />
-        <Row k="失败" v={fmtInt(p.error)} tone={p.error ? "text-red-600" : undefined} />
-        <Row k="成功率" v={total ? fmtPct((p.success ?? 0) / total) : "—"} />
-        <Row k="平均首字" v={fmtDuration(p.avg_first_byte_time_seconds)} />
-        <Row k="费用" v={fmtCost(p.effective_cost ?? p.total_cost)} />
+        <Row k={t("请求")} v={fmtInt(total)} />
+        <Row k={t("成功")} v={fmtInt(p.success)} tone="text-emerald-600" />
+        <Row k={t("失败")} v={fmtInt(p.error)} tone={p.error ? "text-red-600" : undefined} />
+        <Row k={t("成功率")} v={total ? fmtPct((p.success ?? 0) / total) : "—"} />
+        <Row k={t("平均首字")} v={fmtDuration(p.avg_first_byte_time_seconds)} />
+        <Row k={t("费用")} v={fmtCost(p.effective_cost ?? p.total_cost)} />
       </dl>
     </div>
   );

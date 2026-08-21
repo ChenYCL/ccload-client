@@ -165,6 +165,13 @@ if let Err(e) = carry_permissions(path, &tmp) { … }
   `position: fixed` 子元素的包含块 —— 模态框必须 `createPortal` 到 body。
 * 界面文案走 `i18n`：`t("中文原文")`，**key 就是中文原文**，英文词典在
   `src/i18n/en.ts`。没收录的条目自动回落成中文，可以一页一页地补。
+  三个反复踩的点：
+  - `t` 来自组件里的 `useT()`。**模块作用域没有它** —— `TIER_LABELS` /
+    `GROUPS` / `TOOL_LABELS` 这类常量表要在**使用处**翻译（`t(group.title)`），
+    在定义处包一层既编译不过，也把已经正确的做法改坏。
+  - `map((t) => …)` 这种参数会**遮住**翻译函数。回调参数别叫 `t`。
+  - 全局扫一遍用 `python3 scripts/i18n-wrap.py`（不带参数是 dry run）。它只做
+    保守改写并跳过上面两种情况，改完必须跑 `pnpm typecheck` 兜底。
 
 ---
 

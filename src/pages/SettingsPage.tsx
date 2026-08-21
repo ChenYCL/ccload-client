@@ -1,3 +1,4 @@
+import { useT } from "../i18n";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../lib/api";
@@ -13,6 +14,7 @@ import { Download, Upload } from "lucide-react";
 const DEFAULT_PORT = 15722;
 
 export function SettingsPage() {
+  const t = useT();
   const qc = useQueryClient();
   const kernel = useQuery({ queryKey: ["kernel"], queryFn: api.kernelStatus });
   // 打包版本来自构建期注入，不再手写常量 —— 手写的那个曾经停在 "v1.2.0"，
@@ -46,18 +48,18 @@ export function SettingsPage() {
 
   return (
     <div>
-      <h1 className="t-display">设置</h1>
+      <h1 className="t-display">{t("设置")}</h1>
       {settings.data && <ConnectionForm current={settings.data.kernel} />}
       {running && (
         <section className="mt-6 card p-4">
-          <h2 className="t-title">内核版本</h2>
+          <h2 className="t-title">{t("内核版本")}</h2>
           <div className="mt-3 flex items-center justify-between text-sm">
-            <span className="text-muted">壳体打包内核</span>
+            <span className="text-muted">{t("壳体打包内核")}</span>
             <code className="font-mono text-content">{bundled.data ?? "—"}</code>
           </div>
           <div className="mt-2 flex items-center justify-between text-sm">
             <span className="text-muted">
-              {settings.data?.kernel.mode === "managed" ? "当前运行内核" : "远端内核"}
+              {settings.data?.kernel.mode === "managed" ? t("当前运行内核") : t("远端内核")}
             </span>
             <code className="font-mono text-content">{remoteVersion ?? "—"}</code>
           </div>
@@ -80,7 +82,7 @@ export function SettingsPage() {
       <MigrationCard />
 
       <section className="mt-6 card p-4">
-        <h2 className="t-title">CLI 写入</h2>
+        <h2 className="t-title">{t("CLI 写入")}</h2>
         <label className="mt-3 flex items-center gap-2 text-sm">
           <input
             type="checkbox"
@@ -91,7 +93,7 @@ export function SettingsPage() {
         </label>
       </section>
       <section className="mt-6">
-        <h2 className="t-title">内核运行时配置</h2>
+        <h2 className="t-title">{t("内核运行时配置")}</h2>
         <p className="mt-1 text-xs text-muted">
           字段来自 GET /admin/settings，新增项会自动出现。改任何一项都会写库并让
           内核约 2 秒后自动重启，在途请求会被打断，请避开使用中修改。
@@ -109,6 +111,7 @@ export function SettingsPage() {
 /// Managed vs remote. Switching mode only persists config; the caller still has
 /// to restart the kernel, so we say so instead of silently doing it.
 function ConnectionForm({ current }: { current: KernelConfig }) {
+  const t = useT();
   const qc = useQueryClient();
   const [draft, setDraft] = useState<KernelConfig>(current);
   const [showPassword, setShowPassword] = useState(false);
@@ -134,7 +137,7 @@ function ConnectionForm({ current }: { current: KernelConfig }) {
 
   return (
     <section className="mt-6 card p-4">
-      <h2 className="t-title">连接方式</h2>
+      <h2 className="t-title">{t("连接方式")}</h2>
       <div className="mt-3 flex gap-2">
         {(["managed", "remote"] as KernelMode[]).map((m) => (
           <button
@@ -148,19 +151,19 @@ function ConnectionForm({ current }: { current: KernelConfig }) {
             )}
           >
             <div className="font-medium">
-              {m === "managed" ? "本机内核" : "远端 ccLoad"}
+              {m === "managed" ? t("本机内核") : t("远端 ccLoad")}
             </div>
             <div className="mt-0.5 text-[11px] text-muted">
               {m === "managed"
-                ? "客户端自己拉起内核进程，数据留在本机"
-                : "连到已有实例（VPS / HF Space）"}
+                ? t("客户端自己拉起内核进程，数据留在本机")
+                : t("连到已有实例（VPS / HF Space）")}
             </div>
           </button>
         ))}
       </div>
 
       {draft.mode === "managed" ? (
-        <Field label="端口" hint="内核在本机监听的回环端口">
+        <Field label={t("端口")} hint={t("内核在本机监听的回环端口")}>
           <TextInput
             type="number"
             value={draft.port}
@@ -171,7 +174,7 @@ function ConnectionForm({ current }: { current: KernelConfig }) {
           />
         </Field>
       ) : (
-        <Field label="远端地址" hint="完整 origin，例如 https://xxx.hf.space">
+        <Field label={t("远端地址")} hint={t("完整 origin，例如 https://xxx.hf.space")}>
           <TextInput
             mono
             value={draft.remote_url ?? ""}
@@ -181,7 +184,7 @@ function ConnectionForm({ current }: { current: KernelConfig }) {
         </Field>
       )}
 
-      <Field label="管理密码" hint="远端模式填该实例的 CCLOAD_PASS">
+      <Field label={t("管理密码")} hint={t("远端模式填该实例的 CCLOAD_PASS")}>
         <div className="flex items-center gap-2">
           <TextInput
             type={showPassword ? "text" : "password"}
@@ -196,7 +199,7 @@ function ConnectionForm({ current }: { current: KernelConfig }) {
             onClick={() => setShowPassword((v) => !v)}
             className="shrink-0 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:bg-surface-2"
           >
-            {showPassword ? "隐藏" : "显示"}
+            {showPassword ? t("隐藏") : t("显示")}
           </button>
           <CopyButton value={draft.admin_password} />
         </div>
@@ -208,17 +211,17 @@ function ConnectionForm({ current }: { current: KernelConfig }) {
           onClick={() => save.mutate(draft)}
           className="rounded-lg bg-accent px-3.5 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-accent/90 disabled:opacity-40"
         >
-          {save.isPending ? "保存中…" : "保存"}
+          {save.isPending ? t("保存中…") : t("保存")}
         </button>
         <button
           disabled={restart.isPending}
           onClick={() => restart.mutate()}
           className="rounded-lg border border-border bg-surface-raised px-3 py-1.5 text-sm hover:bg-surface-2 disabled:opacity-40"
         >
-          {restart.isPending ? "重启中…" : "重启内核"}
+          {restart.isPending ? t("重启中…") : t("重启内核")}
         </button>
         {dirty && (
-          <span className="text-xs text-amber-700">改动未保存，保存后需重启生效</span>
+          <span className="text-xs text-amber-700">{t("改动未保存，保存后需重启生效")}</span>
         )}
       </div>
       {save.isError && (
@@ -298,26 +301,27 @@ function SettingRow({ item, disabled }: { item: SettingItem; disabled: boolean }
 /// Gemini、Codex 之间双向翻译。也就是说任何认这几种规范的程序都能直接指过来，
 /// 不需要客户端再自己起一层代理 —— 这里只负责把地址和令牌摆出来能一键复制。
 function EndpointsCard({ baseUrl, token }: { baseUrl: string; token: string | null }) {
+  const t = useT();
   const rows: { label: string; hint: string; value: string }[] = [
     {
-      label: "Anthropic 规范",
+      label: t("Anthropic 规范"),
       hint: "ANTHROPIC_BASE_URL · /v1/messages",
       value: baseUrl,
     },
     {
-      label: "OpenAI 规范",
+      label: t("OpenAI 规范"),
       hint: "OPENAI_BASE_URL · /v1/chat/completions",
       value: `${baseUrl}/v1`,
     },
     {
-      label: "Gemini 规范",
+      label: t("Gemini 规范"),
       hint: "/v1beta/models/{model}:generateContent",
       value: `${baseUrl}/v1beta`,
     },
   ];
   return (
     <section className="mt-6 card p-4">
-      <h2 className="t-title">接入地址</h2>
+      <h2 className="t-title">{t("接入地址")}</h2>
       <p className="mt-1 text-sm text-muted">
         内核同时提供这几套规范的入口，协议转换在内核里完成。第三方工具直接填下面的
         地址和令牌即可，不必经过 CLI 接管。
@@ -327,8 +331,8 @@ function EndpointsCard({ baseUrl, token }: { baseUrl: string; token: string | nu
           <CopyRow key={r.label} label={r.label} hint={r.hint} value={r.value} />
         ))}
         <CopyRow
-          label="API 令牌"
-          hint="客户端为自己申请的那把，可在内核后台吊销"
+          label={t("API 令牌")}
+          hint={t("客户端为自己申请的那把，可在内核后台吊销")}
           value={token ?? ""}
           secret
         />
@@ -348,6 +352,7 @@ function CopyRow({
   value: string;
   secret?: boolean;
 }) {
+  const t = useT();
   const [shown, setShown] = useState(false);
   // 令牌默认打码：这一页可能出现在截图和录屏里。
   const display = !value ? "—" : secret && !shown ? "•".repeat(24) : value;
@@ -366,7 +371,7 @@ function CopyRow({
           onClick={() => setShown((v) => !v)}
           className="shrink-0 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:bg-surface-2"
         >
-          {shown ? "隐藏" : "显示"}
+          {shown ? t("隐藏") : t("显示")}
         </button>
       )}
       <CopyButton value={value} />
@@ -379,6 +384,7 @@ function CopyRow({
 /// 渠道和令牌不在这里 —— 那是内核的数据，内核后台自带 CSV 导入导出。这边再抄一份
 /// 就要永远追着内核的字段跑。
 function MigrationCard() {
+  const t = useT();
   const qc = useQueryClient();
   const [includeSecrets, setIncludeSecrets] = useState(false);
   const [preview, setPreview] = useState<{ path: string; info: ImportPreview } | null>(null);
@@ -421,7 +427,7 @@ function MigrationCard() {
 
   return (
     <section className="mt-6 card p-4">
-      <h2 className="t-title">配置迁移</h2>
+      <h2 className="t-title">{t("配置迁移")}</h2>
       <p className="mt-1 text-sm text-muted">
         导出内核连接方式与模型链，换机器时导入即可。渠道和令牌属于内核数据，
         在「内核后台」用它自带的导入导出。
@@ -461,16 +467,16 @@ function MigrationCard() {
       {/* 导入是覆盖性动作，先把「会发生什么」摊开再让用户点确认。 */}
       {preview && (
         <div className="mt-3 rounded-xl border border-border p-3 text-xs">
-          <div className="font-medium">即将导入</div>
+          <div className="font-medium">{t("即将导入")}</div>
           <ul className="mt-1.5 space-y-1 text-muted">
             <li>来源客户端内核版本：{preview.info.client_kernel_version}</li>
             <li>
-              内核连接：{preview.info.kernel_mode} · {preview.info.kernel_endpoint || "（未设置）"}
-              {!preview.info.includes_secrets && "（文件不含密钥，本机密码保持不变）"}
+              内核连接：{preview.info.kernel_mode} · {preview.info.kernel_endpoint || t("（未设置）")}
+              {!preview.info.includes_secrets && t("（文件不含密钥，本机密码保持不变）")}
             </li>
             <li>
               模型链 {preview.info.chain_aliases.length} 条：
-              {preview.info.chain_aliases.join("、") || "无"}
+              {preview.info.chain_aliases.join("、") || t("无")}
             </li>
             {preview.info.overwritten_aliases.length > 0 && (
               <li className="text-amber-700">
@@ -498,7 +504,7 @@ function MigrationCard() {
               disabled={doImport.isPending}
               className="rounded-lg bg-accent px-3 py-1 font-medium text-white hover:bg-accent/90 disabled:opacity-40"
             >
-              {doImport.isPending ? "导入中…" : "确认导入"}
+              {doImport.isPending ? t("导入中…") : t("确认导入")}
             </button>
           </div>
         </div>

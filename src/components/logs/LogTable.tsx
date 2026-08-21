@@ -1,3 +1,4 @@
+import { useT } from "../../i18n";
 import { cn } from "../../lib/cn";
 import type { LogEntry } from "../../types";
 import {
@@ -28,22 +29,23 @@ export function LogTable({
   selectedId?: number;
   onSelect: (log: LogEntry) => void;
 }) {
+  const t = useT();
   return (
     // table-fixed：列宽由表头决定，不再随内容抖动。轮询每 2.5s 换一批行，
     // auto 布局会让整张表在每次刷新时重新算列宽，视觉上就是「闪一下」。
     <table className="w-full min-w-[52rem] table-fixed text-sm">
       <thead className="sticky top-0 z-10">
         <tr className="material-chrome text-left text-[11px] text-muted">
-          <Th className="w-[5.5rem]">时间</Th>
-          <Th className="w-14">状态</Th>
+          <Th className="w-[5.5rem]">{t("时间")}</Th>
+          <Th className="w-14">{t("状态")}</Th>
           {/* 模型列是唯一会长到失控的一列（别名 + 重定向目标），给它一个上限
               而不是让它吃掉所有剩余宽度 —— 那正是右侧数字列被挤扁的原因。 */}
-          <Th className="w-[22rem]">模型</Th>
-          <Th className="w-32">渠道</Th>
-          <Th className="w-[4.5rem] text-right">耗时</Th>
-          <Th className="w-[4.5rem] text-right">首字节</Th>
+          <Th className="w-[22rem]">{t("模型")}</Th>
+          <Th className="w-32">{t("渠道")}</Th>
+          <Th className="w-[4.5rem] text-right">{t("耗时")}</Th>
+          <Th className="w-[4.5rem] text-right">{t("首字节")}</Th>
           <Th className="w-28 text-right">tokens</Th>
-          <Th className="w-20 text-right">费用</Th>
+          <Th className="w-20 text-right">{t("费用")}</Th>
         </tr>
       </thead>
       <tbody>
