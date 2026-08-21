@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Boxes, Check, Eye, FileText } from "lucide-react";
+import { Boxes, Check, Eye, FileText, Image as ImageIcon } from "lucide-react";
 import { api } from "../lib/api";
 import { cn } from "../lib/cn";
 import { errText } from "../lib/err";
@@ -35,7 +35,12 @@ export function InjectPage() {
     return m;
   }, [states.data]);
 
-  const [spec, setSpec] = useState<InjectSpec>({ vision: true, tools: [], custom: "" });
+  const [spec, setSpec] = useState<InjectSpec>({
+    vision: true,
+    image: false,
+    tools: [],
+    custom: "",
+  });
   const [picked, setPicked] = useState<CliTarget[]>([]);
 
   // 视觉那段的权威文本。用它把已注入的块拆回「生成的」和「用户写的」两半 ——
@@ -43,7 +48,13 @@ export function InjectPage() {
   // 当成用户输入再写一遍，块越滚越长。
   const visionText = useQuery({
     queryKey: ["inject-preview", "vision-only"],
-    queryFn: () => api.injectPreview({ vision: true, tools: [], custom: "" }),
+    queryFn: () => api.injectPreview({ vision: true, image: false, tools: [], custom: "" }),
+    staleTime: Infinity,
+  });
+  // 生图那段同理。两段各自独立地从块里剥掉，剩下的才是用户自己写的。
+  const imageText = useQuery({
+    queryKey: ["inject-preview", "image-only"],
+    queryFn: () => api.injectPreview({ vision: false, image: true, tools: [], custom: "" }),
     staleTime: Infinity,
   });
 
@@ -51,21 +62,19 @@ export function InjectPage() {
   // 否则用户正在编辑时一次后台 refetch 就会把输入框冲掉。
   const [seeded, setSeeded] = useState(false);
   useEffect(() => {
-    if (seeded || !states.data || visionText.data === undefined) return;
+    if (seeded || !states.data) return;
+    if (visionText.data === undefined || imageText.data === undefined) return;
     const existing = states.data.find((s) => s.injected && s.block);
     if (existing?.block) {
       const hasVision = existing.block.includes(visionText.data);
-      setSpec({
-        vision: hasVision,
-        tools: [],
-        custom: (hasVision
-          ? existing.block.replace(visionText.data, "")
-          : existing.block
-        ).trim(),
-      });
+      const hasImage = existing.block.includes(imageText.data);
+      let rest = existing.block;
+      if (hasVision) rest = rest.replace(visionText.data, "");
+      if (hasImage) rest = rest.replace(imageText.data, "");
+      setSpec({ vision: hasVision, image: hasImage, tools: [], custom: rest.trim() });
     }
     setSeeded(true);
-  }, [states.data, visionText.data, seeded]);
+  }, [states.data, visionText.data, imageText.data, seeded]);
 
   // 五家 CLI 已装的扩展，按 id 去重并记下装在哪几家。
   //
@@ -91,9 +100,9 @@ export function InjectPage() {
       );
       const byId = new Map<string, { id: string; kind: string; targets: CliTarget[] }>();
       for (const it of per.flat()) {
-        // 自家的视觉 MCP 不进这张表：它上面已经有专门的一段，列两次只会让人
-        // 以为要写两遍说明。
-        if (it.id === "ccload-vision") continue;
+        // 自家的两个 MCP 不进这张表：上面已经各有一段专门的说明，列两次只会
+        // 让人以为要写两遍说明。
+        if (it.id === "ccload-vision" || it.id === "ccload-image") continue;
         const cur = byId.get(it.id) ?? { id: it.id, kind: it.kind, targets: [] };
         if (!cur.targets.includes(it.target)) cur.targets.push(it.target);
         byId.set(it.id, cur);
@@ -112,7 +121,13 @@ export function InjectPage() {
     // key 必须覆盖 spec 的**每一个**字段。漏掉 tools 的后果是：改工具说明时
     // 预览纹丝不动，用户以为没写进去 —— 而写入用的是 spec 本身，真按下「写入」
     // 又确实生效了，于是预览和实际不一致，比没有预览更坏。
-    queryKey: ["inject-preview", spec.vision, spec.custom, JSON.stringify(spec.tools)],
+    queryKey: [
+      "inject-preview",
+      spec.vision,
+      spec.image,
+      spec.custom,
+      JSON.stringify(spec.tools),
+    ],
     queryFn: () => api.injectPreview(spec),
   });
 
@@ -135,7 +150,7 @@ export function InjectPage() {
 
   const remove = useMutation({
     mutationFn: (targets: CliTarget[]) =>
-      api.injectApply(targets, { vision: false, tools: [], custom: "" }),
+      api.injectApply(targets, { vision: false, image: false, tools: [], custom: "" }),
     onSuccess: async (rs) => {
       setMessage(
         rs
@@ -152,7 +167,7 @@ export function InjectPage() {
   });
 
   const blockChars = preview.data?.length ?? 0;
-  const empty = !spec.vision && !spec.custom.trim();
+  const empty = !spec.vision && !spec.image && !spec.custom.trim();
   const busy = apply.isPending || remove.isPending;
 
   return (
@@ -181,6 +196,29 @@ export function InjectPage() {
             <span className="mt-1 block text-xs leading-relaxed text-muted">
               {t(
                 "装上 ccload-vision 不等于模型会用它 —— 它只看得见工具名和一句描述，遇到图片会不会想起来调全看运气，而文本模型甚至不知道自己「看不见」。这段会明确告诉它：你看不见图片，遇到 [Image 1] 这种没有路径的占位符时必须调工具并把 image 设成对应编号，不要让用户把图另存一份。",
+              )}
+            </span>
+          </span>
+        </label>
+      </div>
+
+      {/* 生图是同一个问题的另一面：模型不会主动想到「这张图我自己就能画」。 */}
+      <div className="mt-3 card p-4">
+        <label className="flex items-start gap-2.5">
+          <input
+            type="checkbox"
+            checked={spec.image}
+            onChange={(e) => setSpec({ ...spec, image: e.target.checked })}
+            className="mt-0.5 h-4 w-4 shrink-0"
+          />
+          <span>
+            <span className="flex items-center gap-1.5 text-sm font-medium">
+              <ImageIcon className="h-4 w-4 text-accent" />
+              {t("告诉 CLI 怎么用生图 MCP")}
+            </span>
+            <span className="mt-1 block text-xs leading-relaxed text-muted">
+              {t(
+                "模型不会主动想到「这张图我自己就能画」，默认反应是让你去找别的工具或者拿 SVG 凑数。这段会告诉它：图标、精灵图、贴图、UI 草图都可以用 generate_image 直接生成，改图用 edit_image（原图不动），以及结果回来的是磁盘路径而不是图本身 —— 要看画成什么样得接着调 describe_image。",
               )}
             </span>
           </span>

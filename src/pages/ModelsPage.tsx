@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
-import { Check, Download, Eye, RefreshCw, Radar, Wand2 } from "lucide-react";
+import { Check, Download, Eye, Image as ImageIcon, RefreshCw, Radar, Wand2 } from "lucide-react";
 import { useT } from "../i18n";
 import { api } from "../lib/api";
 import { cn } from "../lib/cn";
@@ -8,7 +8,8 @@ import { fetchCatalog, lookupMeta } from "../lib/modelCatalog";
 import { ALL_TARGETS, TARGET_LABELS } from "../lib/targets";
 import { buildUpstreamIndex, matchAlias, type MatchLevel } from "../lib/modelMatch";
 import { Select, TextInput } from "../components/ui/Input";
-import type { CliTarget, ImportEntry, RefreshMode, VisionTargetState } from "../types";
+import { McpTargetList, type McpTargetRow } from "../components/models/McpTargetList";
+import type { CliTarget, ImageApi, ImportEntry, RefreshMode } from "../types";
 import { errText } from "../lib/err";
 
 /// One-click model catalog import. The kernel can serve every alias that any
@@ -19,12 +20,14 @@ import { errText } from "../lib/err";
 ///   * Codex       → [profiles.<别名>]，顶层 model 不碰
 ///   * OpenCode    → 合并进 provider.ccload.models，顶层 model 只在缺失时补
 /// Also installs the vision MCP (this binary's `vision-mcp` subcommand) so a
-/// text-only model gets image descriptions from a multimodal one.
+/// text-only model gets image descriptions from a multimodal one, and the image
+/// MCP (`image-mcp`) so every CLI can generate and edit images.
 //
 // 模型目录只有这三家有可写的位置（Gemini / Grok 的配置里没有模型清单这一节）；
-// 视觉 MCP 则是 5 家都能装 —— 它走的是通用 MCP 写入器。
+// 两个自带 MCP 则是 5 家都能装 —— 它们走的是通用 MCP 写入器。
 const IMPORT_TARGETS: CliTarget[] = ["claude-code", "codex", "opencode"];
 const VISION_TARGETS: CliTarget[] = ALL_TARGETS;
+const IMAGE_TARGETS: CliTarget[] = ALL_TARGETS;
 
 type ChannelModel = { model?: string };
 type Channel = {
@@ -291,9 +294,12 @@ export function ModelsPage() {
     queryKey: ["vision-mcp-state"],
     queryFn: api.visionMcpState,
   });
-  const visionByTarget = useMemo(() => {
-    const m = new Map<CliTarget, VisionTargetState>();
-    for (const s of visionState.data ?? []) m.set(s.target, s);
+  // 面板只认 McpTargetRow 那几项 —— 视觉这边没有「走哪条路」这种额外信息。
+  const visionRows = useMemo(() => {
+    const m = new Map<CliTarget, McpTargetRow>();
+    for (const s of visionState.data ?? []) {
+      m.set(s.target, { installed: s.installed, model: s.model, stale: s.stale });
+    }
     return m;
   }, [visionState.data]);
 
@@ -743,108 +749,21 @@ export function ModelsPage() {
             右边只有一个按钮 —— 装了就显示「移除」，没装才显示「安装」。之前
             两个按钮并排且状态未知，点哪个全靠猜。
             最左侧的复选框用于批量：五家都要装时不必点五次。 */}
-        <ul className="mt-3 divide-y divide-border/60 rounded-xl border border-border">
-          {VISION_TARGETS.map((tg) => {
-            const st = visionByTarget.get(tg);
-            const on = st?.installed === true;
-            return (
-              <li key={tg} className="flex items-center gap-3 px-3 py-2">
-                <input
-                  type="checkbox"
-                  aria-label={t("选中 {name}", { name: TARGET_LABELS[tg] })}
-                  checked={visionPicked.includes(tg)}
-                  onChange={() =>
-                    setVisionPicked((p) =>
-                      p.includes(tg) ? p.filter((x) => x !== tg) : [...p, tg],
-                    )
-                  }
-                  className="h-3.5 w-3.5"
-                />
-                <span
-                  className={cn(
-                    "h-1.5 w-1.5 shrink-0 rounded-full",
-                    !on ? "bg-border" : st?.stale ? "bg-amber-500" : "bg-emerald-500",
-                  )}
-                />
-                <span className="text-sm">{TARGET_LABELS[tg]}</span>
-                <span className="text-xs text-muted">
-                  {visionState.isPending
-                    ? t("读取中…")
-                    : on
-                      ? `已安装${st?.model ? ` · ${st.model}` : ""}`
-                      : t("未安装")}
-                </span>
-                {/* 装了但凭证过期，和「没装」是两回事：配置看着是好的，每次
-                    看图却都 401。不点破的话用户只会看到工具莫名其妙不工作。 */}
-                {on && st?.stale && (
-                  <span
-                    className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-700"
-                    title={t("里面存的内核地址或令牌已经不是当前这个内核的了，重新安装即可修好")}
-                  >
-                    {t("凭证过期")}
-                  </span>
-                )}
-                <button
-                  onClick={() => (on ? visionOff.mutate([tg]) : vision.mutate([tg]))}
-                  disabled={
-                    vision.isPending || visionOff.isPending || (!on && !visionModel)
-                  }
-                  title={!on && !visionModel ? t("先在上面选一个多模态模型") : undefined}
-                  className={cn(
-                    "ml-auto rounded-lg border px-2.5 py-1 text-xs disabled:opacity-40",
-                    on
-                      ? "border-border text-red-600 hover:bg-surface-2"
-                      : "border-border bg-surface-raised hover:bg-surface-2",
-                  )}
-                >
-                  {on ? t("移除") : t("安装")}
-                </button>
-                {/* 已装的也要能改模型/修凭证，否则只能先移除再装一遍。 */}
-                {on && (
-                  <button
-                    onClick={() => vision.mutate([tg])}
-                    disabled={vision.isPending || visionOff.isPending || !visionModel}
-                    title={
-                      !visionModel
-                        ? t("先在上面选一个多模态模型")
-                        : t("用当前选中的模型和内核凭证重写这一条")
-                    }
-                    className="rounded-lg border border-border bg-surface-raised px-2.5 py-1 text-xs hover:bg-surface-2 disabled:opacity-40"
-                  >
-                    {t("重写")}
-                  </button>
-                )}
-              </li>
-            );
-          })}
-          {visionPicked.length > 0 && (
-            <li className="flex items-center gap-2 bg-surface-2/60 px-3 py-2 text-xs">
-              <span className="text-muted">{t("已选")} {visionPicked.length} {t("个")}</span>
-              <button
-                onClick={() => setVisionPicked([])}
-                className="text-muted underline-offset-2 hover:underline"
-              >
-                {t("取消选择")}
-              </button>
-              <button
-                onClick={() => vision.mutate(visionPicked)}
-                disabled={vision.isPending || !visionModel}
-                title={!visionModel ? t("先在上面选一个多模态模型") : undefined}
-                className="ml-auto rounded-lg bg-accent px-2.5 py-1 font-medium text-white hover:bg-accent/90 disabled:opacity-40"
-              >
-                {t("批量安装")}
-              </button>
-              <button
-                onClick={() => visionOff.mutate(visionPicked)}
-                disabled={visionOff.isPending}
-                className="rounded-lg border border-border px-2.5 py-1 text-red-600 hover:bg-surface-2 disabled:opacity-40"
-              >
-                {t("批量移除")}
-              </button>
-            </li>
-          )}
-        </ul>
+        <McpTargetList
+          targets={VISION_TARGETS}
+          rows={visionRows}
+          loading={visionState.isPending}
+          picked={visionPicked}
+          onPicked={setVisionPicked}
+          ready={!!visionModel}
+          notReadyHint={t("先在上面选一个多模态模型")}
+          busy={vision.isPending || visionOff.isPending}
+          onInstall={(ts) => vision.mutate(ts)}
+          onRemove={(ts) => visionOff.mutate(ts)}
+        />
       </div>
+
+      <ImagePanel aliases={aliases} onMessage={setMessage} />
 
       {message && <p className="mt-4 text-sm text-accent">{message}</p>}
       {apply.isError && <p className="mt-4 text-sm text-red-600">{errText(apply.error)}</p>}
@@ -852,11 +771,201 @@ export function ModelsPage() {
   );
 }
 
+/// 生图 MCP 的安装面板。
+///
+/// 和视觉那块并列而不是合并：它多两个只有生图才有的开关，而这两个开关都是
+/// **能力**层面的，藏起来会直接让功能不可用 ——
+///   * 走哪条路：`chat` 能生成也能改图，`images` 只能生成。默认 chat。
+///   * 存到哪：生成的图落在磁盘，工具只把路径回给模型（回图本身等于每张图
+///     往 transcript 里灌一兆 base64，正好是「会话救援」要清理的东西）。
+///
+/// 模型这里不做「能不能生图」的自动筛选：第三方目录里没有这个字段，猜错了会
+/// 把用户真正能用的那个模型从下拉里藏掉。改成全列 + 一句说明。
+function ImagePanel({
+  aliases,
+  onMessage,
+}: {
+  aliases: string[];
+  onMessage: (m: string) => void;
+}) {
+  const t = useT();
+  const [picked, setPicked] = useState<CliTarget[]>([]);
+
+  const state = useQuery({
+    queryKey: ["image-mcp-state"],
+    queryFn: api.imageMcpState,
+  });
+
+  const rows = useMemo(() => {
+    const m = new Map<CliTarget, McpTargetRow>();
+    for (const s of state.data ?? []) {
+      m.set(s.target, {
+        installed: s.installed,
+        model: s.model,
+        stale: s.stale,
+        note: s.api,
+      });
+    }
+    return m;
+  }, [state.data]);
+
+  // 已装的用的是哪个模型 / 哪条路。和视觉同一个理由：下拉要显示磁盘上的真值，
+  // 否则切走再回来就变回占位符，看着像「选了没保存上」。
+  const installedModels = useMemo(
+    () => [
+      ...new Set(
+        (state.data ?? []).filter((s) => s.installed && s.model).map((s) => s.model as string),
+      ),
+    ],
+    [state.data],
+  );
+  const installedApi = (state.data ?? []).find((s) => s.installed)?.api ?? null;
+
+  const [modelPick, setModelPick] = useState<string | null>(null);
+  const model = modelPick ?? installedModels[0] ?? "";
+  const [apiPick, setApiPick] = useState<ImageApi | null>(null);
+  const imageApi: ImageApi = apiPick ?? installedApi ?? "chat";
+  // 空 = 后端的默认目录（~/.ccload-client/images）。留空是绝大多数人的正确选择，
+  // 所以 placeholder 直接把那个路径写出来，而不是写「可选」。
+  const [outDir, setOutDir] = useState("");
+
+  // 下拉必须包含**当前已装的那个模型**，哪怕它已经不在渠道清单里了 ——
+  // 受控 select 的 value 找不到 option 时浏览器渲染成空白。
+  const options = useMemo(
+    () => [...new Set([...aliases, ...installedModels])].sort(),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [aliases.join(" "), installedModels.join(" ")],
+  );
+
+  // 必须串行：五路并行会同时改 backups/manifest.json，短写入叠在旧文件尾巴上。
+  // 同 visionBatch 上面那段注释。
+  const batch = async (targets: CliTarget[], enabled: boolean): Promise<TargetOutcome[]> => {
+    const out: TargetOutcome[] = [];
+    for (const tg of targets) {
+      try {
+        const written = enabled
+          ? await api.imageMcpSet(tg, true, model, imageApi, outDir || undefined)
+          : await api.imageMcpSet(tg, false);
+        out.push({
+          t: tg,
+          status: "ok",
+          text: written.join("、") || (enabled ? t("已安装") : t("已移除")),
+        });
+      } catch (e) {
+        out.push({ t: tg, status: "failed", text: errText(e) });
+      }
+    }
+    return out;
+  };
+
+  const install = useMutation({
+    mutationFn: (ts: CliTarget[]) => batch(ts, true),
+    onSuccess: async (rs) => {
+      onMessage(summarize(rs, t("已安装"), t("安装失败")));
+      // 先取回磁盘上的新值，**再**把选择权交还给它 —— 顺序反了中间那一帧会
+      // 闪回占位符。和视觉面板同一个坑。
+      await state.refetch();
+      setModelPick(null);
+      setApiPick(null);
+    },
+    onError: (e) => onMessage(errText(e)),
+  });
+  const remove = useMutation({
+    mutationFn: (ts: CliTarget[]) => batch(ts, false),
+    onSuccess: (rs) => {
+      onMessage(summarize(rs, t("已移除"), t("移除失败")));
+      state.refetch();
+    },
+    onError: (e) => onMessage(errText(e)),
+  });
+
+  return (
+    <div className="mt-8 card p-4">
+      <div className="flex items-center gap-2 font-medium">
+        <ImageIcon className="h-4 w-4 text-accent" /> {t("生图 MCP")}
+      </div>
+      <p className="mt-1 text-sm text-muted">
+        {t(
+          "给每个 CLI 装上「手」：本客户端自带一个 MCP 服务器，把文字变成图，也能按指令改一张已有的图 —— 做游戏素材、图标、UI 草图都用它。生成的图写到磁盘，工具只把路径交回给模型；模型想看自己画的是什么，接着调视觉 MCP 的 describe_image 即可。",
+        )}
+      </p>
+
+      <label className="mt-3 flex flex-wrap items-center gap-2 text-sm">
+        <span className="text-muted">{t("用哪个模型生图")}</span>
+        <Select className="w-64" value={model} onChange={(e) => setModelPick(e.target.value)}>
+          <option value="">{t("选择生图模型")}</option>
+          {options.map((a) => (
+            <option key={a} value={a}>
+              {a}
+            </option>
+          ))}
+        </Select>
+        {installedModels.length > 0 && (
+          <span className="text-xs text-muted">
+            {t("已装：")}
+            {installedModels.join(t("、"))}
+            {modelPick !== null && modelPick !== installedModels[0] && (
+              <span className="ml-1 text-amber-700">
+                {t("（改动尚未写入，点下面的安装才生效）")}
+              </span>
+            )}
+          </span>
+        )}
+      </label>
+      <p className="mt-1 text-xs text-muted/80">
+        {t("这里不做自动筛选：第三方目录里没有「能不能生图」这一项，猜错会把你真正能用的那个模型藏掉。选一个渠道里确实能出图的别名。")}
+      </p>
+
+      <label className="mt-3 flex flex-wrap items-center gap-2 text-sm">
+        <span className="text-muted">{t("走哪条路")}</span>
+        <Select
+          className="w-64"
+          value={imageApi}
+          onChange={(e) => setApiPick(e.target.value as ImageApi)}
+        >
+          <option value="chat">{t("对话生图（能生成也能改图）")}</option>
+          <option value="images">{t("生图端点（只能生成）")}</option>
+        </Select>
+        <span className="text-xs text-muted">
+          {imageApi === "chat"
+            ? t("/v1/chat/completions + modalities:[\"image\"]，尺寸按宽高比给（1:1@2k）。")
+            : t("/v1/images/generations，尺寸按像素给（1024x1024）。这条路的请求体里没有放输入图的位置，所以 edit_image 用不了。")}
+        </span>
+      </label>
+
+      <label className="mt-3 flex flex-wrap items-center gap-2 text-sm">
+        <span className="text-muted">{t("图存到哪")}</span>
+        <TextInput
+          mono
+          small
+          className="w-96"
+          placeholder="~/.ccload-client/images"
+          value={outDir}
+          onChange={(e) => setOutDir(e.target.value)}
+        />
+        <span className="text-xs text-muted">{t("留空就是默认目录。工具回给模型的是绝对路径。")}</span>
+      </label>
+
+      <McpTargetList
+        targets={IMAGE_TARGETS}
+        rows={rows}
+        loading={state.isPending}
+        picked={picked}
+        onPicked={setPicked}
+        ready={!!model}
+        notReadyHint={t("先在上面选一个生图模型")}
+        busy={install.isPending || remove.isPending}
+        onInstall={(ts) => install.mutate(ts)}
+        onRemove={(ts) => remove.mutate(ts)}
+      />
+    </div>
+  );
+}
+
 function countBy(
   matches: Map<string, { level: MatchLevel }>,
   level: MatchLevel,
-): number {
-  let n = 0;
+): number {  let n = 0;
   for (const m of matches.values()) if (m.level === level) n++;
   return n;
 }

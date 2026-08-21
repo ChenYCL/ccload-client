@@ -128,7 +128,7 @@ pub fn vision_states(
 
 /// 只比较到「去掉尾斜杠」这一层。写进去的就是我们自己拼的 base_url，不需要
 /// CLI 接管那边那套 host/port 归一。
-fn same_endpoint(a: &str, b: &str) -> bool {
+pub(crate) fn same_endpoint(a: &str, b: &str) -> bool {
     a.trim().trim_end_matches('/') == b.trim().trim_end_matches('/')
 }
 
@@ -417,16 +417,24 @@ fn prompt_or<'a>(params: &'a Value, fallback: &'a str) -> &'a str {
 }
 
 /// 一张待发送的图。
-struct Image {
-    bytes: Vec<u8>,
-    media_type: &'static str,
+///
+/// `pub(crate)` 是给生图 MCP 用的：它的 `edit_image` 要接受和这里完全一样的
+/// 三种来源（路径 / URL / `[Image N]` 编号）。再抄一份的下场，模块头那段注释
+/// 已经写过一次了。
+pub(crate) struct Image {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) media_type: &'static str,
 }
 
-fn mcp_text(s: String) -> Value {
+pub(crate) fn mcp_text(s: String) -> Value {
     json!({ "content": [{ "type": "text", "text": s }] })
 }
 
-async fn load_source(params: &Value, path_key: &str, url_key: &str) -> Result<Image, String> {
+pub(crate) async fn load_source(
+    params: &Value,
+    path_key: &str,
+    url_key: &str,
+) -> Result<Image, String> {
     let path = params.get(path_key).and_then(Value::as_str).filter(|s| !s.is_empty());
     let url = params.get(url_key).and_then(Value::as_str).filter(|s| !s.is_empty());
     if let Some(p) = path {
@@ -785,7 +793,9 @@ async fn ask_vision(images: &[Image], prompt: &str) -> Result<Value, String> {
 
 /// 记一条调用流水。失败原因截到一行 200 字：流水是 JSONL，一条上游返回的
 /// 多行报错会把文件搅成解析不了的样子。
-fn record_call(tool: &str, started: std::time::Instant, out: &Result<Value, String>) {
+///
+/// 生图 MCP 也用它 —— 两个服务器写同一份流水，统计页面才是一个口径。
+pub(crate) fn record_call(tool: &str, started: std::time::Instant, out: &Result<Value, String>) {
     let err = out.as_ref().err().map(|e| {
         let one_line: String = e.chars().map(|c| if c == '\n' { ' ' } else { c }).collect();
         one_line.chars().take(200).collect::<String>()

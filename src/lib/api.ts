@@ -18,6 +18,8 @@ import type {
   FallbackChain,
   GraphDoc,
   GraphValidation,
+  ImageApi,
+  ImageTargetState,
   ImportEntry,
   ImportPreview,
   ImportResult,
@@ -139,6 +141,30 @@ export const api = {
   visionMcpState: () => invoke<VisionTargetState[]>("vision_mcp_state"),
 
   /**
+   * 装 / 卸生图 MCP。
+   *
+   * `api` 是能力开关不是口味：`images` 是标准 OpenAI 生图端点，只能生成；
+   * `chat` 走 `/v1/chat/completions` + `modalities:["image"]`，**改图只有它能做**。
+   * 省略即 chat。
+   */
+  imageMcpSet: (
+    target: CliTarget,
+    enabled: boolean,
+    model?: string,
+    imageApi?: ImageApi,
+    outDir?: string,
+  ) =>
+    invoke<string[]>("image_mcp_set", {
+      target,
+      enabled,
+      model: model ?? null,
+      api: imageApi ?? null,
+      outDir: outDir ?? null,
+    }),
+  /** 五个 CLI 上生图 MCP 的真实状态。同样读磁盘，不靠按钮的记忆。 */
+  imageMcpState: () => invoke<ImageTargetState[]>("image_mcp_state"),
+
+  /**
    * 让内核去问上游要模型清单并写回渠道。
    *
    * `replace` 才会删掉上游已经没有的模型 —— `merge`（内核默认）只增不删，
@@ -159,7 +185,7 @@ export const api = {
   channelUsageProbe: (channelIds: number[]) =>
     invoke<UsageProbeReport>("channel_usage_probe", { channelIds }),
 
-  /** 自带 MCP 工具（ccload-vision）的调用次数与耗时。别家 MCP 不在口径内。 */
+  /** 自带 MCP 工具（ccload-vision / ccload-image）的调用次数与耗时。别家 MCP 不在口径内。 */
   mcpUsageStats: () => invoke<McpUsage>("mcp_usage_stats"),
   mcpUsageClear: () => invoke<void>("mcp_usage_clear"),
 

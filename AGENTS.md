@@ -154,6 +154,47 @@ python3 scripts/rescue-session.py <session.jsonl> --write  # 真的改
 
 ---
 
+## 自带的两个 MCP 服务器
+
+客户端二进制自己就是 MCP 服务器 —— 按 `argv[1]` 分流（见 `lib.rs`），所以装进
+CLI 的只是一条指向本二进制的 stdio 命令，没有第二个东西要安装或打包。
+
+| 子命令 | 服务器名 | 实现 | 干什么 |
+| --- | --- | --- | --- |
+| `vision-mcp` | `ccload-vision` | `services/vision_mcp.rs` | 把图交给多模态模型描述 —— 让文本模型「看得见」 |
+| `image-mcp` | `ccload-image` | `services/image_mcp.rs` | 文生图 / 改图 —— 让所有模型「画得出」 |
+
+两边共用一套东西，**不要各抄一份**：`Image`、`mcp_text`、`load_source`（含
+`[Image N]` 按编号取图）、`same_endpoint`、`record_call` 都在 `vision_mcp` 里，
+`pub(crate)` 导出。界面上那段「哪几家装了 / 装 / 卸 / 重写」是
+`components/models/McpTargetList.tsx`。
+
+三条容易踩的：
+
+* **工具名要具体。** 宿主模型是看名字决定调不调的。一个泛化的
+  `image_op(action=…)` 不会在用户说「给我画个图标」时被想起来，所以是
+  `generate_image` / `edit_image` 两个工具，不是一个。
+* **结果回路径，不回图。** 一张 1024×1024 的 PNG base64 之后一兆多，塞进工具
+  结果等于每生成一张就往 transcript 里灌一兆 —— 正是上一节要清理的东西。图写到
+  磁盘，工具只回绝对路径；模型想看就接着调 `describe_image`。
+* **生图有两条路，`size` 的语法不一样**（照抄内核的
+  `admin_testing_image.go`，不是照 OpenAI 文档猜的）：
+
+  | | 端点 | `size` | 能改图 |
+  | --- | --- | --- | --- |
+  | `chat`（默认） | `/v1/chat/completions` + `modalities:["image"]` | `1:1@2k`（宽高比只有 `1:1 16:9 9:16 3:2 2:3`，档位 `1k`/`2k` 且内核会转大写） | 能 |
+  | `images` | `/v1/images/generations` | `1024x1024`（每边 64–8192） | 不能 |
+
+  改图只能走 chat —— images 的请求体里没有放输入图的位置。这就是默认 chat 的
+  原因，也是切到 images 时 `edit_image` 会明确报错而不是发一个注定 400 的请求
+  的原因。
+
+装了不等于会被用：**「系统注入」页里还要勾上对应那一段**，把「什么时候该想起
+这个工具」写进各 CLI 的全局指令文件（`services/system_inject.rs`）。那两段里的
+工具名和 `tool_specs()` 必须一致，有测试盯着。
+
+---
+
 ## 代码约定
 
 **注释写「为什么」，不写「做了什么」。** 代码本身已经说清做了什么。值得写下来的

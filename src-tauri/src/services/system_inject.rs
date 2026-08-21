@@ -8,6 +8,10 @@
 //! 一句写在系统提示里的规则比工具描述强得多：**你看不见图片，凡是遇到图片
 //! 就调这几个工具**。
 //!
+//! `ccload-image`（生图）是同一个问题的另一面：模型不会主动想到「这张图我可以
+//! 自己画出来」，默认反应是让用户去找别的工具。所以那一段写的是**什么场合该
+//! 想起它**。
+//!
 //! 每个 CLI 都有一个「全局 markdown 指令文件」，启动时无条件读进系统提示：
 //!
 //! | CLI         | 文件                            |
@@ -69,6 +73,8 @@ pub fn instructions_path(target: CliTarget) -> &'static str {
 pub struct InjectSpec {
     /// 视觉工具用法。装了 `ccload-vision` 却没人告诉模型该用，是这个功能的由来。
     pub vision: bool,
+    /// 生图工具用法。同上，装了 `ccload-image` 也得有人告诉模型它能画。
+    pub image: bool,
     /// 给已装的第三方扩展写的「什么时候用它」。
     pub tools: Vec<ToolNote>,
     /// 用户自己的规则，原样写进块里。
@@ -100,7 +106,7 @@ impl InjectSpec {
     }
 
     pub fn is_empty(&self) -> bool {
-        !self.vision && self.custom.trim().is_empty() && self.live_tools().is_empty()
+        !self.vision && !self.image && self.custom.trim().is_empty() && self.live_tools().is_empty()
     }
 }
 
@@ -154,11 +160,56 @@ fn vision_section() -> String {
     )
 }
 
+/// 生图工具那一段。
+///
+/// 和视觉那段同一个道理，只是反过来：模型不会主动想到「我可以自己把这张图画
+/// 出来」，它默认的反应是让用户去找设计师或者给一段 SVG。所以这里要把「什么
+/// 场合该想起它」写死 —— 图标、精灵图、贴图、UI 草图、占位素材。
+///
+/// 还必须写清两件容易出错的事：
+///   * 结果是**磁盘路径**，不是图本身。模型看不见它，要看得接着调
+///     `describe_image`（前提是视觉那个 MCP 也装了）。
+///   * 改图走 `edit_image`，原图不会被动。
+///
+/// 工具名和 `image_mcp::tool_specs` 必须一致；对不上就是让模型去调一个不存在
+/// 的工具，比不写还糟。
+fn image_section() -> String {
+    format!(
+        "\
+## 生成与修改图片（ccLoad 生图）
+
+本机装了 MCP 服务器 `{server}`，你可以**自己把图画出来**，不要让用户去找别的
+工具，也不要用 SVG/ASCII 凑数：
+
+- `generate_image` —— 从一段描述生成一张新图。图标、精灵图、贴图、按钮、
+  Logo、插画、UI 草图、占位素材，凡是「现在还不存在的图」都用它。
+- `edit_image` —— 按指令改一张已有的图，结果**另存为新文件，原图不动**。
+  「背景换成夜晚」「把这个草稿画完」「去掉水印」，以及把几张参考图合成一张
+  （用 `extra_paths` 带上其余的图）都是它。
+
+要点：
+
+- 结果回给你的是**保存路径**，不是图本身 —— 你看不见它。需要确认画成什么样
+  再拿给用户，就用那个路径调 `describe_image`。
+- 提示词写具体：主体、风格、构图、配色、背景是否透明。「一个图标」会得到
+  一张没法用的图。
+- 尺寸用 `size`：对话生图那条路按宽高比给（`1:1@2k`、`16:9@1k`，宽高比只有
+  `1:1 16:9 9:16 3:2 2:3` 五种）；生图端点那条路按像素给（`1024x1024`）。
+  不确定就别传，默认值是对的。
+- 改图时如果对话里只有 `[Image 1]` 没有路径，把 `image` 设成 1，**不要让用户
+  把图另存一份再把路径发回来**。",
+        server = crate::services::image_mcp::MCP_NAME,
+    )
+}
+
 /// 拼出块内内容（不含标记本身）。
 pub fn render_block(spec: &InjectSpec) -> String {
     let mut parts: Vec<String> = Vec::new();
     if spec.vision {
         parts.push(vision_section());
+    }
+    if spec.image {
+        parts.push(image_section());
     }
     let tools = spec.live_tools();
     if !tools.is_empty() {
@@ -291,6 +342,7 @@ mod tests {
     fn spec() -> InjectSpec {
         InjectSpec {
             vision: true,
+            image: false,
             tools: vec![ToolNote {
                 name: "codegraph".into(),
                 note: "改代码前先查调用链，比 grep 准".into(),
@@ -424,6 +476,7 @@ mod tests {
 
         let spec = InjectSpec {
             vision: true,
+            image: true,
             tools: vec![
                 ToolNote {
                     name: "codegraph".into(),
@@ -447,9 +500,11 @@ mod tests {
             assert_eq!(body.matches(BEGIN).count(), 1, "{target:?} 标记不唯一");
             assert_eq!(body.matches(END).count(), 1, "{target:?} 标记不唯一");
 
-            // 三段都在
+            // 四段都在
             assert!(body.contains("describe_image"), "{target:?} 缺视觉段");
             assert!(body.contains("read_image_text"), "{target:?} 缺视觉段");
+            assert!(body.contains("generate_image"), "{target:?} 缺生图段");
+            assert!(body.contains("edit_image"), "{target:?} 缺生图段");
             assert!(body.contains("`codegraph` —— 改代码前先查调用链，比 grep 准"), "{target:?} 缺第三方说明");
             assert!(body.contains("`zread` —— 看不想克隆的 GitHub 仓库"), "{target:?} 缺第三方说明");
             assert!(body.contains("永远用中文回答。"), "{target:?} 缺自定义规则");
@@ -503,5 +558,51 @@ mod tests {
             !text.contains("先问用户要"),
             "旧文案会让模型把「把图存到 Downloads」当成标准流程：{text}"
         );
+    }
+
+    /// 生图那一段同理：工具名对不上就是教模型调一个不存在的工具。
+    #[test]
+    fn image_section_names_match_the_image_mcp() {
+        let text = image_section();
+        for name in ["generate_image", "edit_image"] {
+            assert!(text.contains(name), "缺少 {name}");
+        }
+        assert!(text.contains(crate::services::image_mcp::MCP_NAME));
+        // 「结果是路径不是图」是这个 MCP 最反直觉的一点，必须写在提示里：
+        // 不说的话模型会以为工具结果里有图，然后对着一行路径描述「画面内容」。
+        assert!(
+            text.contains("describe_image"),
+            "得告诉模型怎么看自己画出来的东西：{text}"
+        );
+        assert!(
+            text.contains("原图不动"),
+            "改图另存新文件这件事要写明，否则模型会先备份一份再改"
+        );
+    }
+
+    /// 两段互不影响：只开生图时不该冒出视觉那段（那段的开头是「你看不见图片」，
+    /// 对一个多模态模型说这句话会让它开始拒绝看图）。
+    #[test]
+    fn sections_are_independent() {
+        let only_image = render_block(&InjectSpec {
+            image: true,
+            ..Default::default()
+        });
+        assert!(only_image.contains("generate_image"));
+        assert!(
+            !only_image.contains("你**看不见图片**"),
+            "只开生图却带出了视觉段：{only_image}"
+        );
+
+        let only_vision = render_block(&InjectSpec {
+            vision: true,
+            ..Default::default()
+        });
+        assert!(only_vision.contains("describe_image"));
+        assert!(!only_vision.contains("generate_image"));
+
+        // 都不开 = 空 spec，界面据此决定是「写入」还是「移除」。
+        assert!(InjectSpec::default().is_empty());
+        assert!(!InjectSpec { image: true, ..Default::default() }.is_empty());
     }
 }

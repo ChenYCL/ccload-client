@@ -197,6 +197,8 @@ export type Page =
 export type InjectSpec = {
   /** 视觉工具用法。文本模型不知道自己「看不见」，得明说。 */
   vision: boolean;
+  /** 生图工具用法。模型不会主动想到「这张图我自己就能画」，也得明说。 */
+  image: boolean;
   /** 给已装的第三方扩展写的「什么时候用它」。没写说明的条目会被后端丢掉。 */
   tools: ToolNote[];
   /** 用户自己的规则，原样写进块里。 */
@@ -256,10 +258,33 @@ export type VisionTargetState = {
 };
 
 /* ---------------------------------------------------------------------------
+   生图 MCP。
+
+   走哪条路是**能力差别**不是口味差别：`images` 是标准 OpenAI 生图端点，
+   `chat` 是 `/v1/chat/completions` + `modalities:["image"]`。改图只有 chat
+   能做 —— images 的请求体里没有放输入图的位置，所以默认是 chat。
+--------------------------------------------------------------------------- */
+
+export type ImageApi = "chat" | "images";
+
+export type ImageTargetState = {
+  target: CliTarget;
+  label: string;
+  installed: boolean;
+  /** 已装的话，它现在用哪个模型生图。 */
+  model: string | null;
+  /** 已装的话，它走的是哪条路。 */
+  api: ImageApi | null;
+  /** 装了，但里面存的内核地址/令牌已经过期 —— 每次生图都会 401。 */
+  stale: boolean;
+};
+
+/* ---------------------------------------------------------------------------
    自带 MCP 工具的调用统计。
 
-   口径只覆盖 `ccload-vision`：别家 MCP 服务器是独立进程，既不经内核也不经
-   我们，客户端没有任何位置能看见它们的调用。
+   口径只覆盖客户端自带的两个服务器（`ccload-vision` / `ccload-image`）：
+   别家 MCP 服务器是独立进程，既不经内核也不经我们，客户端没有任何位置能看见
+   它们的调用。
 --------------------------------------------------------------------------- */
 
 export type McpToolStat = {

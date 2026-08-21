@@ -1,10 +1,11 @@
-//! Model catalog import + vision MCP registration commands.
+//! Model catalog import + vision / image MCP registration commands.
 
 use tauri::State;
 
 use crate::error::{AppError, AppResult};
 use crate::services::cli_extensions::ALL_TARGETS;
 use crate::services::cli_types::CliTarget;
+use crate::services::image_mcp::{set_image_mcp, image_states, ImageApi, ImageConfig, ImageTargetState};
 use crate::services::mcp_usage::{self, McpUsage};
 use crate::services::model_import::{apply_import, ImportEntry, ImportResult};
 use crate::services::vision_mcp::{set_vision_mcp, vision_states, VisionConfig, VisionTargetState};
@@ -83,11 +84,69 @@ pub async fn vision_mcp_state(state: State<'_, AppState>) -> AppResult<Vec<Visio
     Ok(vision_states(&root, &ALL_TARGETS, &base, token.as_deref()))
 }
 
+/// 装 / 卸生图 MCP。
+///
+/// `model` 必须是内核里一个**能出图**的别名；`api` 选 chat 还是 images，
+/// 两条路的差别（尤其「改图只有 chat 能做」）写在 `services::image_mcp` 头上。
+#[tauri::command]
+pub async fn image_mcp_set(
+    state: State<'_, AppState>,
+    target: CliTarget,
+    enabled: bool,
+    model: Option<String>,
+    api: Option<ImageApi>,
+    out_dir: Option<String>,
+) -> AppResult<Vec<String>> {
+    if !enabled {
+        // 关的时候不需要令牌，也不需要内核在跑 —— 和视觉那边同一个理由。
+        let root = state.config_root().await?;
+        let cfg = ImageConfig {
+            base_url: String::new(),
+            token: String::new(),
+            model: String::new(),
+            api: ImageApi::Chat,
+            out_dir: String::new(),
+        };
+        return Ok(set_image_mcp(&root, target, false, &cfg, &unique_stamp(), &state.backups)?);
+    }
+    let (token, base) = {
+        let s = state.settings.read().await;
+        (s.client_api_token.clone(), s.kernel.base_url())
+    };
+    let token = token.ok_or_else(|| {
+        AppError::Config("no client API token yet — start the kernel first".into())
+    })?;
+    let model = model.filter(|m| !m.is_empty()).ok_or_else(|| {
+        AppError::Config("请选择一个能生图的模型（内核里的生图模型别名）".into())
+    })?;
+    let root = state.config_root().await?;
+    let cfg = ImageConfig {
+        base_url: base,
+        token,
+        model,
+        api: api.unwrap_or(ImageApi::Chat),
+        out_dir: out_dir.unwrap_or_default(),
+    };
+    Ok(set_image_mcp(&root, target, true, &cfg, &unique_stamp(), &state.backups)?)
+}
+
+/// 五个 CLI 上生图 MCP 的真实状态。理由同 [`vision_mcp_state`]：真值在磁盘上。
+#[tauri::command]
+pub async fn image_mcp_state(state: State<'_, AppState>) -> AppResult<Vec<ImageTargetState>> {
+    let (token, base) = {
+        let s = state.settings.read().await;
+        (s.client_api_token.clone(), s.kernel.base_url())
+    };
+    let root = state.config_root().await?;
+    Ok(image_states(&root, &ALL_TARGETS, &base, token.as_deref()))
+}
+
 /// 本客户端自带 MCP 工具的调用统计（次数 / 耗时 / 失败）。
 ///
-/// 口径只覆盖 `ccload-vision` 这一个服务器 —— 别家 MCP 服务器是独立进程，
-/// 既不经过内核也不经过我们，客户端没有任何位置能看见它们的调用。UI 上要
-/// 把这个边界写出来，别让「MCP 调用统计」被读成「所有 MCP 的统计」。
+/// 口径只覆盖客户端自带的两个服务器（`ccload-vision` / `ccload-image`）——
+/// 别家 MCP 服务器是独立进程，既不经过内核也不经过我们，客户端没有任何位置
+/// 能看见它们的调用。UI 上要把这个边界写出来，别让「MCP 调用统计」被读成
+/// 「所有 MCP 的统计」。
 #[tauri::command]
 pub fn mcp_usage_stats() -> AppResult<McpUsage> {
     Ok(mcp_usage::aggregate())

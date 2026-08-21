@@ -32,6 +32,12 @@ pub fn run() {
         std::process::exit(services::vision_mcp::serve_stdio());
     }
 
+    // 同一个二进制也是生图 MCP 服务器（`<this binary> image-mcp`），
+    // 让五家 CLI 都能生图 / 改图。同样必须在 Tauri 起来之前处理。
+    if std::env::args().nth(1).as_deref() == Some("image-mcp") {
+        std::process::exit(services::image_mcp::serve_stdio());
+    }
+
     // 必须在 WebView 建出来之前：这些键是启动时读一次的。
     platform::disable_automatic_text_substitutions();
 
@@ -169,6 +175,8 @@ pub fn run() {
             commands::models::model_import,
             commands::models::vision_mcp_set,
             commands::models::vision_mcp_state,
+            commands::models::image_mcp_set,
+            commands::models::image_mcp_state,
             commands::models::mcp_usage_stats,
             commands::models::mcp_usage_clear,
             commands::inject::inject_state,

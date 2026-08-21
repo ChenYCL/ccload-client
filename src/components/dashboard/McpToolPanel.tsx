@@ -7,7 +7,8 @@ import type { McpToolStat } from "../../types";
 
 /// 自带 MCP 工具的调用统计。
 ///
-/// 口径边界必须写在脸上：这里只有 `ccload-vision` 这一个服务器的数据。别家
+/// 口径边界必须写在脸上：这里只有客户端自带的两个服务器（`ccload-vision` /
+/// `ccload-image`）的数据。别家
 /// MCP 服务器是 CLI 直接拉起的独立进程，既不经过内核也不经过本客户端 ——
 /// 我们没有任何位置能看见它们的调用。把标题写成「MCP 调用」会让人以为
 /// 装在扩展管理里的那些服务器也在统计里，那是骗人。
@@ -25,6 +26,8 @@ const TOOL_LABELS: Record<string, string> = {
   compare_images: "比对两张图",
   list_pasted_images: "列出刚贴的图",
   describe_screen: "看当前屏幕",
+  generate_image: "生成图片",
+  edit_image: "修改图片",
 };
 
 /** 毫秒 → 人话。工具调用普遍是秒级，不必像请求耗时那样精确到毫秒。 */
@@ -103,7 +106,7 @@ export function McpToolPanel() {
 
       <p className="mt-3 text-[11px] text-muted/80">
         {t(
-          "只统计本客户端自带的 MCP 服务器（ccload-vision）。扩展管理里装的第三方 MCP 由 CLI 直接拉起，不经过内核也不经过客户端，无法计入。",
+          "只统计本客户端自带的 MCP 服务器（ccload-vision / ccload-image）。扩展管理里装的第三方 MCP 由 CLI 直接拉起，不经过内核也不经过客户端，无法计入。",
         )}
         {data.since > 0 && ` ${t("统计自 {at}。", { at: fmtSince(data.since) })}`}
         {data.truncated && ` ${t("更早的记录已被丢弃（流水有大小上限）。")}`}

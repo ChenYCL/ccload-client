@@ -213,10 +213,12 @@ registerDict("en", {
   抄图上的字: "transcribe text",
   比对两张图: "compare images",
   看当前屏幕: "capture screen",
+  生成图片: "generate image",
+  修改图片: "edit image",
   "还没有调用记录。装上「模型导入」页里的视觉辅助 MCP 之后，文本模型每次看图都会记一笔。":
     "No calls recorded yet. Install the vision-assist MCP from the “Model import” page and every image a text-only model looks at gets logged here.",
-  "只统计本客户端自带的 MCP 服务器（ccload-vision）。扩展管理里装的第三方 MCP 由 CLI 直接拉起，不经过内核也不经过客户端，无法计入。":
-    "Covers only this app's own MCP server (ccload-vision). Third-party MCP servers installed under Extensions are spawned directly by the CLI — they pass through neither the kernel nor this client, so they cannot be counted.",
+  "只统计本客户端自带的 MCP 服务器（ccload-vision / ccload-image）。扩展管理里装的第三方 MCP 由 CLI 直接拉起，不经过内核也不经过客户端，无法计入。":
+    "Covers only this app's own MCP servers (ccload-vision / ccload-image). Third-party MCP servers installed under Extensions are spawned directly by the CLI — they pass through neither the kernel nor this client, so they cannot be counted.",
   "共 {n} 次调用": "{n} calls",
   "累计耗时 {d}": "{d} total",
   "失败 {n} 次": "{n} failed",
@@ -237,6 +239,9 @@ registerDict("en", {
   "告诉 CLI 怎么用视觉辅助 MCP": "Tell the CLI how to use the vision-assist MCP",
   "装上 ccload-vision 不等于模型会用它 —— 它只看得见工具名和一句描述，遇到图片会不会想起来调全看运气，而文本模型甚至不知道自己「看不见」。这段会明确告诉它：你看不见图片，遇到 [Image 1] 这种没有路径的占位符时必须调工具并把 image 设成对应编号，不要让用户把图另存一份。":
     "Installing ccload-vision does not mean the model will use it — all it sees is a tool name and one line of description, so whether it remembers to call the tool on an image is luck, and a text-only model does not even know it is blind. This block says it plainly: you cannot see images; when the chat only shows [Image 1] with no path you must call the tool and set image to that number — do not ask the user to save the file somewhere else.",
+  "告诉 CLI 怎么用生图 MCP": "Tell the CLI how to use the image MCP",
+  "模型不会主动想到「这张图我自己就能画」，默认反应是让你去找别的工具或者拿 SVG 凑数。这段会告诉它：图标、精灵图、贴图、UI 草图都可以用 generate_image 直接生成，改图用 edit_image（原图不动），以及结果回来的是磁盘路径而不是图本身 —— 要看画成什么样得接着调 describe_image。":
+    "A model does not spontaneously think “I could just draw this myself”; its default move is to send you off to another tool or fake it with SVG. This block tells it: icons, sprites, textures and UI mockups can be produced directly with generate_image; edits go through edit_image (the original is never touched); and what comes back is a file path, not the image — to see how it turned out, call describe_image on that path.",
   你自己的规则: "Your own rules",
   "原样写进块里，五个 CLI 共用同一份。留空则只写上面勾选的内容。":
     "Written into the block verbatim and shared by all five CLIs. Leave empty to inject only what is ticked above.",
@@ -598,6 +603,27 @@ registerDict("en", {
   "装在其他 CLI 上的同名扩展不受影响。":
     "Extensions with the same name installed in other CLIs are unaffected.",
   "视觉辅助 MCP": "Vision-assist MCP",
+
+  // ---- 生图 MCP ----
+  "生图 MCP": "Image MCP",
+  "给每个 CLI 装上「手」：本客户端自带一个 MCP 服务器，把文字变成图，也能按指令改一张已有的图 —— 做游戏素材、图标、UI 草图都用它。生成的图写到磁盘，工具只把路径交回给模型；模型想看自己画的是什么，接着调视觉 MCP 的 describe_image 即可。":
+    "Gives every CLI a pair of hands: this client ships an MCP server that turns text into an image, and edits an existing image on instruction — game assets, icons, UI mockups all go through it. The result is written to disk and only the path is handed back to the model; to see what it drew, it calls describe_image from the vision MCP.",
+  用哪个模型生图: "Which model generates images",
+  选择生图模型: "Pick an image model",
+  先在上面选一个生图模型: "Pick an image model above first",
+  "这里不做自动筛选：第三方目录里没有「能不能生图」这一项，猜错会把你真正能用的那个模型藏掉。选一个渠道里确实能出图的别名。":
+    "No auto-filtering here: the third-party catalog has no “can it generate images” field, and guessing wrong would hide the very model you can use. Pick an alias that one of your channels can actually draw with.",
+  走哪条路: "Which endpoint",
+  "对话生图（能生成也能改图）": "Chat (generate and edit)",
+  "生图端点（只能生成）": "Images endpoint (generate only)",
+  '/v1/chat/completions + modalities:["image"]，尺寸按宽高比给（1:1@2k）。':
+    '/v1/chat/completions + modalities:["image"]; size is an aspect ratio (1:1@2k).',
+  "/v1/images/generations，尺寸按像素给（1024x1024）。这条路的请求体里没有放输入图的位置，所以 edit_image 用不了。":
+    "/v1/images/generations; size is in pixels (1024x1024). This request body has no slot for an input image, so edit_image is unavailable.",
+  图存到哪: "Where to save",
+  "留空就是默认目录。工具回给模型的是绝对路径。":
+    "Leave empty for the default directory. The tool hands the model an absolute path.",
+
   "角色靠 CLI 侧表达：在「扩展管理」里建一个同名 agent，把它的":
     "Roles live on the CLI side: create an agent with the same name under “Extensions” and set its",
   "该渠道合计": "This channel totals",
