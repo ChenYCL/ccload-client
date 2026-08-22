@@ -8,7 +8,7 @@
 
 **English | [简体中文](./README.zh-CN.md)**
 
-> Point every CLI at one gateway | Local or remote | Keep your MCP | Undo a takeover | Try in a sandbox first
+> Point every CLI at one gateway | Local or remote | Keep your MCP | Undo a takeover | Try in a sandbox first | Ships its own vision and image MCP
 
 <p align="center">
   <img src="docs/assets/hero.png" alt="ccLoad Desktop — one kernel, every CLI" />
@@ -42,6 +42,8 @@ If you keep several AI CLIs open, these are the failure modes:
 - **The wrong CLI has no undo.** Without a snapshot you are left with memory, or a full-disk backup.
 - **You want a trial without burning the live session.** Comparing two gateways should not use the real `~/.claude` as the lab.
 - **The gateway is up, the laptop is blind.** Usage, in-flight requests, and channel health still mean opening a browser and guessing.
+- **You paste a screenshot and the model cannot see it.** A text-only model does not know it is blind — it guesses from the filename. Generating an image is worse: it never occurs to the model that it could just draw one, so it sends you off to another tool or fakes it with SVG.
+- **A session dies on `400 too long`.** Claude Code decides when to auto-compact from the window the **model** declares, while the ceiling that actually stops you belongs to the **relay**. When those two disagree, the threshold is computed against a denominator that does not exist — by the time it fires you are already past the real ceiling, and `/compact` cannot save you either, because it has to send the whole transcript too.
 
 ccLoad Desktop handles those cases with:
 
@@ -50,6 +52,40 @@ ccLoad Desktop handles those cases with:
 - **A snapshot before every write.** Roll back that CLI only. The first copy is never thrown away.
 - **A sandbox.** Writes land in a side folder until you turn sandbox off.
 - **An overview that matches the gateway.** Spend, health, live requests, logs — the same ccLoad numbers, not a second counter.
+- **Eyes and hands for every CLI.** Two bundled MCP servers — see the next section.
+- **Trimming against the real ceiling.** Token counts come from the usage the upstream reported, not from an estimate.
+
+## The two bundled MCP servers
+
+Both are compiled **into the same binary as the app** and dispatched by `argv[1]` (`vision-mcp` / `image-mcp`). Installing one writes a single command plus a few environment variables into that CLI's native MCP config — no extra runtime to download, no resident background process, and uninstalling is deleting that one entry. Requests go through the gateway you already configured, so channels, failover and billing are shared with the rest of your traffic.
+
+### `ccload-vision` — sight for models that have none
+
+Hands the image to a multimodal model and gives the text back to the model you are talking to.
+
+| Tool | For |
+|---|---|
+| `describe_image` | Understand an image: screenshot, photo, diagram, chart |
+| `read_image_text` | Transcribe the text verbatim. Use it for error screenshots, terminal output, logs, forms — `describe_image` summarises, and these need the exact words |
+| `compare_images` | Diff two images: before/after, visual regression |
+| `list_pasted_images` | List what was just pasted, with on-disk paths |
+| `describe_screen` | Capture the current screen and describe it (macOS only) |
+
+Three ways to point at an image, all accepted: `path` for a local file, `url` for a remote or data URL, and `image` for a paste index (`"1"` is `[Image 1]`, `"latest"` is the newest). **The index matters** — a transcript often shows only the `[Image 1]` placeholder with no path, and without it the model's only move is asking you to save a copy and send the path back.
+
+### `ccload-image` — let the CLI draw
+
+`generate_image` makes a new image from a description. `edit_image` changes an existing one and **saves the result as a new file, leaving the original untouched**; `extra_paths` composes several references into one.
+
+What it handles for you:
+
+- **It picks the endpoint.** Upstreams expose image generation two entirely different ways: `/v1/chat/completions` with `modalities:["image"]`, and `/v1/images/generations`. There is no consistent rule for which model wants which, and getting it wrong fails every single time — with an error phrased by the upstream ("this model is not available on this endpoint"), so nobody thinks to come back and change a dropdown in a client. The default, Auto, orders the attempts by model name and retries on the other endpoint the moment the upstream says it is the wrong one. Only wrong-endpoint errors are retried — quota, rate limits and refused prompts do not burn a second call.
+- **The request body is written per provider.** The kernel registers no cross-protocol conversion for the images family, so whatever we send arrives verbatim. xAI does not accept `size` and wants `aspect_ratio` + `resolution`; dall-e returns a link unless you ask for base64; gpt-image is the opposite and rejects that parameter outright. Those differences are absorbed here.
+- **Size takes either notation.** Aspect ratio (`16:9`, `1:1@2k`) or pixels (`1024x1536`) — converted to a value the configured model actually accepts.
+- **Results go to disk; the model gets a path.** Returning the image itself would pour a megabyte of base64 into the transcript per picture — exactly what Session rescue exists to clean up. To check what was drawn, call `describe_image` on that path.
+- **The extension follows the magic bytes**, not the declared MIME. An upstream claiming PNG and returning JPEG is routine, and a wrong name breaks anything that dispatches on extension (bundlers, upload endpoints).
+
+Install both from the bottom of the Model import page; each panel picks its own model and its own set of CLIs.
 
 ## Each sidebar page
 
@@ -66,6 +102,20 @@ This is the first screen: how many requests today, how many succeeded, how busy 
 The top list is in-flight requests (not in history yet). The table is finished ones. Filter by model, channel, or status, or show errors only. Turn “live” off if you do not want the laptop polling the kernel; refresh by hand instead.
 
 ![Live logs](docs/assets/ui/page-logs.png)
+
+### Monitor · Subscription usage
+
+Plan quota windows (5-hour / weekly / monthly) and what is left, per OAuth channel. Every number comes from the kernel, which samples the upstream quota endpoint while refreshing credentials. The client does not compute quota itself: every upstream reports it differently (Codex in percent, Z.ai in `limits[]`, xAI in cents), the kernel already normalised it once, and normalising again would only produce a second, disagreeing answer.
+
+"Refresh quota" really does ask the upstream, so this page does not poll — it runs when you click. API-key channels are pay-as-you-go with no plan window and are not listed here.
+
+### Monitor · Session rescue
+
+For a session stuck on `400 too long`.
+
+Claude Code decides when to auto-compact from the window the **model** declares, but through ccLoad the ceiling that actually stops you is the **relay's**. The classic trap is a model name carrying `[1m]` while the relay grants 500k: the threshold is measured against a denominator that does not exist, and by the time it fires you are past the real ceiling — after which `/compact` cannot get out either, because it has to send the whole transcript too.
+
+This page strips images and over-long text out of the transcript, summarises in chunks when it has to, and keeps the last few turns verbatim, so the session can be resumed. **The token count is not an estimate**: every assistant record carries the usage the upstream reported, and the real context is `input_tokens + cache_read + cache_creation` — the only figure that matches the number in the 400. Reading `input_tokens` alone is off by an order of magnitude. A backup is taken before trimming.
 
 ### Configure · CLI takeover
 
@@ -90,6 +140,22 @@ A fallback: try this, then that. Written as channels in decreasing priority so t
 Aliases your live channels can actually serve, appended to Codex / OpenCode catalogs. Claude Code has no catalog file, only a few slots: a row is written only if you pick opus / sonnet / … — otherwise it is skipped, so the model you are using is not overwritten.
 
 ![Model import](docs/assets/ui/page-models.png)
+
+The two bundled MCP panels (vision and image) live at the bottom of this page — pick a model, pick which CLIs get it.
+
+### Configure · System injection
+
+Writes a managed block into each CLI's global instruction file (`CLAUDE.md` / `AGENTS.md` / `GEMINI.md`), which is loaded into the system prompt unconditionally at startup. **Only the text between our own markers is replaced; not one byte outside the block is touched** — `~/.claude/CLAUDE.md` is usually months of your own accumulated rules, and wiping it is not reversible.
+
+Why it is needed: installing an MCP does not mean the model will use it. All it sees is a tool name and one line of description, so whether it remembers to call it is luck — and a text-only model does not even know it is blind. A rule in the system prompt is far stronger than a tool description.
+
+Three optional blocks: how to use the vision MCP, how to use the image MCP, and your own rules. You can also attach one line per **installed third-party extension** describing when to reach for it — the usage notes you hand-wrote for Claude Code usually exist only in `~/.claude/CLAUDE.md`, invisible to the other four; write them once here and all five get them.
+
+Ticking a box is not writing. Each row has its own Write / Update, and edited-but-unwritten state is called out. So is guidance written for a server that is not installed anywhere — that teaches the model to call a tool that does not exist, which it will hunt for, fail to find, and then improvise around.
+
+### Configure · Session presets
+
+Prepares an opening exchange and writes it out in each CLI's own session format, so you can pick it up with that tool's native resume. It is for freezing a repeated opening — role setup, project background, standing working agreements — instead of retyping it every time. You write the exchange; the client only lays it down in each format. Whether the model on the other end goes along with it is up to that model.
 
 ### Configure · Extensions
 
@@ -122,6 +188,14 @@ Where the gateway lives: run one on this machine, or paste an instance you alrea
 macOS builds are unsigned for now: first launch is right-click the app → Open.
 
 Turn on “sandbox CLI writes” while developing. Building from source and contributor rules: [AGENTS.md](./AGENTS.md).
+
+### The kernel version inside the package
+
+Every build compiles in a copy of the [ccLoad](https://github.com/caidaoli/ccLoad) kernel, pinned by a single-line file at the repo root: `KERNEL_VERSION`. Changing kernel version is editing that line — visible in the diff, identical for CI and for your laptop. The kernel source does not live in this repository (the hard rule is that we do not modify it).
+
+Following upstream is automatic. `.github/workflows/kernel-sync.yml` checks the newest upstream release hourly — including prereleases, since the kernel ships betas — and when it differs, it follows, commits, and dispatches a beta build. **The kernel is compiled before anything is committed**: upstream occasionally introduces a new build prerequisite, and that should fail in the sync pipeline rather than land an unbuildable pin on `main`.
+
+Settings shows the bundled kernel and the running kernel side by side, so a mismatch is visible at a glance.
 
 ## License
 

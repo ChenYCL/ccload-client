@@ -185,17 +185,41 @@ CLI 的只是一条指向本二进制的 stdio 命令，没有第二个东西要
 * **结果回路径，不回图。** 一张 1024×1024 的 PNG base64 之后一兆多，塞进工具
   结果等于每生成一张就往 transcript 里灌一兆 —— 正是上一节要清理的东西。图写到
   磁盘，工具只回绝对路径；模型想看就接着调 `describe_image`。
-* **生图有两条路，`size` 的语法不一样**（照抄内核的
+* **生图有两条路，端点由 `auto` 自己挑**（形状照抄内核的
   `admin_testing_image.go`，不是照 OpenAI 文档猜的）：
 
-  | | 端点 | `size` | 能改图 |
-  | --- | --- | --- | --- |
-  | `chat`（默认） | `/v1/chat/completions` + `modalities:["image"]` | `1:1@2k`（宽高比只有 `1:1 16:9 9:16 3:2 2:3`，档位 `1k`/`2k` 且内核会转大写） | 能 |
-  | `images` | `/v1/images/generations` | `1024x1024`（每边 64–8192） | 不能 |
+  | | 端点 | 能改图 |
+  | --- | --- | --- |
+  | `chat` | `/v1/chat/completions` + `modalities:["image"]` | 能 |
+  | `images` | `/v1/images/generations` | 不能 |
 
-  改图只能走 chat —— images 的请求体里没有放输入图的位置。这就是默认 chat 的
-  原因，也是切到 images 时 `edit_image` 会明确报错而不是发一个注定 400 的请求
-  的原因。
+  改图只能走 chat —— images 的请求体里没有放输入图的位置。
+
+  **默认是 `auto`，不是 `chat`。** 钉死一条是装的时候选的，代价却是之后每次
+  生图都失败，而错误信息说的是上游的话（「这个模型不在这个端点上」），没人会
+  想到要回客户端改一个下拉框。`ImageApi::plan()` 按模型名排尝试顺序
+  （`grok-imagine` / `gpt-image` / `dall-e` 先 images，其余先 chat，改图只排
+  chat），失败时只对 `ApiErr::wrong_surface()` 认定的「端点选错了」重试 ——
+  余额、限流、提示词被拒换个端点也是一样的下场，白烧一次计费。
+
+* **images 端点的 body 要按上游那一家写。** 内核对 images 请求族没有注册任何
+  跨协议转换（`protocol/types.go` 的
+  `supportedTransformFamiliesByClientAndUpstream` 里一条都没有），发什么上游就
+  原样收到什么，形状错了没人替我们纠。xAI 不认 `size`，要 `aspect_ratio` +
+  `resolution`，也不认 `n`；`dall-e` 默认回链接，得显式要 `b64_json`；
+  `gpt-image` 系列反过来，多送这个字段直接 400。见 `images_body()`。
+
+* **`size` 两种写法都要认。** 工具描述里只有一个 `size` 参数，而 auto 替模型挑
+  端点 —— 模型没法知道该写哪种。宽高比（`1:1@2k`，只有
+  `1:1 16:9 9:16 3:2 2:3` 五种，档位内核会转大写）和像素（`1024x1536`）互转，
+  换算时挑的是**这个模型收得下**的值：`gpt-image` 是 `1536x1024`，`dall-e 3` 是
+  `1792x1024`，等比算一个「数学上对」的尺寸发出去只会 400。
+
+* **扩展名按文件头定，不信 MIME。** images 端点回的是裸 base64，
+  `extract_images_api` 只能给它套一个写死 `image/png` 的壳，而 xAI 实际回的是
+  JPEG。存成 `.png` 的 JPEG 看图工具不在乎，按扩展名分发的（打包器、上传接口）
+  当场报错，且报错指向文件本身，没人会想到是生图那一步给错了名字。见
+  `sniff_ext()`。
 
 装了不等于会被用：**「系统注入」页里还要勾上对应那一段**，把「什么时候该想起
 这个工具」写进各 CLI 的全局指令文件（`services/system_inject.rs`）。那两段里的
@@ -298,6 +322,22 @@ release —— 包体上百 MB，发出去之前人眼看一眼产物齐不齐�
 
 Apple 签名相关的 secret 没配时流水线照常出未签名包（用户首次打开需右键「打开」），
 不会因为缺开发者账号整条红掉。
+
+**跟内核版本 —— 自动。** `.github/workflows/kernel-sync.yml` 每小时看一眼上游最新
+release，和 `KERNEL_VERSION` 不一样就跟上、提交、派发一次 beta。几个点：
+
+* 取版本用 `/releases` 而不是 `/releases/latest` —— 后者按定义跳过 prerelease，
+  而内核发的正是 beta（实测会停在 v4.7.0，落后三个 beta 却看着像最新）。
+* **提交之前先 `kernel:build` 编一遍。** 内核偶尔会引入新的构建前置
+  （v4.7.3 加的 `third_party/cursor-sdk-bridge` 就是一次），编不出来该红在这条
+  流水线上，而不是把一个编不出来的钉子推上 `main`。
+* 打包必须显式 `gh workflow run`：GITHUB_TOKEN 推的 commit 不会触发其它
+  workflow，这是 GitHub 防死循环的硬规则。
+* 手动触发能指定 tag（回退某一版，或抢在 release 前试），`dry_run` 只跑到编译
+  为止，不提交也不打包。
+
+要临时停掉跟版就在 Actions 里禁用这条 workflow；别改 cron 表达式来「关掉它」，
+下一个改的人看不出那是关的意思。
 
 ---
 
