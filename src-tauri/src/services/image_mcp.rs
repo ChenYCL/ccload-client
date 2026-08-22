@@ -1043,7 +1043,25 @@ fn decode_image_payload(raw: &str) -> Result<(Vec<u8>, &'static str), String> {
     if bytes.is_empty() {
         return Err("upstream returned an empty image".into());
     }
+    // 认出来的以文件头为准，认不出来才退回声明的 MIME。
+    let ext = sniff_ext(&bytes).unwrap_or(ext);
     Ok((bytes, ext))
+}
+
+/// 按文件头认格式。
+///
+/// 不能信 MIME：images 端点回的是**裸 base64**，`extract_images_api` 只能给它安
+/// 一个 `data:image/png` 的壳，而 xAI 那边回的其实是 JPEG。存成 .png 的 JPEG 看图
+/// 工具大多能打开，按扩展名分发的那些（打包器、上传接口、素材流水线）会当场报错，
+/// 而错误信息指向的是文件本身，没人会想到是生图那一步给错了名字。
+fn sniff_ext(bytes: &[u8]) -> Option<&'static str> {
+    match bytes {
+        [0xFF, 0xD8, 0xFF, ..] => Some("jpg"),
+        [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, ..] => Some("png"),
+        [b'G', b'I', b'F', b'8', ..] => Some("gif"),
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => Some("webp"),
+        _ => None,
+    }
 }
 
 fn ext_of(meta: &str) -> &'static str {
@@ -1308,9 +1326,35 @@ mod tests {
         );
     }
 
-    /// 扩展名跟着 MIME 走：存成 .png 的 webp 会让一部分工具打不开。
+    /// 文件头和 MIME 打架时以文件头为准。
+    ///
+    /// 这不是假设出来的：xAI 的 images 端点回裸 base64，`extract_images_api` 给它
+    /// 安的壳写死是 `image/png`，实际字节是 JPEG（`ff d8 ff e0`）。
+    #[test]
+    fn the_magic_bytes_win_over_a_wrong_mime() {
+        let jpeg = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            [0xFFu8, 0xD8, 0xFF, 0xE0, 0x00, 0x10].as_slice(),
+        );
+        // 走 images 端点时套的就是这个壳
+        assert_eq!(
+            decode_image_payload(&format!("data:image/png;base64,{jpeg}")).unwrap().1,
+            "jpg",
+        );
+        // 裸 base64 同样认得出来，不再一律当 png
+        assert_eq!(decode_image_payload(&jpeg).unwrap().1, "jpg");
+
+        let png = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            [0x89u8, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A].as_slice(),
+        );
+        assert_eq!(decode_image_payload(&png).unwrap().1, "png");
+    }
+
+    /// 文件头认不出来时才轮到 MIME —— 那是兜底，不是主依据。
     #[test]
     fn extension_follows_the_mime_type() {
+        // `aGk=` 是 "hi"，没有任何图片文件头，所以走的都是兜底那条
         let png = "data:image/png;base64,aGk=";
         assert_eq!(decode_image_payload(png).unwrap().1, "png");
         assert_eq!(decode_image_payload("data:image/jpeg;base64,aGk=").unwrap().1, "jpg");
