@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Boxes, Check, Eye, FileText, Image as ImageIcon } from "lucide-react";
+import { AlertTriangle, Boxes, Check, Eye, FileText, Image as ImageIcon } from "lucide-react";
 import { api } from "../lib/api";
 import { cn } from "../lib/cn";
 import { errText } from "../lib/err";
@@ -38,6 +38,26 @@ function sameSpec(a: InjectSpec, b: InjectSpec): boolean {
   return key(a.tools) === key(b.tools);
 }
 
+/// 说明写了、服务器没装。
+///
+/// 这两段说明的全部作用是「让模型想起来调那个工具」，工具不存在时它一样会想起来 ——
+/// 然后找不到，再自己编一条路（手写 SVG 冒充生成的图就是这么来的），比不写还坏。
+/// 装在「模型导入」页而说明勾在这一页，两件事隔着一个页面，光看这里根本发现不了。
+function MissingMcp({ server, panel }: { server: string; panel: string }) {
+  const t = useT();
+  return (
+    <span className="mt-2 flex items-start gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-xs">
+      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600" />
+      <span>
+        {t("{server} 还没装到任何 CLI —— 只写说明不装服务器，等于教模型去调一个不存在的工具。先到「模型导入」页最下面的「{panel}」装一下。", {
+          server,
+          panel,
+        })}
+      </span>
+    </span>
+  );
+}
+
 export function InjectPage() {
   const t = useT();
   const [message, setMessage] = useState<string | null>(null);
@@ -48,6 +68,14 @@ export function InjectPage() {
     for (const s of states.data ?? []) m.set(s.target, s);
     return m;
   }, [states.data]);
+
+  // 这两段说明教的是**自带的两个 MCP 服务器**怎么用。服务器一家都没装的时候
+  // 把说明写进去，等于教模型调一个不存在的工具 —— 它会照着找，找不到，然后
+  // 自己编一条路（手写 SVG 凑数就是这么来的）。所以得当场说清楚。
+  const visionMcp = useQuery({ queryKey: ["vision-mcp-state"], queryFn: api.visionMcpState });
+  const imageMcp = useQuery({ queryKey: ["image-mcp-state"], queryFn: api.imageMcpState });
+  const visionMissing = !!visionMcp.data && !visionMcp.data.some((s) => s.installed);
+  const imageMissing = !!imageMcp.data && !imageMcp.data.some((s) => s.installed);
 
   const [spec, setSpec] = useState<InjectSpec>({
     vision: true,
@@ -209,6 +237,9 @@ export function InjectPage() {
                 "装上 ccload-vision 不等于模型会用它 —— 它只看得见工具名和一句描述，遇到图片会不会想起来调全看运气，而文本模型甚至不知道自己「看不见」。这段会明确告诉它：你看不见图片，遇到 [Image 1] 这种没有路径的占位符时必须调工具并把 image 设成对应编号，不要让用户把图另存一份。",
               )}
             </span>
+            {visionMissing && (
+              <MissingMcp server="ccload-vision" panel={t("视觉辅助 MCP")} />
+            )}
           </span>
         </label>
       </div>
@@ -232,6 +263,7 @@ export function InjectPage() {
                 "模型不会主动想到「这张图我自己就能画」，默认反应是让你去找别的工具或者拿 SVG 凑数。这段会告诉它：图标、精灵图、贴图、UI 草图都可以用 generate_image 直接生成，改图用 edit_image（原图不动），以及结果回来的是磁盘路径而不是图本身 —— 要看画成什么样得接着调 describe_image。",
               )}
             </span>
+            {imageMissing && <MissingMcp server="ccload-image" panel={t("生图 MCP")} />}
           </span>
         </label>
       </div>

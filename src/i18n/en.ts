@@ -870,4 +870,6 @@ registerDict("en", {
   写到哪几家: "Write to which CLIs",
   "上面勾的内容按下这一行的「写入 / 更新」才落到文件里":
     "What you ticked above only reaches the file when you press Write / Update on one of these rows",
+  "{server} 还没装到任何 CLI —— 只写说明不装服务器，等于教模型去调一个不存在的工具。先到「模型导入」页最下面的「{panel}」装一下。":
+    "{server} is not installed on any CLI — writing the guidance without the server teaches the model to call a tool that isn't there. Install it from “{panel}” at the bottom of the Model import page first.",
 });
