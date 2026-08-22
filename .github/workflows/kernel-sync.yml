@@ -1,0 +1,154 @@
+name: Kernel Sync
+
+# 上游内核发了新 tag，就把 KERNEL_VERSION 跟上去，并触发一次 beta 打包。
+#
+# 为什么值得自动化：壳体和内核是分开的两个仓库，内核几乎每天都出 beta，而绝大
+# 多数内核改动**不需要壳体改一行代码**（协议转换、渠道、故障转移全在内核里）。
+# 人工跟版的结果就是忘记跟，于是发出去的包带着几周前的内核，用户在客户端里看到
+# 的「打包内核」和自己远端跑的对不上。
+#
+# 但「自动跟」不等于「闭眼跟」：内核偶尔会引入新的构建前置（比如 v4.7.3 那次加
+# 的 third_party/cursor-sdk-bridge），跟错了就是把一个编不出来的钉子推上 main。
+# 所以这里**先编一遍内核，编得出来才提交** —— 这条 job 的价值一大半在这一步。
+#
+# 手动触发可以指定 tag（回退到某一版，或者抢在 release 之前试一个）。
+
+on:
+  schedule:
+    # 每小时的第 17 分钟。避开整点 —— GitHub 的 cron 在整点排队最长，
+    # 而这条任务不急，晚十几分钟没有任何代价。
+    - cron: '17 * * * *'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要钉的内核 tag（留空 = 上游最新的一个 release，含 prerelease）'
+        required: false
+        default: ''
+      dry_run:
+        description: '只看会跟到哪一版，不提交也不打包'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write
+  # 用来 `gh workflow run beta.yml`。GITHUB_TOKEN 推的 commit **不会**触发其它
+  # workflow（GitHub 防死循环的硬规则），所以打包必须显式派发，不能指望 push。
+  actions: write
+
+concurrency:
+  # 不要 cancel-in-progress：这条 job 会推 commit，跑到一半被掐掉可能留下
+  # 「KERNEL_VERSION 改了但内核没编过」的中间状态。宁可排队。
+  group: kernel-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Follow upstream kernel
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: false
+
+      - name: Resolve upstream tag
+        id: up
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCED: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          CURRENT=$(tr -d '[:space:]' < KERNEL_VERSION)
+          if [ -n "$FORCED" ]; then
+            LATEST="$FORCED"
+            echo "手动指定：$LATEST"
+          else
+            # 用 /releases 而不是 /releases/latest：内核发的是 beta，而
+            # /releases/latest 按定义**跳过 prerelease**，用它会永远停在上一个
+            # 正式版上，看着像「已经是最新」。列表接口按创建时间倒序，第一条
+            # 就是最新的那个（含 prerelease）。
+            LATEST=$(gh api 'repos/caidaoli/ccLoad/releases?per_page=1' -q '.[0].tag_name')
+          fi
+          [ -n "$LATEST" ] && [ "$LATEST" != "null" ] || { echo "::error::拿不到上游 tag"; exit 1; }
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST"   >> "$GITHUB_OUTPUT"
+          if [ "$CURRENT" = "$LATEST" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "已经是 $CURRENT，无事可做。"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::内核 $CURRENT → $LATEST"
+          fi
+
+      - name: Pin and build the new kernel
+        if: steps.up.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          printf '%s\n' '${{ steps.up.outputs.latest }}' > KERNEL_VERSION
+          npm ci
+          npm run kernel:fetch
+          # 真正的门：编不出来就别提交。内核偶尔会加构建前置，这一步是唯一
+          # 能在推 main 之前发现它的地方。顺带重新生成 kernel-version.txt
+          # （壳体 include_str! 它，用来在不启动内核时显示打包版本）。
+          npm run kernel:build
+          npm run typecheck
+
+      - name: Commit and push
+        if: steps.up.outputs.changed == 'true' && inputs.dry_run != true
+        run: |
+          set -euo pipefail
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add KERNEL_VERSION src-tauri/kernel-version.txt
+          # 只有这两个文件会变。别的东西冒出来说明这条 job 干了不该干的事，
+          # 与其带着未知改动推上 main，不如红在这里。
+          if ! git diff --cached --quiet -- . ':(exclude)KERNEL_VERSION' ':(exclude)src-tauri/kernel-version.txt'; then
+            echo "::error::除了版本钉子还有别的改动，停下"
+            git diff --cached --stat
+            exit 1
+          fi
+          git diff --cached --quiet && { echo "没有实际差异"; exit 0; }
+          # 提交信息走 heredoc 而不是 `-m "多行"`：多行字符串直接写在 YAML 的
+          # 块标量里，续行顶到第 0 列就把块标量本身截断了，整个 workflow 解析失败。
+          cat > /tmp/msg.txt <<EOF
+          chore(kernel): 内核钉到 ${{ steps.up.outputs.latest }}
+
+          上游从 ${{ steps.up.outputs.current }} 发到了 ${{ steps.up.outputs.latest }}，由 kernel-sync
+          自动跟随。内核已在本次 CI 上完整编过一遍（universal 的合成在打包那条
+          流水线上做），typecheck 也过了。
+
+          壳体代码没有改动 —— 这条提交只动版本钉子。内核那边具体改了什么见
+          https://github.com/caidaoli/ccLoad/releases/tag/${{ steps.up.outputs.latest }}
+          EOF
+          sed -i 's/^          //' /tmp/msg.txt
+          git commit -F /tmp/msg.txt
+          git push origin HEAD:main
+
+      - name: Trigger beta build
+        if: steps.up.outputs.changed == 'true' && inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run beta.yml -f ref=main
+          echo "::notice::已派发 beta 打包（内核 ${{ steps.up.outputs.latest }}）"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "| | |"
+            echo "|---|---|"
+            echo "| 仓库当前钉的 | \`${{ steps.up.outputs.current }}\` |"
+            echo "| 上游最新 | \`${{ steps.up.outputs.latest }}\` |"
+            echo "| 是否跟随 | ${{ steps.up.outputs.changed }} |"
+            echo "| dry run | ${{ inputs.dry_run || false }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
