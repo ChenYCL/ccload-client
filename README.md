@@ -193,7 +193,14 @@ Turn on “sandbox CLI writes” while developing. Building from source and cont
 
 Every build compiles in a copy of the [ccLoad](https://github.com/caidaoli/ccLoad) kernel, pinned by a single-line file at the repo root: `KERNEL_VERSION`. Changing kernel version is editing that line — visible in the diff, identical for CI and for your laptop. The kernel source does not live in this repository (the hard rule is that we do not modify it).
 
-Following upstream is automatic. `.github/workflows/kernel-sync.yml` checks the newest upstream release hourly — including prereleases, since the kernel ships betas — and when it differs, it follows, commits, and dispatches a beta build. **The kernel is compiled before anything is committed**: upstream occasionally introduces a new build prerequisite, and that should fail in the sync pipeline rather than land an unbuildable pin on `main`.
+Following upstream is automatic, on two tracks. `.github/workflows/kernel-sync.yml` checks the newest upstream release hourly and picks the output track from **what kind of release that was**:
+
+| Upstream shipped | We ship | Client version |
+|---|---|---|
+| A prerelease (beta) | A beta package (prerelease) | Untouched |
+| A stable release | A **draft** release, published by hand | Patch +1, and a tag is pushed |
+
+Two gates: **the kernel is compiled before anything is committed** (upstream occasionally introduces a new build prerequisite, and that should fail in the sync pipeline rather than land an unbuildable pin on `main`), and the stable track produces a draft — the packages are hundreds of megabytes, so a human always clicks Publish.
 
 Settings shows the bundled kernel and the running kernel side by side, so a mismatch is visible at a glance.
 

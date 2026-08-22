@@ -323,18 +323,37 @@ release —— 包体上百 MB，发出去之前人眼看一眼产物齐不齐�
 Apple 签名相关的 secret 没配时流水线照常出未签名包（用户首次打开需右键「打开」），
 不会因为缺开发者账号整条红掉。
 
-**跟内核版本 —— 自动。** `.github/workflows/kernel-sync.yml` 每小时看一眼上游最新
-release，和 `KERNEL_VERSION` 不一样就跟上、提交、派发一次 beta。几个点：
+**跟内核版本 —— 自动，两条线。** `.github/workflows/kernel-sync.yml` 每小时看一眼
+上游最新 release，和 `KERNEL_VERSION` 不一样就跟上、提交，然后按**上游那一版的
+性质**决定出什么包：
+
+| 上游发的 | 我们出的 | 客户端版本号 |
+| --- | --- | --- |
+| prerelease（beta） | `beta.yml` → prerelease 包 | 不动 |
+| 正式版 | `release.yml` → **草稿** release | patch +1，并推 tag |
+
+只有一个 `KERNEL_VERSION`，不会左右横跳：它只往「上游最新的那一版」走，不管那版
+是什么性质，分叉的只是出包这一步。几个点：
 
 * 取版本用 `/releases` 而不是 `/releases/latest` —— 后者按定义跳过 prerelease，
   而内核发的正是 beta（实测会停在 v4.7.0，落后三个 beta 却看着像最新）。
+  prerelease 标志也从这里读，**别去猜 tag 里有没有 `-beta`**，上游哪天换个后缀
+  就走错线了；手动指定 tag 时同样回头问一次。
 * **提交之前先 `kernel:build` 编一遍。** 内核偶尔会引入新的构建前置
   （v4.7.3 加的 `third_party/cursor-sdk-bridge` 就是一次），编不出来该红在这条
   流水线上，而不是把一个编不出来的钉子推上 `main`。
-* 打包必须显式 `gh workflow run`：GITHUB_TOKEN 推的 commit 不会触发其它
-  workflow，这是 GitHub 防死循环的硬规则。
-* 手动触发能指定 tag（回退某一版，或抢在 release 前试），`dry_run` 只跑到编译
-  为止，不提交也不打包。
+* 出包必须显式 `gh workflow run`：GITHUB_TOKEN 推的 commit **和 tag** 都不会触发
+  其它 workflow，这是 GitHub 防死循环的硬规则。正式版那条还必须带
+  `--ref <tag>` —— `release.yml` 的 publish job 条件是
+  `startsWith(github.ref, 'refs/tags/v')`，从分支派发会照常编三平台却**不发布
+  任何东西**，白跑三十分钟。
+* 正式版线改四处版本号（`package.json` / `tauri.conf.json` / `Cargo.toml` /
+  `Cargo.lock`）。`Cargo.lock` 是手改的那一行 —— 为了一个版本号在这条 job 里装
+  Rust 加一整套 webkit 依赖不划算，改的是同一个字段，本机 `cargo check` 验过不会
+  再动它。
+* 正式版出的是**草稿**，点 Publish 的永远是人。
+* 手动触发能指定 tag（回退某一版，或抢在 release 前试），`dry_run` 只跑到编译和
+  算版本号为止，不提交、不打 tag、不出包。
 
 要临时停掉跟版就在 Actions 里禁用这条 workflow；别改 cron 表达式来「关掉它」，
 下一个改的人看不出那是关的意思。
