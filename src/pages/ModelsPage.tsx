@@ -834,7 +834,7 @@ function ImagePanel({
   const options = useMemo(
     () => [...new Set([...aliases, ...installedModels])].sort(),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [aliases.join(" "), installedModels.join(" ")],
+    [aliases.join("\0"), installedModels.join("\0")],
   );
 
   // 必须串行：五路并行会同时改 backups/manifest.json，短写入叠在旧文件尾巴上。
