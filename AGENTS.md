@@ -221,6 +221,31 @@ CLI 的只是一条指向本二进制的 stdio 命令，没有第二个东西要
   当场报错，且报错指向文件本身，没人会想到是生图那一步给错了名字。见
   `sniff_ext()`。
 
+### 生图 404 `upstream endpoint unsupported` 时，先看内核设置
+
+这个 404 长得像上游返回的，其实是**内核在请求发出去之前自己拒的** —— 它连一条
+日志都不会产生（`proxy_forward.go` 里 `protocolCandidates` 为空的那个分支）。
+去查上游账号是白费功夫，要看的是渠道能不能承载 images 请求族：
+
+* images 请求族在 `protocol/types.go` 的
+  `supportedTransformFamiliesByClientAndUpstream` 里**一条跨协议转换都没有**，
+  所以承载它的 URL 必须**自己声明 `openai`** —— 声明别的协议一律不匹配。
+* 而 OAuth 渠道有一层盖在渠道配置之上的东西：`oauth_base_url.go` 的
+  `withOAuthBaseURLOverride`。内核设置里 `XAI_BASE_URL`（以及 Codex /
+  Antigravity / Anthropic 各自对应的那个）**只要非空**，就会把该类**所有** OAuth
+  渠道的整张 URL 表替换成一条，协议写死。xAI 那条写死的是 `codex`。
+
+  也就是说：那个设置一填，往渠道里加多少条 `openai` URL 都没用，运行时看不见。
+  改渠道之前先确认这个设置是空的，否则会得出「加了 URL 也不生效」的错误结论。
+* 拆开之后 chat 和生图各走各的：chat 渠道保持 `cli-chat-proxy.grok.com/v1` +
+  `codex`；生图单独一个渠道，URL 是 `https://api.x.ai` + `protocols:["openai"]`，
+  **不带 `/v1`** —— 代理转发的是客户端原样的 `/v1/images/generations`，base 再带
+  一个就成了 `/v1/v1/…`。（内核自己的 admin 生图测试用的是 base=`…/v1` +
+  path=`/images/generations`，那是另一套拼法，照抄会错。）
+
+  别把两者塞进同一个渠道：多 URL 的首跳是**加权随机**的
+  （`url_fallback.go`），chat 会有一部分被分流到 `api.x.ai` 上去。
+
 装了不等于会被用：**「系统注入」页里还要勾上对应那一段**，把「什么时候该想起
 这个工具」写进各 CLI 的全局指令文件（`services/system_inject.rs`）。那两段里的
 工具名和 `tool_specs()` 必须一致，有测试盯着。
