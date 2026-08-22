@@ -617,8 +617,16 @@ registerDict("en", {
   "这里不做自动筛选：第三方目录里没有「能不能生图」这一项，猜错会把你真正能用的那个模型藏掉。选一个渠道里确实能出图的别名。":
     "No auto-filtering here: the third-party catalog has no “can it generate images” field, and guessing wrong would hide the very model you can use. Pick an alias that one of your channels can actually draw with.",
   走哪条路: "Which endpoint",
+  已改成自动: "switched to auto",
+  改写失败: "rewrite failed",
+  "已装的 {n} 家钉死在一条端点上（配置里存的值，换新版客户端不会自己变）。改成「自动」后会按模型挑端点，上游说走错了就当场换一条重试。":
+    "{n} installed CLI(s) are pinned to one endpoint — that value lives in their config files, so updating the client does not change it. Switch to Auto and the endpoint is picked per model, with an immediate retry on the other one if the upstream says it is the wrong endpoint.",
+  "这 {n} 家改成自动": "Switch these {n} to auto",
+  "自动（按模型挑，推荐）": "Auto (pick by model — recommended)",
   "对话生图（能生成也能改图）": "Chat (generate and edit)",
   "生图端点（只能生成）": "Images endpoint (generate only)",
+  "按模型名挑端点：grok-imagine / gpt-image / dall-e 走生图端点，其余先走对话；上游要是回「这个模型不在这个端点上」就当场换另一条重试。改图永远走对话。":
+    "Picks the endpoint from the model name: grok-imagine / gpt-image / dall-e go to the images endpoint, everything else tries chat first; if the upstream answers “this model is not available on this endpoint”, it retries on the other one right away. Editing always goes through chat.",
   '/v1/chat/completions + modalities:["image"]，尺寸按宽高比给（1:1@2k）。':
     '/v1/chat/completions + modalities:["image"]; size is an aspect ratio (1:1@2k).',
   "/v1/images/generations，尺寸按像素给（1024x1024）。这条路的请求体里没有放输入图的位置，所以 edit_image 用不了。":

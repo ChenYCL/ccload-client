@@ -59,25 +59,100 @@ const ENV_DIR: &str = "CCLOAD_IMAGE_DIR";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ImageApi {
-    /// `/v1/chat/completions` + `modalities:["image"]`。**能改图**，所以是默认。
+    /// 按模型挑，挑错了当场换另一条重试。**默认**，也是唯一一个不需要用户
+    /// 懂端点差异的选项。
+    Auto,
+    /// `/v1/chat/completions` + `modalities:["image"]`。**能改图**。
     Chat,
-    /// `/v1/images/generations`。标准 OpenAI 形状，只能生成。
+    /// `/v1/images/generations`。只能生成。
     Images,
 }
 
 impl ImageApi {
     fn as_str(self) -> &'static str {
         match self {
+            Self::Auto => "auto",
             Self::Chat => "chat",
             Self::Images => "images",
         }
     }
 
-    /// 认不出来一律当 chat：那是能力更全的一条，猜错的代价小。
+    /// 认不出来一律当 auto。
+    ///
+    /// 以前这里默认 chat，代价是：装的时候选错一次，之后每次生图都失败，而错误
+    /// 信息说的是上游的话（「这个模型不在这个端点上」），没人会想到要回客户端改
+    /// 一个下拉框。让它自己试才是对的。
     fn parse(raw: &str) -> Self {
         match raw.trim().to_ascii_lowercase().as_str() {
             "images" => Self::Images,
-            _ => Self::Chat,
+            "chat" => Self::Chat,
+            _ => Self::Auto,
+        }
+    }
+
+    /// 报错里写给人看的端点名。`Auto` 到不了这里（`plan()` 只吐具体的两条），
+    /// 但补一个兜底比 `unreachable!()` 好 —— 生图失败不值得 panic 掉整个 MCP。
+    fn endpoint_label(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Chat => "/v1/chat/completions",
+            Self::Images => "/v1/images/generations",
+        }
+    }
+
+    /// 这一次调用按什么顺序试。
+    ///
+    /// `editing` 时只可能是 chat —— images 端点的 JSON 里根本没有放输入图的位置，
+    /// 排上去也是白跑一趟 400。
+    fn plan(self, model: &str, editing: bool) -> &'static [ImageApi] {
+        match self {
+            Self::Chat => &[Self::Chat],
+            Self::Images => &[Self::Images],
+            Self::Auto if editing => &[Self::Chat],
+            Self::Auto if images_only_model(model) => &[Self::Images, Self::Chat],
+            Self::Auto => &[Self::Chat, Self::Images],
+        }
+    }
+}
+
+/// 这个模型是不是「只认 images 端点」的那一类。
+///
+/// 不是拍脑袋分的，是这两家上游会把 chat 请求直接顶回来：
+///
+/// * xAI 的 `grok-imagine-*` —— 原话是 “is an image model and is therefore not
+///   available on this endpoint. Please use ... /v1/images/generations”。
+/// * OpenAI 的 `gpt-image-*` / `dall-e-*` —— 从来就没上过 chat completions；
+///   内核自己也把它们钉在 images 端点上（`admin_testing_image.go:742`
+///   `canonicalCodexImageModel`）。
+///
+/// 反过来 Gemini 那一挂（`*-image-preview`、nano banana）只有 chat 这一条路，
+/// 所以剩下的全部先试 chat —— 顺带保住改图能力。
+fn images_only_model(model: &str) -> bool {
+    let m = model.to_ascii_lowercase();
+    m.contains("imagine") || m.contains("gpt-image") || m.contains("dall-e") || m.contains("dalle")
+}
+
+/// images 端点上的 body 要写成哪一家的形状。
+///
+/// 这一条是整个模块最容易想当然的地方：MCP 打的是内核的**代理**口，而 images
+/// 请求族在 `protocol/types.go:79` 那张转换表里**一条登记都没有** —— 内核不会
+/// 替我们改写 body，原样转给上游。所以形状必须在这里就写对，照抄内核自己发请求
+/// 时的 `admin_testing_image.go:719 imageGenerationRequestBody`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImageFamily {
+    /// xAI：`aspect_ratio` + `resolution`，没有 `size`，也没有 `n`。
+    Xai,
+    /// 标准 OpenAI：`size` 写像素。
+    OpenAi,
+}
+
+impl ImageFamily {
+    fn of(model: &str) -> Self {
+        let m = model.to_ascii_lowercase();
+        if m.contains("grok") || m.contains("imagine") {
+            Self::Xai
+        } else {
+            Self::OpenAi
         }
     }
 }
@@ -100,6 +175,12 @@ pub struct ImageTargetState {
     pub installed: bool,
     pub model: Option<String>,
     pub api: Option<String>,
+    /// 图往哪写。空 = 后端默认目录。
+    ///
+    /// 要读回来是因为重装会整条重写 env —— 不知道原值就只能写默认目录，
+    /// 用户自己设的那个目录会被悄悄换掉，而他是从别的入口（比如「改成自动」）
+    /// 触发的重装，根本没想过会动到这一项。
+    pub out_dir: Option<String>,
     /// 装了，但里面存的内核地址 / 令牌已经过期 —— 每次生图都会 401。
     pub stale: bool,
 }
@@ -145,6 +226,7 @@ pub fn image_states(
                     installed: true,
                     model: Some(cfg.model).filter(|m| !m.is_empty()),
                     api: Some(cfg.api.as_str().to_string()),
+                    out_dir: Some(cfg.out_dir).filter(|d| !d.is_empty()),
                     stale: !(base_ok && token_ok),
                 }
             }
@@ -154,6 +236,7 @@ pub fn image_states(
                 installed: false,
                 model: None,
                 api: None,
+                out_dir: None,
                 stale: false,
             },
         })
@@ -309,9 +392,10 @@ fn tool_specs() -> Value {
                     "size": {
                         "type": "string",
                         "description":
-                            "Chat API: aspect ratio and tier, one of 1:1 16:9 9:16 3:2 2:3 \
-                             optionally with @1k or @2k (default 1:1@2k). Images API: pixel \
-                             dimensions like 1024x1024. Omit for the default.",
+                            "Either an aspect ratio — one of 1:1 16:9 9:16 3:2 2:3, optionally \
+                             with @1k or @2k — or pixel dimensions like 1024x1536. Both forms \
+                             work whichever model is configured; they are converted to whatever \
+                             that model's endpoint accepts. Omit for 1:1 at the default tier.",
                     },
                     "out_path": {
                         "type": "string",
@@ -392,24 +476,57 @@ async fn dispatch(name: &str, params: &Value) -> Result<Value, String> {
         other => return Err(format!("unknown tool: {other}")),
     };
 
-    // 改图必须走 chat：images API 的 JSON body 没有放输入图的位置。与其发出去
-    // 让上游回一个语焉不详的 400，不如在这里说清楚该怎么改配置。
+    // 改图必须走 chat：images API 的 JSON body 没有放输入图的位置。auto 会自己
+    // 避开（`plan()` 在 editing 时只排 chat），只有用户手动钉死 images 才会撞上
+    // 这里 —— 与其发出去让上游回一句语焉不详的 400，不如直接说该改哪。
     if !inputs.is_empty() && cfg.api == ImageApi::Images {
         return Err(
-            "edit_image needs the chat API, but this server is configured with \
-             CCLOAD_IMAGE_API=images (the Images API cannot take an input image). \
-             Switch it to chat in the ccLoad client."
+            "edit_image needs the chat API, but this server is pinned to \
+             CCLOAD_IMAGE_API=images (the Images API has no slot for an input image). \
+             In the ccLoad client, set \"Which endpoint\" back to Auto."
                 .into(),
         );
     }
 
     let size = params.get("size").and_then(Value::as_str).unwrap_or("");
-    let images = match cfg.api {
-        ImageApi::Chat => request_chat(&cfg, prompt, &inputs, size).await?,
-        ImageApi::Images => request_images(&cfg, prompt, size).await?,
-    };
+
+    // 按模型排好的顺序逐条试。只有「端点选错了」这一类错误才继续下一条：余额、
+    // 限流、提示词被拒换个端点也是一样的下场，白花一次钱。
+    let plan = cfg.api.plan(&cfg.model, !inputs.is_empty());
+    let mut images = Vec::new();
+    let mut failures: Vec<ApiErr> = Vec::new();
+    for (i, api) in plan.iter().enumerate() {
+        let attempt = match api {
+            ImageApi::Images => request_images(&cfg, prompt, size).await,
+            // Auto 不会进到这里（plan 里只排具体端点），chat 兜底。
+            _ => request_chat(&cfg, prompt, &inputs, size).await,
+        };
+        match attempt {
+            Ok(got) if !got.is_empty() => {
+                images = got;
+                break;
+            }
+            // 请求本身成功但一张图都没有：换端点也解决不了，当场停。
+            Ok(_) => {
+                failures.push(ApiErr {
+                    status: 200,
+                    message: "the model returned no image".into(),
+                    api: *api,
+                });
+                break;
+            }
+            Err(e) => {
+                let last = i + 1 == plan.len();
+                let retryable = e.wrong_surface();
+                failures.push(e);
+                if last || !retryable {
+                    break;
+                }
+            }
+        }
+    }
     if images.is_empty() {
-        return Err("the model returned no image".into());
+        return Err(render_failures(&cfg, &failures));
     }
 
     let explicit = params
@@ -418,7 +535,8 @@ async fn dispatch(name: &str, params: &Value) -> Result<Value, String> {
         .filter(|s| !s.is_empty());
     let mut lines = Vec::new();
     for (i, raw) in images.iter().enumerate() {
-        let path = save_image(&cfg, raw, explicit.filter(|_| i == 0), name, i)?;
+        let payload = materialize(raw.clone()).await?;
+        let path = save_image(&cfg, &payload, explicit.filter(|_| i == 0), name, i)?;
         lines.push(path);
     }
     Ok(mcp_text(format!(
@@ -440,7 +558,45 @@ fn env_config() -> Result<ImageConfig, String> {
     })
 }
 
-/// `1:1@2k` / `16:9` / `2k` → `(aspect_ratio, image_size)`。
+/// 那五个宽高比里的一个，或者不是。
+fn valid_aspect(s: &str) -> Option<&'static str> {
+    match s {
+        "1:1" => Some("1:1"),
+        "16:9" => Some("16:9"),
+        "9:16" => Some("9:16"),
+        "3:2" => Some("3:2"),
+        "2:3" => Some("2:3"),
+        _ => None,
+    }
+}
+
+/// `1024x1536` → 那五个宽高比里最接近的一个。
+///
+/// 不能只认死几个常见值：`size` 在工具描述里只有一个参数，模型按 OpenAI 的习惯
+/// 写像素是完全合理的，而 auto 可能把这次请求送去 chat 端点 —— 那边只认宽高比。
+/// 认不出来就当 1:1 的话，用户要的横图会变成方图，而且没有任何提示。
+fn aspect_of_pixels(raw: &str) -> Option<&'static str> {
+    let (w, h) = raw.split_once('x')?;
+    let w: f64 = w.trim().parse().ok()?;
+    let h: f64 = h.trim().parse().ok()?;
+    if w <= 0.0 || h <= 0.0 {
+        return None;
+    }
+    let ratio = w / h;
+    const TABLE: [(&str, f64); 5] = [
+        ("1:1", 1.0),
+        ("16:9", 16.0 / 9.0),
+        ("9:16", 9.0 / 16.0),
+        ("3:2", 1.5),
+        ("2:3", 2.0 / 3.0),
+    ];
+    TABLE
+        .iter()
+        .min_by(|a, b| (ratio - a.1).abs().total_cmp(&(ratio - b.1).abs()))
+        .map(|(name, _)| *name)
+}
+
+/// `1:1@2k` / `16:9` / `2k` / `1024x1536` → `(aspect_ratio, image_size)`。
 ///
 /// 取值范围抄自内核的 `validChatImageGenerationSize`：宽高比只认那五个，档位只认
 /// 1k/2k，而且内核会把档位转成大写。发一个它不认的值，上游直接 400。
@@ -449,27 +605,33 @@ fn chat_size(raw: &str) -> (String, String) {
     if s.is_empty() || s == "auto" {
         return ("1:1".into(), "2K".into());
     }
-    let (aspect, tier) = match s.split_once('@') {
+    let (head, tier) = match s.split_once('@') {
         Some((a, t)) => (a.to_string(), t.to_string()),
-        // 只给了一半：像 `16:9` 就是宽高比，像 `2k` 就是档位。
-        None if s.contains(':') => (s.clone(), "2k".to_string()),
+        // 只给了一半：像 `16:9`、`1024x1536` 是宽高比那一半，像 `2k` 是档位那一半。
+        None if s.contains(':') || s.contains('x') => (s.clone(), "2k".to_string()),
         None => ("1:1".to_string(), s.clone()),
     };
-    let aspect = match aspect.as_str() {
-        "1:1" | "16:9" | "9:16" | "3:2" | "2:3" => aspect,
-        _ => "1:1".into(),
-    };
+    let aspect = valid_aspect(&head)
+        .or_else(|| aspect_of_pixels(&head))
+        .unwrap_or("1:1");
     let tier = if tier == "1k" { "1K" } else { "2K" };
-    (aspect, tier.into())
+    (aspect.into(), tier.into())
 }
 
 /// 像素尺寸。内核的 `validImageGenerationSize` 要求 64–8192，非法就退回默认，
 /// 不要把一个注定 400 的值发出去。
-fn images_size(raw: &str) -> String {
+///
+/// 也认宽高比写法（`16:9`、`16:9@2k`）—— `size` 这个参数在工具描述里只有一个，
+/// 而 auto 会替模型挑端点，所以模型没法知道该用哪种写法。宽高比换成像素时必须
+/// 挑一个**这个模型收得下**的值：gpt-image 只认 1024x1024 / 1536x1024 /
+/// 1024x1536，dall-e 3 只认 1024x1024 / 1792x1024 / 1024x1792，给别的直接 400。
+/// 所以这里不做等比换算，只判断横竖。档位（@1k/@2k）在这条路上没有对应字段，丢掉。
+fn images_size(model: &str, raw: &str) -> String {
     let s = raw.trim().to_ascii_lowercase();
     if s.is_empty() || s == "auto" {
         return "1024x1024".into();
     }
+    // 用户显式给了像素就照发，别替他改。
     if let Some((w, h)) = s.split_once('x') {
         if let (Ok(w), Ok(h)) = (w.parse::<u32>(), h.parse::<u32>()) {
             if (64..=8192).contains(&w) && (64..=8192).contains(&h) {
@@ -477,7 +639,41 @@ fn images_size(raw: &str) -> String {
             }
         }
     }
-    "1024x1024".into()
+    let aspect = s.split_once('@').map(|(a, _)| a).unwrap_or(s.as_str());
+    let dalle = {
+        let m = model.to_ascii_lowercase();
+        m.contains("dall-e") || m.contains("dalle")
+    };
+    match aspect {
+        "16:9" | "3:2" => if dalle { "1792x1024" } else { "1536x1024" },
+        "9:16" | "2:3" => if dalle { "1024x1792" } else { "1024x1536" },
+        _ => "1024x1024",
+    }
+    .into()
+}
+
+/// xAI 的 `aspect_ratio`。三种写法都要认：我们自己的 `16:9@2k`、光一个宽高比、
+/// 以及用户按 OpenAI 习惯写的像素。取值范围同内核 `xaiImageAspectRatio`。
+fn xai_aspect(raw: &str) -> String {
+    let s = raw.trim().to_ascii_lowercase();
+    let head = s.split_once('@').map(|(a, _)| a).unwrap_or(s.as_str());
+    valid_aspect(head)
+        .or_else(|| aspect_of_pixels(head))
+        .unwrap_or("1:1")
+        .into()
+}
+
+/// xAI 的 `resolution`（`1k` / `2k`）。同样抄 `xaiImageResolution`：注意它和
+/// chat 那条不一样，这里是**小写**。
+fn xai_resolution(raw: &str) -> String {
+    let s = raw.trim().to_ascii_lowercase();
+    if let Some((_, tier)) = s.split_once('@') {
+        return tier.to_string();
+    }
+    if s.contains("2048") || s == "2k" {
+        return "2k".into();
+    }
+    "1k".into()
 }
 
 fn http() -> Result<reqwest::Client, String> {
@@ -500,7 +696,7 @@ async fn request_chat(
     prompt: &str,
     inputs: &[Image],
     size: &str,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, ApiErr> {
     let (aspect_ratio, image_size) = chat_size(size);
     let mut content: Vec<Value> = inputs
         .iter()
@@ -522,40 +718,183 @@ async fn request_chat(
     Ok(extract_chat_images(&resp))
 }
 
-/// `/v1/images/generations`，标准 OpenAI 形状。
-async fn request_images(cfg: &ImageConfig, prompt: &str, size: &str) -> Result<Vec<String>, String> {
-    let body = json!({
-        "model": cfg.model,
-        "prompt": prompt,
-        "size": images_size(size),
-        "n": 1,
-    });
+/// `/v1/images/generations` 的请求体。形状按模型所属的那一家写 —— 内核对 images
+/// 请求族没有注册任何跨协议转换（`protocol/types.go` 的
+/// `supportedTransformFamiliesByClientAndUpstream` 里一条都没有），也就是说我们
+/// 发什么上游就原样收到什么，形状错了没人会替我们纠。
+fn images_body(model: &str, prompt: &str, size: &str) -> Value {
+    match ImageFamily::of(model) {
+        // 抄自内核的 `xaiImageGenerationRequestBody`：xAI 不认 `size`，尺寸拆成
+        // 宽高比 + 档位两个字段；`n` 也不要。
+        ImageFamily::Xai => json!({
+            "model": model,
+            "prompt": prompt,
+            "response_format": "b64_json",
+            "aspect_ratio": xai_aspect(size),
+            "resolution": xai_resolution(size),
+        }),
+        ImageFamily::OpenAi => {
+            let mut body = json!({
+                "model": model,
+                "prompt": prompt,
+                "size": images_size(model, size),
+                "n": 1,
+            });
+            // dall-e 默认回的是**链接**，不显式要 base64 就得多跑一趟下载；
+            // gpt-image 系列正好相反 —— 它们只回 base64，多送一个
+            // `response_format` 会被顶回来（“Unknown parameter”）。
+            let m = model.to_ascii_lowercase();
+            if m.contains("dall-e") || m.contains("dalle") {
+                body["response_format"] = Value::from("b64_json");
+            }
+            body
+        }
+    }
+}
+
+/// `/v1/images/generations`。
+async fn request_images(
+    cfg: &ImageConfig,
+    prompt: &str,
+    size: &str,
+) -> Result<Vec<String>, ApiErr> {
+    let body = images_body(&cfg.model, prompt, size);
     let resp = post(cfg, "/v1/images/generations", &body).await?;
     Ok(extract_images_api(&resp))
 }
 
-async fn post(cfg: &ImageConfig, path: &str, body: &Value) -> Result<Value, String> {
+/// 上游回链接的时候把图下下来，换成 data URL 交给 `save_image`。
+///
+/// 不是所有上游都听 `response_format` —— 网关、代理、老一点的实现都可能塞一个
+/// 短期有效的 URL 回来。我们要落盘的是文件，链接放着不管等于生图失败，而且失败
+/// 得莫名其妙（「明明画出来了」）。
+async fn materialize(raw: String) -> Result<String, String> {
+    if !raw.starts_with("http://") && !raw.starts_with("https://") {
+        return Ok(raw);
+    }
+    // 这里**不**关代理：图在上游的 CDN 上，不像内核那样一定在 127.0.0.1。
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| format!("build http client: {e}"))?;
+    let resp = client
+        .get(&raw)
+        .send()
+        .await
+        .map_err(|e| format!("cannot download the generated image ({raw}): {e}"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!(
+            "cannot download the generated image ({raw}): HTTP {status}"
+        ));
+    }
+    let mime = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("image/png")
+        .to_string();
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("cannot read the generated image ({raw}): {e}"))?;
+    Ok(format!("data:{mime};base64,{}", b64(&bytes)))
+}
+
+/// 一次上游尝试的失败。留着 status 是为了判断「是不是端点选错了」——
+/// 光有一句人话读不出这个。
+struct ApiErr {
+    status: u16,
+    message: String,
+    /// 这一条是打哪个端点打出来的，进最终错误信息时要说清楚。
+    api: ImageApi,
+}
+
+impl ApiErr {
+    /// 这条错误是不是在说「你打错端点了」。是的话换另一条还有救，不是的话
+    /// （余额、限流、提示词被拒）换了也一样，别浪费一次调用和一次计费。
+    fn wrong_surface(&self) -> bool {
+        let m = self.message.to_ascii_lowercase();
+        // 内核在请求发出去之前自己拒的：这条渠道没有 URL 声明 openai 协议。
+        // 换 chat 端点是有意义的 —— chat 请求族有跨协议转换，走得通。
+        if self.status == 404 && m.contains("upstream endpoint unsupported") {
+            return true;
+        }
+        if !(self.status == 400 || self.status == 404 || self.status == 405) {
+            return false;
+        }
+        m.contains("not available on this endpoint")
+            || m.contains("images/generations")
+            || m.contains("is an image model")
+            || m.contains("unsupported endpoint")
+            || m.contains("no such endpoint")
+            || m.contains("does not support")
+    }
+}
+
+/// 把几次失败的尝试拼成一句人话。
+///
+/// 这条错误是在 CLI 里被读的 —— 用户看不到客户端的日志，也看不到内核的日志。
+/// 所以「打了哪个端点」「上游怎么说的」「下一步该动哪里」三样都得写进去，
+/// 否则读到的只有一个 404，谁也不知道是模型不对、渠道不对还是钱不够。
+fn render_failures(cfg: &ImageConfig, failures: &[ApiErr]) -> String {
+    let mut out = format!("image generation failed for model `{}`", cfg.model);
+    for f in failures {
+        out.push_str(&format!(
+            "\n  · via {} endpoint: {}",
+            f.api.endpoint_label(),
+            f.message
+        ));
+    }
+    // 内核在请求发出去之前自己拒的。这个 404 长得像上游返回的，其实不是 ——
+    // 不点破的话用户会去查上游账号，而要改的是渠道那一行。
+    if failures
+        .iter()
+        .any(|f| f.status == 404 && f.message.to_ascii_lowercase().contains("upstream endpoint unsupported"))
+    {
+        out.push_str(
+            "\nhint: the kernel refused to route /v1/images/generations — the channel serving \
+             this model has no URL declaring the `openai` protocol, and the images request \
+             family has no cross-protocol conversion. Add an openai-protocol URL to that \
+             channel, or pick a model whose channel has one.",
+        );
+    }
+    out
+}
+
+async fn post(cfg: &ImageConfig, path: &str, body: &Value) -> Result<Value, ApiErr> {
+    let api = if path.contains("/images/") {
+        ImageApi::Images
+    } else {
+        ImageApi::Chat
+    };
+    let fail = |status: u16, message: String| ApiErr {
+        status,
+        message,
+        api,
+    };
     let endpoint = format!("{}{path}", cfg.base_url.trim_end_matches('/'));
-    let resp = http()?
+    let resp = http()
+        .map_err(|e| fail(0, e))?
         .post(&endpoint)
         .header("authorization", format!("Bearer {}", cfg.token))
         .header("x-api-key", &cfg.token)
         .json(body)
         .send()
         .await
-        .map_err(|e| format!("request to kernel failed: {e}"))?;
+        .map_err(|e| fail(0, format!("request to kernel failed: {e}")))?;
     let status = resp.status();
     let parsed: Value = resp
         .json()
         .await
-        .map_err(|e| format!("bad kernel response: {e}"))?;
+        .map_err(|e| fail(status.as_u16(), format!("bad kernel response: {e}")))?;
     if !status.is_success() {
         let msg = parsed
             .pointer("/error/message")
             .and_then(Value::as_str)
             .or_else(|| parsed.get("error").and_then(Value::as_str))
             .unwrap_or("unknown error");
-        return Err(format!("kernel returned HTTP {status}: {msg}"));
+        return Err(fail(status.as_u16(), format!("HTTP {status}: {msg}")));
     }
     Ok(parsed)
 }
@@ -724,15 +1063,158 @@ fn ext_of(meta: &str) -> &'static str {
 mod tests {
     use super::*;
 
-    /// 认不出来的 API 名一律当 chat —— 那是能力更全的一条（改图只有它能做），
-    /// 猜错的代价比反过来小。
+    /// 认不出来的 API 名一律当 auto —— 让它自己按模型试，比钉死在一条上强。
     #[test]
-    fn unknown_api_falls_back_to_chat() {
+    fn unknown_api_falls_back_to_auto() {
         assert_eq!(ImageApi::parse("images"), ImageApi::Images);
         assert_eq!(ImageApi::parse("IMAGES"), ImageApi::Images);
         assert_eq!(ImageApi::parse("chat"), ImageApi::Chat);
-        assert_eq!(ImageApi::parse(""), ImageApi::Chat);
-        assert_eq!(ImageApi::parse("dall-e"), ImageApi::Chat);
+        assert_eq!(ImageApi::parse("auto"), ImageApi::Auto);
+        // 老版本装进去的配置里这一项可能压根没有，或者写的是别的东西。
+        assert_eq!(ImageApi::parse(""), ImageApi::Auto);
+        assert_eq!(ImageApi::parse("dall-e"), ImageApi::Auto);
+    }
+
+    /// 用户钉死了就一条都不多试 —— 自动换端点会换掉一次计费，钉死的意思
+    /// 就是「别自作主张」。
+    #[test]
+    fn pinned_api_never_falls_back() {
+        assert_eq!(ImageApi::Chat.plan("grok-imagine-image", false), &[ImageApi::Chat]);
+        assert_eq!(
+            ImageApi::Images.plan("gemini-3-pro-image-preview", false),
+            &[ImageApi::Images]
+        );
+    }
+
+    /// auto 的顺序：先试那条更可能成的，另一条兜底。
+    #[test]
+    fn auto_orders_endpoints_by_model() {
+        // 只认 images 端点的两家：images 优先，chat 兜底（万一上游后来支持了）
+        assert_eq!(
+            ImageApi::Auto.plan("grok-imagine-image-2.0", false),
+            &[ImageApi::Images, ImageApi::Chat]
+        );
+        assert_eq!(
+            ImageApi::Auto.plan("gpt-image-1.5", false),
+            &[ImageApi::Images, ImageApi::Chat]
+        );
+        // 其余先 chat：Gemini 那一挂只有 chat 这一条路
+        assert_eq!(
+            ImageApi::Auto.plan("gemini-3-pro-image-preview", false),
+            &[ImageApi::Chat, ImageApi::Images]
+        );
+        // 改图只可能是 chat —— images 端点的 JSON 里没有放输入图的位置
+        assert_eq!(ImageApi::Auto.plan("gpt-image-1.5", true), &[ImageApi::Chat]);
+    }
+
+    /// 「端点选错了」和「余额不够」必须分得开：前者换一条还有救，后者换了
+    /// 也一样，白烧一次调用。
+    #[test]
+    fn only_wrong_endpoint_errors_are_retried() {
+        let err = |status: u16, message: &str| ApiErr {
+            status,
+            message: message.into(),
+            api: ImageApi::Chat,
+        };
+        // 内核在发出去之前自己拒的
+        assert!(err(404, "HTTP 404: upstream endpoint unsupported").wrong_surface());
+        // xAI 的原话
+        assert!(err(
+            400,
+            "HTTP 400: grok-imagine-image is an image model and is therefore not available on this endpoint",
+        )
+        .wrong_surface());
+        // 换端点救不了的
+        assert!(!err(401, "HTTP 401: invalid api key").wrong_surface());
+        assert!(!err(429, "HTTP 429: rate limit exceeded").wrong_surface());
+        assert!(!err(400, "HTTP 400: your prompt was rejected").wrong_surface());
+        assert!(!err(500, "HTTP 500: internal error").wrong_surface());
+    }
+
+    /// xAI 的 images 端点不认 `size`，认的是 `aspect_ratio` + `resolution`
+    /// （内核 `xaiImageAspectRatio` / `xaiImageResolution` 就是这么转的）。
+    #[test]
+    fn xai_size_splits_into_aspect_and_resolution() {
+        assert_eq!(xai_aspect("16:9@1k"), "16:9");
+        assert_eq!(xai_resolution("16:9@1k"), "1k");
+        assert_eq!(xai_aspect("1792x1024"), "16:9");
+        assert_eq!(xai_aspect("1024x1536"), "2:3");
+        assert_eq!(xai_aspect("garbage"), "1:1");
+        assert_eq!(xai_resolution(""), "1k");
+        assert_eq!(xai_resolution("2048x2048"), "2k");
+    }
+
+    /// 模型名决定 images 端点发什么形状的 body —— 内核对 images 请求族没有
+    /// 跨协议转换，我们发什么上游就收到什么。
+    #[test]
+    fn image_family_is_picked_by_model_name() {
+        assert!(matches!(ImageFamily::of("grok-imagine-image"), ImageFamily::Xai));
+        assert!(matches!(ImageFamily::of("Grok-2-Image"), ImageFamily::Xai));
+        assert!(matches!(ImageFamily::of("gpt-image-1.5"), ImageFamily::OpenAi));
+        assert!(matches!(ImageFamily::of("dall-e-3"), ImageFamily::OpenAi));
+    }
+
+    /// xAI 的 body 和 OpenAI 的完全不是一回事，而且 `response_format` 只能给
+    /// 认它的那些模型 —— gpt-image 系列收到会回「Unknown parameter」。
+    #[test]
+    fn images_body_is_shaped_per_family() {
+        let xai = images_body("grok-imagine-image", "a cat", "16:9@2k");
+        assert_eq!(xai["aspect_ratio"], "16:9");
+        assert_eq!(xai["resolution"], "2k");
+        assert_eq!(xai["response_format"], "b64_json");
+        assert!(xai.get("size").is_none(), "xAI 不认 size");
+        assert!(xai.get("n").is_none(), "xAI 不认 n");
+
+        let gpt = images_body("gpt-image-1.5", "a cat", "");
+        assert_eq!(gpt["size"], "1024x1024");
+        assert_eq!(gpt["n"], 1);
+        assert!(
+            gpt.get("response_format").is_none(),
+            "gpt-image 只回 base64，多送这个字段会被顶回来"
+        );
+
+        // dall-e 反过来：不显式要 base64 就回一个链接。
+        let dalle = images_body("dall-e-3", "a cat", "1024x1792");
+        assert_eq!(dalle["size"], "1024x1792");
+        assert_eq!(dalle["response_format"], "b64_json");
+    }
+
+    /// 内核拒路由时那个 404 长得像上游返回的，其实不是。不点破的话用户会去
+    /// 查上游账号，而要改的是渠道那一行。
+    #[test]
+    fn kernel_routing_refusal_gets_an_actionable_hint() {
+        let cfg = ImageConfig {
+            base_url: "https://example.test".into(),
+            token: "t".into(),
+            model: "grok-imagine-image".into(),
+            api: ImageApi::Auto,
+            out_dir: String::new(),
+        };
+        let msg = render_failures(
+            &cfg,
+            &[ApiErr {
+                status: 404,
+                message: "HTTP 404 Not Found: upstream endpoint unsupported".into(),
+                api: ImageApi::Images,
+            }],
+        );
+        assert!(msg.contains("grok-imagine-image"));
+        assert!(msg.contains("/v1/images/generations"));
+        assert!(msg.contains("openai"));
+    }
+
+    /// 反过来也要成立：模型按 OpenAI 的习惯写像素，chat 端点只认宽高比 ——
+    /// 认不出来就当 1:1 的话，要的横图会变成方图，还没有任何提示。
+    #[test]
+    fn pixels_are_understood_on_the_chat_endpoint_too() {
+        assert_eq!(chat_size("1792x1024"), ("16:9".into(), "2K".into()));
+        assert_eq!(chat_size("1024x1792"), ("9:16".into(), "2K".into()));
+        assert_eq!(chat_size("1536x1024"), ("3:2".into(), "2K".into()));
+        assert_eq!(chat_size("1024x1536"), ("2:3".into(), "2K".into()));
+        assert_eq!(chat_size("1024x1024"), ("1:1".into(), "2K".into()));
+        // 不在表上的比例挑最接近的，而不是一律退回 1:1
+        assert_eq!(chat_size("1920x1080@1k"), ("16:9".into(), "1K".into()));
+        assert_eq!(chat_size("800x600"), ("3:2".into(), "2K".into()), "4:3 最近的是 3:2");
     }
 
     /// 尺寸必须落在内核 `validChatImageGenerationSize` 认的取值里，
@@ -754,13 +1236,27 @@ mod tests {
     /// 像素尺寸同理：64–8192 之外的值退回默认。
     #[test]
     fn images_size_clamps_to_the_kernels_range() {
-        assert_eq!(images_size(""), "1024x1024");
-        assert_eq!(images_size("1536x1024"), "1536x1024");
-        assert_eq!(images_size("64x64"), "64x64");
-        assert_eq!(images_size("8192x8192"), "8192x8192");
-        assert_eq!(images_size("32x32"), "1024x1024", "小于 64 要退回");
-        assert_eq!(images_size("9000x9000"), "1024x1024", "大于 8192 要退回");
-        assert_eq!(images_size("big"), "1024x1024");
+        assert_eq!(images_size("gpt-image-1.5", ""), "1024x1024");
+        assert_eq!(images_size("gpt-image-1.5", "1536x1024"), "1536x1024");
+        assert_eq!(images_size("gpt-image-1.5", "64x64"), "64x64");
+        assert_eq!(images_size("gpt-image-1.5", "8192x8192"), "8192x8192");
+        assert_eq!(images_size("gpt-image-1.5", "32x32"), "1024x1024", "小于 64 要退回");
+        assert_eq!(images_size("gpt-image-1.5", "9000x9000"), "1024x1024", "大于 8192 要退回");
+        assert_eq!(images_size("gpt-image-1.5", "big"), "1024x1024");
+    }
+
+    /// 宽高比写法在 images 端点上也得认 —— `size` 在工具描述里只有一个参数，
+    /// auto 替模型挑端点，模型没法知道该写哪种。挑的值必须是这个模型收得下的：
+    /// 等比算一个「数学上对」的尺寸发出去只会 400。
+    #[test]
+    fn an_aspect_ratio_becomes_pixels_the_model_accepts() {
+        assert_eq!(images_size("gpt-image-1.5", "16:9"), "1536x1024");
+        assert_eq!(images_size("gpt-image-1.5", "16:9@2k"), "1536x1024");
+        assert_eq!(images_size("gpt-image-1.5", "2:3"), "1024x1536");
+        assert_eq!(images_size("gpt-image-1.5", "1:1"), "1024x1024");
+        // dall-e 3 的横竖两个值和 gpt-image 不一样
+        assert_eq!(images_size("dall-e-3", "16:9"), "1792x1024");
+        assert_eq!(images_size("dall-e-3", "9:16"), "1024x1792");
     }
 
     /// 挖图的顺序必须和内核一致：先 `images[]`，它有了就不再看 `content[]`，
@@ -946,6 +1442,34 @@ mod tests {
             assert_eq!(got.api, ImageApi::Chat, "{target:?} 还留着上一次的 API");
             assert_eq!(got.out_dir, "", "{target:?} 还留着上一次的目录");
         }
+    }
+
+    /// 界面要按磁盘上的真值回显，`out_dir` 也一样 —— 读不回来的话，为了改别的
+    /// 项按一次安装就会把用户自己设的目录换成默认目录，而且什么都不说。
+    #[test]
+    fn the_state_reads_back_the_configured_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = ConfigRoot::sandbox(dir.path().to_path_buf());
+        let bk = BackupStore::new(dir.path().join("bk"));
+        let target = CliTarget::ClaudeCode;
+
+        set_image_mcp(
+            &root,
+            target,
+            true,
+            &icfg("m1", ImageApi::Auto, "/tmp/pics"),
+            "s1",
+            &bk,
+        )
+        .unwrap();
+        let st = image_states(&root, &[target], "http://127.0.0.1:1", None);
+        assert_eq!(st[0].out_dir.as_deref(), Some("/tmp/pics"));
+        assert_eq!(st[0].api.as_deref(), Some("auto"));
+
+        // 留空是「用默认目录」，回显成 None 而不是空字符串 —— 前端拿它当
+        // 「没设过」来判断。
+        set_image_mcp(&root, target, true, &icfg("m1", ImageApi::Auto, ""), "s2", &bk).unwrap();
+        assert_eq!(image_states(&root, &[target], "http://127.0.0.1:1", None)[0].out_dir, None);
     }
 
     /// 视觉和生图是两个独立的服务器，装一个不该动另一个 —— 它们在同一份

@@ -775,7 +775,8 @@ export function ModelsPage() {
 ///
 /// 和视觉那块并列而不是合并：它多两个只有生图才有的开关，而这两个开关都是
 /// **能力**层面的，藏起来会直接让功能不可用 ——
-///   * 走哪条路：`chat` 能生成也能改图，`images` 只能生成。默认 chat。
+///   * 走哪条路：默认 `auto`，按模型名挑端点、挑错了当场换另一条重试；钉死成
+///     `chat`（能生成也能改图）或 `images`（只能生成）是给知道自己在干什么的人留的。
 ///   * 存到哪：生成的图落在磁盘，工具只把路径回给模型（回图本身等于每张图
 ///     往 transcript 里灌一兆 base64，正好是「会话救援」要清理的东西）。
 ///
@@ -824,10 +825,16 @@ function ImagePanel({
   const [modelPick, setModelPick] = useState<string | null>(null);
   const model = modelPick ?? installedModels[0] ?? "";
   const [apiPick, setApiPick] = useState<ImageApi | null>(null);
-  const imageApi: ImageApi = apiPick ?? installedApi ?? "chat";
+  const imageApi: ImageApi = apiPick ?? installedApi ?? "auto";
   // 空 = 后端的默认目录（~/.ccload-client/images）。留空是绝大多数人的正确选择，
   // 所以 placeholder 直接把那个路径写出来，而不是写「可选」。
-  const [outDir, setOutDir] = useState("");
+  //
+  // 和模型、走哪条路一样要从磁盘回显：不回显的话，为了改别的项按一次安装，
+  // 用户自己设的目录会被一个空字符串换成默认目录 —— 之后生成的图去了别处，
+  // 而界面上什么都没说。
+  const [dirPick, setDirPick] = useState<string | null>(null);
+  const installedDir = (state.data ?? []).find((s) => s.installed)?.out_dir ?? "";
+  const outDir = dirPick ?? installedDir;
 
   // 下拉必须包含**当前已装的那个模型**，哪怕它已经不在渠道清单里了 ——
   // 受控 select 的 value 找不到 option 时浏览器渲染成空白。
@@ -866,6 +873,50 @@ function ImagePanel({
       // 闪回占位符。和视觉面板同一个坑。
       await state.refetch();
       setModelPick(null);
+      setApiPick(null);
+      setDirPick(null);
+    },
+    onError: (e) => onMessage(errText(e)),
+  });
+
+  // 已装的那几家钉死在某一条路上。
+  //
+  // 钉死的值是写进 CLI 配置里的 `CCLOAD_IMAGE_API`，换一个新版客户端不会让它
+  // 自己变 —— 而老版本把默认值写成了 chat，于是**所有**老用户都是「钉死 chat」，
+  // 新版按模型选端点、选错了换一条的能力一个人也吃不到，还会继续撞上那句
+  // 「这个模型不在这个端点上」。所以这里必须主动说，并且给一个直接改的按钮。
+  const pinned = useMemo(
+    () =>
+      (state.data ?? [])
+        .filter((s) => s.installed && s.api && s.api !== "auto")
+        .map((s) => s.target),
+    [state.data],
+  );
+  // 逐家按**它自己**存的模型和目录重写，只动「走哪条路」这一项：这几家装的
+  // 模型未必一样，拿面板上选中的那个一把梭会顺手改掉别家的配置。
+  const toAuto = useMutation({
+    mutationFn: async (): Promise<TargetOutcome[]> => {
+      const out: TargetOutcome[] = [];
+      for (const s of state.data ?? []) {
+        if (!s.installed || !s.api || s.api === "auto" || !s.model) continue;
+        try {
+          const written = await api.imageMcpSet(
+            s.target,
+            true,
+            s.model,
+            "auto",
+            s.out_dir || undefined,
+          );
+          out.push({ t: s.target, status: "ok", text: written.join("、") || t("已安装") });
+        } catch (e) {
+          out.push({ t: s.target, status: "failed", text: errText(e) });
+        }
+      }
+      return out;
+    },
+    onSuccess: async (rs) => {
+      onMessage(summarize(rs, t("已改成自动"), t("改写失败")));
+      await state.refetch();
       setApiPick(null);
     },
     onError: (e) => onMessage(errText(e)),
@@ -923,15 +974,38 @@ function ImagePanel({
           value={imageApi}
           onChange={(e) => setApiPick(e.target.value as ImageApi)}
         >
+          <option value="auto">{t("自动（按模型挑，推荐）")}</option>
           <option value="chat">{t("对话生图（能生成也能改图）")}</option>
           <option value="images">{t("生图端点（只能生成）")}</option>
         </Select>
         <span className="text-xs text-muted">
-          {imageApi === "chat"
-            ? t("/v1/chat/completions + modalities:[\"image\"]，尺寸按宽高比给（1:1@2k）。")
-            : t("/v1/images/generations，尺寸按像素给（1024x1024）。这条路的请求体里没有放输入图的位置，所以 edit_image 用不了。")}
+          {imageApi === "auto"
+            ? t("按模型名挑端点：grok-imagine / gpt-image / dall-e 走生图端点，其余先走对话；上游要是回「这个模型不在这个端点上」就当场换另一条重试。改图永远走对话。")
+            : imageApi === "chat"
+              ? t("/v1/chat/completions + modalities:[\"image\"]，尺寸按宽高比给（1:1@2k）。")
+              : t("/v1/images/generations，尺寸按像素给（1024x1024）。这条路的请求体里没有放输入图的位置，所以 edit_image 用不了。")}
         </span>
       </label>
+
+      {/* 老版本把默认值写成 chat，装过的机器上那个值还在配置文件里。 */}
+      {pinned.length > 0 && (
+        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs">
+          <span>
+            {t(
+              "已装的 {n} 家钉死在一条端点上（配置里存的值，换新版客户端不会自己变）。改成「自动」后会按模型挑端点，上游说走错了就当场换一条重试。",
+              { n: pinned.length },
+            )}
+          </span>
+          <button
+            onClick={() => toAuto.mutate()}
+            disabled={toAuto.isPending || install.isPending || remove.isPending}
+            title={pinned.map((x) => TARGET_LABELS[x]).join(t("、"))}
+            className="ml-auto rounded-lg bg-accent px-2.5 py-1 font-medium text-white hover:bg-accent/90 disabled:opacity-40"
+          >
+            {t("这 {n} 家改成自动", { n: pinned.length })}
+          </button>
+        </div>
+      )}
 
       <label className="mt-3 flex flex-wrap items-center gap-2 text-sm">
         <span className="text-muted">{t("图存到哪")}</span>
@@ -941,7 +1015,7 @@ function ImagePanel({
           className="w-96"
           placeholder="~/.ccload-client/images"
           value={outDir}
-          onChange={(e) => setOutDir(e.target.value)}
+          onChange={(e) => setDirPick(e.target.value)}
         />
         <span className="text-xs text-muted">{t("留空就是默认目录。工具回给模型的是绝对路径。")}</span>
       </label>

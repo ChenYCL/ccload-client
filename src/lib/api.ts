@@ -145,7 +145,7 @@ export const api = {
    *
    * `api` 是能力开关不是口味：`images` 是标准 OpenAI 生图端点，只能生成；
    * `chat` 走 `/v1/chat/completions` + `modalities:["image"]`，**改图只有它能做**。
-   * 省略即 chat。
+   * 省略即 `auto` —— 按模型挑一条先试，端点挑错了当场换另一条。
    */
   imageMcpSet: (
     target: CliTarget,

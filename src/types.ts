@@ -269,10 +269,14 @@ export type VisionTargetState = {
 
    走哪条路是**能力差别**不是口味差别：`images` 是标准 OpenAI 生图端点，
    `chat` 是 `/v1/chat/completions` + `modalities:["image"]`。改图只有 chat
-   能做 —— images 的请求体里没有放输入图的位置，所以默认是 chat。
+   能做 —— images 的请求体里没有放输入图的位置。
+
+   默认是 `auto`：按模型名挑一条先试，上游要是回「这个模型不在这个端点上」
+   就换另一条。钉死一条的代价是装的时候选错一次、之后每次生图都失败，而错误
+   信息说的是上游的话，没人会想到要回客户端改一个下拉框。
 --------------------------------------------------------------------------- */
 
-export type ImageApi = "chat" | "images";
+export type ImageApi = "auto" | "chat" | "images";
 
 export type ImageTargetState = {
   target: CliTarget;
@@ -282,6 +286,8 @@ export type ImageTargetState = {
   model: string | null;
   /** 已装的话，它走的是哪条路。 */
   api: ImageApi | null;
+  /** 已装的话，图往哪写。null = 后端默认目录。 */
+  out_dir: string | null;
   /** 装了，但里面存的内核地址/令牌已经过期 —— 每次生图都会 401。 */
   stale: boolean;
 };

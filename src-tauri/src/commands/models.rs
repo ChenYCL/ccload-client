@@ -86,8 +86,9 @@ pub async fn vision_mcp_state(state: State<'_, AppState>) -> AppResult<Vec<Visio
 
 /// 装 / 卸生图 MCP。
 ///
-/// `model` 必须是内核里一个**能出图**的别名；`api` 选 chat 还是 images，
-/// 两条路的差别（尤其「改图只有 chat 能做」）写在 `services::image_mcp` 头上。
+/// `model` 必须是内核里一个**能出图**的别名；`api` 不传就是 auto —— 按模型挑端点，
+/// 挑错了当场换另一条。两条路的差别（尤其「改图只有 chat 能做」）写在
+/// `services::image_mcp` 头上。
 #[tauri::command]
 pub async fn image_mcp_set(
     state: State<'_, AppState>,
@@ -104,7 +105,7 @@ pub async fn image_mcp_set(
             base_url: String::new(),
             token: String::new(),
             model: String::new(),
-            api: ImageApi::Chat,
+            api: ImageApi::Auto,
             out_dir: String::new(),
         };
         return Ok(set_image_mcp(&root, target, false, &cfg, &unique_stamp(), &state.backups)?);
@@ -124,7 +125,7 @@ pub async fn image_mcp_set(
         base_url: base,
         token,
         model,
-        api: api.unwrap_or(ImageApi::Chat),
+        api: api.unwrap_or(ImageApi::Auto),
         out_dir: out_dir.unwrap_or_default(),
     };
     Ok(set_image_mcp(&root, target, true, &cfg, &unique_stamp(), &state.backups)?)
