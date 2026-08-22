@@ -18,6 +18,7 @@ pub mod model_import;
 pub mod session_preset;
 pub mod session_rescue;
 pub mod system_inject;
+pub mod update;
 pub mod vision_mcp;
 
 #[cfg(test)]

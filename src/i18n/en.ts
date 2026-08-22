@@ -33,6 +33,10 @@ registerDict("en", {
   收起侧栏: "Collapse sidebar",
   语言: "Language",
   客户端版本: "Client version",
+  有新版本: "Update available",
+  "有新 beta": "New beta",
+  "有新版本 {v}": "Update available: {v}",
+  "在浏览器里打开 {v} 的发布页": "Open the {v} release page in your browser",
 
   // ---- 通用动作 ----
   保存: "Save",

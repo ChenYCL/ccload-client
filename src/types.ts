@@ -792,3 +792,23 @@ export type PresetPrefs = {
   last_cwd: string;
   last_targets: CliTarget[];
 };
+
+/* ---------------------------------------------------------------------------
+   壳体自更新检查。
+
+   `available` 为 false 时其余字段照样填着 —— 「已是最新」也要显示当前版本。
+   查不到（断网、GitHub 限流）走的是 reject，界面静默吞掉：这是锦上添花的功能，
+   不该在侧栏弹错误。
+--------------------------------------------------------------------------- */
+
+export type UpdateInfo = {
+  /** 正在跑的这一版。beta 流水线会把完整 tag 戳进 tauri.conf.json。 */
+  current: string;
+  /** 上游最新一版的 tag；一个 release 都没有时是空串。 */
+  latest: string;
+  /** 那一版的 release 页面，拿不到就是 Releases 列表页。 */
+  url: string;
+  /** 最新那一版是不是预发布。 */
+  prerelease: boolean;
+  available: boolean;
+};

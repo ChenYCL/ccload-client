@@ -11,3 +11,4 @@ pub mod models;
 pub mod preset;
 pub mod session;
 pub mod settings;
+pub mod update;

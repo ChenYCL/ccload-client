@@ -1,9 +1,12 @@
 import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { getVersion } from "@tauri-apps/api/app";
 import {
   Activity,
+  ArrowUpCircle,
   ChevronLeft,
   ChevronRight,
+  ExternalLink,
   Power,
   PowerOff,
   Blocks,
@@ -20,26 +23,60 @@ import {
   PackagePlus,
   Workflow,
 } from "lucide-react";
+import { api } from "../lib/api";
 import { cn } from "../lib/cn";
 import { useI18n, useT } from "../i18n";
 import { Languages } from "lucide-react";
-import type { KernelStatus, Page } from "../types";
+import type { KernelStatus, Page, UpdateInfo } from "../types";
 // 应用图标即产品 logo；`@icons` 指向 src-tauri/icons，见 vite.config.ts。
 import logoUrl from "@icons/128x128.png";
+
+/// 有没有新版壳体。
+///
+/// 查一次就够：这个窗口通常一开好几天，但发版是几十分钟起步的事，轮询它只是白
+/// 打 GitHub 的接口 —— 未认证配额是每小时 60 次/IP，而用户还可能同时开着别的工
+/// 具在用同一个出口 IP。`staleTime: Infinity` + 不重试：查不到就是这次没查到，
+/// 下次开应用再说。
+///
+/// **失败必须静默。** 断网、限流、公司网络挡了 api.github.com 都会走到这里，
+/// 而这只是个锦上添花的提示 —— 在侧栏顶上弹一条红字，比不提示更糟。所以只把
+/// `data` 交出去，错误和 loading 在这一层就丢掉，调用方没有渲染它们的机会。
+function useUpdateCheck({ version, settled }: ClientVersion): UpdateInfo | undefined {
+  return useQuery({
+    queryKey: ["client-update", version],
+    queryFn: () => api.checkClientUpdate(version),
+    staleTime: Infinity,
+    retry: false,
+    // 必须等 getVersion() 落地才查，光判 `version` 非空是不够的 ——
+    // useClientVersion 的初值就是构建期注入的基座 0.1.0，那一瞬间它非空但是错的。
+    // 不等的话每次开应用会打两次 GitHub（基座一次、真版本一次），白烧半小时才
+    // 60 次的配额；而装着正式版的人更会先看到一次「有新 beta」再消失。
+    enabled: settled,
+  }).data;
+}
+
+type ClientVersion = { version: string; settled: boolean };
 
 /// 打包后的真实壳体版本。Vite 注入的是 `package.json` 基座（`0.1.0`）；
 /// beta 流水线会把完整 tag 戳进 `tauri.conf.json`，`getVersion()` 读的是那个，
 /// 才能在侧栏看到 `0.1.0-beta.20260820.2` 而不是截成基座。
-function useClientVersion(): string {
-  const [version, setVersion] = useState(__CLIENT_VERSION__);
+///
+/// `settled` 是「这个值已经是终值了」，不是「拿到了 Tauri 的版本」—— 纯 vite
+/// 预览里 getVersion() 会失败，那时构建期注入值就是终值，同样算落地。
+function useClientVersion(): ClientVersion {
+  const [state, setState] = useState<ClientVersion>({
+    version: __CLIENT_VERSION__,
+    settled: false,
+  });
   useEffect(() => {
     void getVersion()
-      .then(setVersion)
+      .then((version) => setState({ version, settled: true }))
       .catch(() => {
         /* 纯 vite 预览没有 Tauri，继续用构建期注入值 */
+        setState((s) => ({ ...s, settled: true }));
       });
   }, []);
-  return version;
+  return state;
 }
 
 // 渠道/令牌 的增删改都在「内核后台」里，用的是 ccLoad 自带的界面，所以这里不再
@@ -94,7 +131,9 @@ export function Sidebar(props: {
 }) {
   const t = useT();
   const { lang, setLang } = useI18n();
-  const version = useClientVersion();
+  const clientVersion = useClientVersion();
+  const version = clientVersion.version;
+  const update = useUpdateCheck(clientVersion);
   const running = props.status?.state === "running";
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem(COLLAPSE_KEY) === "1",
@@ -147,13 +186,24 @@ export function Sidebar(props: {
       </button>
 
       <div className={cn("flex items-center py-4", collapsed ? "justify-center px-2" : "gap-2.5 px-4")}>
-        <img
-          src={logoUrl}
-          alt=""
-          aria-hidden
-          className="h-5 w-5 shrink-0 rounded-[5px]"
-          title={collapsed ? `ccLoad v${version}` : undefined}
-        />
+        <div className="relative shrink-0">
+          <img
+            src={logoUrl}
+            alt=""
+            aria-hidden
+            className="h-5 w-5 rounded-[5px]"
+            title={collapsed ? `ccLoad v${version}` : undefined}
+          />
+          {/* 收起状态下没地方放按钮，改成 logo 角上一个点 —— 至少让人知道
+              「展开看看」。位置贴着 logo 而不是浮在侧栏边缘，收起时侧栏只有
+              一个图标宽，浮出去会被裁掉。 */}
+          {collapsed && update?.available && (
+            <span
+              className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-accent ring-2 ring-surface-raised"
+              title={t("有新版本 {v}", { v: update.latest })}
+            />
+          )}
+        </div>
         {!collapsed && (
           <div className="min-w-0">
             <div className="t-title">ccLoad</div>
@@ -166,6 +216,23 @@ export function Sidebar(props: {
             >
               v{version}
             </div>
+            {/* 有新版才出现。没有新版时**什么都不显示** —— 常驻一个「已是最新」
+                占着两行，用户每天看它一百次，而它一年只有几天是有用的。
+                点开浏览器就完了：我们不下载、不替换、不动磁盘，所以这里是个
+                链接的行为，不是「安装」按钮，措辞也得对得上。 */}
+            {update?.available && (
+              <button
+                onClick={() => void api.openExternal(update.url)}
+                title={t("在浏览器里打开 {v} 的发布页", { v: update.latest })}
+                className="mt-1.5 flex w-full items-center gap-1 rounded-md bg-accent/10 px-1.5 py-1 text-[10px] font-medium text-accent hover:bg-accent/20"
+              >
+                <ArrowUpCircle className="h-3 w-3 shrink-0" />
+                <span className="min-w-0 flex-1 truncate text-left">
+                  {update.prerelease ? t("有新 beta") : t("有新版本")}
+                </span>
+                <ExternalLink className="h-2.5 w-2.5 shrink-0 opacity-70" />
+              </button>
+            )}
           </div>
         )}
       </div>

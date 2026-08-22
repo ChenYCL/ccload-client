@@ -136,6 +136,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::kernel::kernel_status,
             commands::kernel::kernel_bundled_version,
+            commands::update::check_client_update,
             commands::config_io::config_export,
             commands::config_io::config_import_preview,
             commands::config_io::config_import,

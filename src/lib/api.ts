@@ -42,6 +42,7 @@ import type {
   TakeoverOptions,
   TakeoverPreview,
   TakeoverResult,
+  UpdateInfo,
   VisionTargetState,
 } from "../types";
 
@@ -125,6 +126,14 @@ export const api = {
 
   /** 打包进壳体的 ccLoad 版本（构建期从 vendor/ccLoad 的 git tag 注入）。 */
   kernelBundledVersion: () => invoke<string>("kernel_bundled_version"),
+
+  /**
+   * 有没有新版壳体。只读一次 GitHub Releases，不下载也不替换。
+   *
+   * `current` 必须传 `getVersion()` 读到的那个值 —— Rust 侧的 CARGO_PKG_VERSION
+   * 是编译期基座（0.1.0），拿它去比会让所有 beta 用户永远看到「有新版」。
+   */
+  checkClientUpdate: (current: string) => invoke<UpdateInfo>("check_client_update", { current }),
 
   modelImport: (target: CliTarget, entries: ImportEntry[]) =>
     invoke<ImportResult>("model_import", { target, entries }),
