@@ -47,11 +47,40 @@ fn is_newer(current: &str, latest: &str) -> bool {
     }
 }
 
+/// 一次失败。
+///
+/// 分类不是为了好看，是给前端做重试决策用的：**只有 `transport` 值得重试**。
+/// 实测这条网络到 api.github.com 五次里能挂两次（SSL_ERROR_SYSCALL、连接超时，
+/// 且不经任何代理），单打一次就等于四成概率永远查不到。而 `http` 里最常见的是
+/// 限流 403 —— 那个重试只会把每小时 60 次的配额烧得更快。
+///
+/// 用带 tag 的结构而不是让前端去 `includes("HTTP")` 抠字符串：reqwest 的传输
+/// 错误里本来就可能带上 `HTTP/2 stream error`，一撞上就会把该重试的判成不该
+/// 重试的，而且这种错判是静默的 —— 正是这个功能已经栽过一次的那种坑。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(tag = "kind", content = "message", rename_all = "snake_case")]
+pub enum CheckError {
+    /// 根本没连上：断网、DNS、TLS 握手失败、超时。重试有意义。
+    Transport(String),
+    /// GitHub 答了话，但不是 2xx（限流 403、404……）。重试没意义。
+    Http(String),
+    /// 连上了也是 2xx，但回来的东西读不成我们要的形状。重试没意义。
+    Malformed(String),
+}
+
+impl std::fmt::Display for CheckError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Transport(m) | Self::Http(m) | Self::Malformed(m) => f.write_str(m),
+        }
+    }
+}
+
 /// 问一次 GitHub。
 ///
-/// 失败一律往上抛字符串：这个功能是锦上添花，网络不通、限流、断网都不该让侧栏
-/// 报错弹窗 —— 前端把错误当成「这次没查到」处理即可。
-pub async fn check(current: &str) -> Result<UpdateInfo, String> {
+/// 失败一律往上抛：这个功能是锦上添花，网络不通、限流、断网都不该让侧栏报错弹窗
+/// —— 侧栏把错误当成「这次没查到」静默处理，设置页才把原因摊开给人看。
+pub async fn check(current: &str) -> Result<UpdateInfo, CheckError> {
     let none = |latest: String, url: String, prerelease: bool| UpdateInfo {
         current: current.to_string(),
         available: is_newer(current, &latest),
@@ -64,7 +93,8 @@ pub async fn check(current: &str) -> Result<UpdateInfo, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .build()
-        .map_err(|e| format!("build http client: {e}"))?;
+        // 构建客户端失败是本地的事（TLS 后端初始化不了），重试也是一样的结果。
+        .map_err(|e| CheckError::Malformed(format!("build http client: {e}")))?;
 
     let resp = client
         .get(RELEASES_API)
@@ -73,7 +103,7 @@ pub async fn check(current: &str) -> Result<UpdateInfo, String> {
         .header("accept", "application/vnd.github+json")
         .send()
         .await
-        .map_err(|e| format!("cannot reach GitHub: {e}"))?;
+        .map_err(|e| CheckError::Transport(format!("cannot reach GitHub: {e}")))?;
 
     let status = resp.status();
     if !status.is_success() {
@@ -83,13 +113,15 @@ pub async fn check(current: &str) -> Result<UpdateInfo, String> {
         } else {
             ""
         };
-        return Err(format!("GitHub returned HTTP {status}{hint}"));
+        return Err(CheckError::Http(format!(
+            "GitHub returned HTTP {status}{hint}"
+        )));
     }
 
     let releases: Vec<serde_json::Value> = resp
         .json()
         .await
-        .map_err(|e| format!("bad GitHub response: {e}"))?;
+        .map_err(|e| CheckError::Malformed(format!("bad GitHub response: {e}")))?;
 
     // 草稿要跳过：它对非 owner 不可见，拿它去提示别人「有新版」会指向一个 404。
     // 列表接口按创建时间倒序，所以第一个非草稿就是最新的那一个。
@@ -166,5 +198,44 @@ mod tests {
         assert!(!is_newer("", "0.1.1"));
         assert!(!is_newer("0.1.0", "nightly"));
         assert!(!is_newer("dev", "0.1.1"));
+    }
+
+    /// 错误的 JSON 形状是跨语言契约：前端靠 `kind` 决定重不重试（只重 transport）。
+    /// 改这里等于改前端的重试逻辑，而那种改动一旦判反是**静默**的 —— 用户只会
+    /// 发现「更新提示又不出现了」，跟这次一模一样。所以把形状钉死在测试里。
+    #[test]
+    fn error_json_shape_matches_the_frontend_contract() {
+        let cases = [
+            (CheckError::Transport("boom".into()), "transport"),
+            (CheckError::Http("429".into()), "http"),
+            (CheckError::Malformed("nope".into()), "malformed"),
+        ];
+        for (err, kind) in cases {
+            let v = serde_json::to_value(&err).expect("serialize");
+            assert_eq!(v["kind"], kind, "kind tag drifted for {err:?}");
+            assert_eq!(v["message"], err.to_string(), "message field drifted");
+        }
+    }
+}
+
+/// 真打一次 GitHub。
+///
+/// `#[ignore]`，要 `cargo test --lib update::net_probe -- --ignored --nocapture`
+/// 才跑 —— 断网或撞上限流时它会红，而那不是代码的问题，不该拦住 CI。
+///
+/// 留着是有原因的：这个功能上线后第一次报「按钮从来没出现过」，光看代码没法
+/// 判断是 Rust 查错了、GitHub 返回变了、还是前端没渲染。跑一下这个就把前两种
+/// 一次排除掉（当时的结论是后端好的，坏在前端的刷新策略）。
+#[cfg(test)]
+mod net_probe {
+    #[tokio::test]
+    #[ignore]
+    async fn hits_github_for_real() {
+        // 一个真实发布过的旧版本：无论线上走到哪一版，它都该被判定为「有更新」。
+        let r = super::check("0.1.0-beta.20260823.1").await;
+        println!("{r:#?}");
+        let info = r.expect("check() should reach GitHub");
+        assert!(!info.latest.is_empty(), "latest tag must not be empty");
+        assert!(info.available, "an old beta must be behind the live release");
     }
 }

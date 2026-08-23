@@ -37,6 +37,16 @@ registerDict("en", {
   "有新 beta": "New beta",
   "有新版本 {v}": "Update available: {v}",
   "在浏览器里打开 {v} 的发布页": "Open the {v} release page in your browser",
+  当前版本: "Current version",
+  最新发布: "Latest release",
+  检查更新: "Check for updates",
+  "检查中…": "Checking…",
+  "去下载新 beta": "Get the new beta",
+  去下载新版本: "Get the new version",
+  "这次没查到：": "Couldn't check this time: ",
+  "已是最新。": "You're on the latest version.",
+  "每小时自动查一次 GitHub Releases，回到窗口时若已过期也会补查。只读取版本号，不会自动下载或替换 —— 有新版时侧栏版本号下面会出现一个按钮，点开浏览器由你自己决定。":
+    "Checks GitHub Releases once an hour, plus whenever you return to the window and the last check has gone stale. It only reads the version number — nothing is downloaded or replaced automatically. When there's a new version, a button appears under the version in the sidebar; it opens your browser and the rest is up to you.",
 
   // ---- 通用动作 ----
   保存: "Save",

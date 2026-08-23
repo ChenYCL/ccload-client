@@ -1,13 +1,14 @@
 import { useT } from "../i18n";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { useClientVersion, useUpdateQuery } from "../hooks/useUpdate";
 import { api } from "../lib/api";
 import type { ImportPreview, KernelConfig, KernelMode, SettingItem } from "../types";
 import { cn } from "../lib/cn";
 import { errText } from "../lib/err";
 import { TextInput } from "../components/ui/Input";
 import { CopyButton } from "../components/ui/CopyButton";
-import { Download, Upload } from "lucide-react";
+import { Download, ExternalLink, Upload } from "lucide-react";
 
 
 /// 托管模式下内核绑的回环端口。
@@ -50,6 +51,7 @@ export function SettingsPage() {
     <div>
       <h1 className="t-display">{t("设置")}</h1>
       {settings.data && <ConnectionForm current={settings.data.kernel} />}
+      <ClientUpdateCard />
       {running && (
         <section className="mt-6 card p-4">
           <h2 className="t-title">{t("内核版本")}</h2>
@@ -102,6 +104,68 @@ export function SettingsPage() {
         </div>
       </section>
     </div>
+  );
+}
+
+/// 有没有新版壳体 —— 能按的那一个。
+///
+/// 侧栏那个按钮是安静的：只在有新版时出现，查失败一声不吭。那是对的，但代价是
+/// 「它到底查没查」永远无法回答，而这个功能第一版恰恰就是坏的（只在挂载时查一
+/// 次，而本应用关窗是隐藏不是退出，webview 一直活着，于是它一辈子只查一次）。
+/// 所以这里补一个能按的、把失败原因摊开的入口：跟侧栏共用同一个 queryKey，
+/// 按一下这里，侧栏那个按钮当场跟着变。
+function ClientUpdateCard() {
+  const t = useT();
+  const cv = useClientVersion();
+  const q = useUpdateQuery(cv);
+  const info = q.data;
+
+  return (
+    <section className="mt-6 card p-4">
+      <h2 className="t-title">{t("客户端版本")}</h2>
+      <div className="mt-3 flex items-center justify-between text-sm">
+        <span className="text-muted">{t("当前版本")}</span>
+        <code className="font-mono text-content">v{cv.version}</code>
+      </div>
+      <div className="mt-2 flex items-center justify-between text-sm">
+        <span className="text-muted">{t("最新发布")}</span>
+        <code className="font-mono text-content">{info?.latest || "—"}</code>
+      </div>
+
+      <div className="mt-3 flex items-center gap-2">
+        <button
+          onClick={() => void q.refetch()}
+          disabled={q.isFetching}
+          className="rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-surface-2 disabled:opacity-50"
+        >
+          {q.isFetching ? t("检查中…") : t("检查更新")}
+        </button>
+        {info?.available && (
+          <button
+            onClick={() => void api.openExternal(info.url)}
+            className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent/90"
+          >
+            {info.prerelease ? t("去下载新 beta") : t("去下载新版本")}
+            <ExternalLink className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
+
+      {/* 这里可以说失败，侧栏不行 —— 那是导航区，常驻一条红字比不提示更糟；
+          而这是设置页，你是专程来问「到底怎么了」的。 */}
+      {q.isError && (
+        <p className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs">
+          {t("这次没查到：")}
+          {errText(q.error)}
+        </p>
+      )}
+      {!q.isError && info && !info.available && (
+        <p className="mt-3 text-xs text-muted">{t("已是最新。")}</p>
+      )}
+      <p className="mt-3 text-xs text-muted">
+        {t("每小时自动查一次 GitHub Releases，回到窗口时若已过期也会补查。只读取版本号，不会自动下载或替换 —— 有新版时侧栏版本号下面会出现一个按钮，点开浏览器由你自己决定。")}
+      </p>
+    </section>
   );
 }
 

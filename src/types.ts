@@ -812,3 +812,15 @@ export type UpdateInfo = {
   prerelease: boolean;
   available: boolean;
 };
+
+/**
+ * 一次检查的失败原因。分类是给重试用的，不是给展示用的。
+ *
+ * - `transport` —— 根本没连上（断网、DNS、TLS 握手失败、超时）。**只有它值得重试。**
+ * - `http` —— GitHub 答了话但不是 2xx，最常见的是限流 403。重试只会烧得更快。
+ * - `malformed` —— 连上了也是 2xx，但回来的东西读不成我们要的形状。重试无用。
+ */
+export type CheckError = {
+  kind: "transport" | "http" | "malformed";
+  message: string;
+};

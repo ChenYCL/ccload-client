@@ -1,6 +1,4 @@
-import { useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { getVersion } from "@tauri-apps/api/app";
+import { useState } from "react";
 import {
   Activity,
   ArrowUpCircle,
@@ -23,61 +21,14 @@ import {
   PackagePlus,
   Workflow,
 } from "lucide-react";
+import { useClientVersion, useUpdateCheck } from "../hooks/useUpdate";
 import { api } from "../lib/api";
 import { cn } from "../lib/cn";
 import { useI18n, useT } from "../i18n";
 import { Languages } from "lucide-react";
-import type { KernelStatus, Page, UpdateInfo } from "../types";
+import type { KernelStatus, Page } from "../types";
 // 应用图标即产品 logo；`@icons` 指向 src-tauri/icons，见 vite.config.ts。
 import logoUrl from "@icons/128x128.png";
-
-/// 有没有新版壳体。
-///
-/// 查一次就够：这个窗口通常一开好几天，但发版是几十分钟起步的事，轮询它只是白
-/// 打 GitHub 的接口 —— 未认证配额是每小时 60 次/IP，而用户还可能同时开着别的工
-/// 具在用同一个出口 IP。`staleTime: Infinity` + 不重试：查不到就是这次没查到，
-/// 下次开应用再说。
-///
-/// **失败必须静默。** 断网、限流、公司网络挡了 api.github.com 都会走到这里，
-/// 而这只是个锦上添花的提示 —— 在侧栏顶上弹一条红字，比不提示更糟。所以只把
-/// `data` 交出去，错误和 loading 在这一层就丢掉，调用方没有渲染它们的机会。
-function useUpdateCheck({ version, settled }: ClientVersion): UpdateInfo | undefined {
-  return useQuery({
-    queryKey: ["client-update", version],
-    queryFn: () => api.checkClientUpdate(version),
-    staleTime: Infinity,
-    retry: false,
-    // 必须等 getVersion() 落地才查，光判 `version` 非空是不够的 ——
-    // useClientVersion 的初值就是构建期注入的基座 0.1.0，那一瞬间它非空但是错的。
-    // 不等的话每次开应用会打两次 GitHub（基座一次、真版本一次），白烧半小时才
-    // 60 次的配额；而装着正式版的人更会先看到一次「有新 beta」再消失。
-    enabled: settled,
-  }).data;
-}
-
-type ClientVersion = { version: string; settled: boolean };
-
-/// 打包后的真实壳体版本。Vite 注入的是 `package.json` 基座（`0.1.0`）；
-/// beta 流水线会把完整 tag 戳进 `tauri.conf.json`，`getVersion()` 读的是那个，
-/// 才能在侧栏看到 `0.1.0-beta.20260820.2` 而不是截成基座。
-///
-/// `settled` 是「这个值已经是终值了」，不是「拿到了 Tauri 的版本」—— 纯 vite
-/// 预览里 getVersion() 会失败，那时构建期注入值就是终值，同样算落地。
-function useClientVersion(): ClientVersion {
-  const [state, setState] = useState<ClientVersion>({
-    version: __CLIENT_VERSION__,
-    settled: false,
-  });
-  useEffect(() => {
-    void getVersion()
-      .then((version) => setState({ version, settled: true }))
-      .catch(() => {
-        /* 纯 vite 预览没有 Tauri，继续用构建期注入值 */
-        setState((s) => ({ ...s, settled: true }));
-      });
-  }, []);
-  return state;
-}
 
 // 渠道/令牌 的增删改都在「内核后台」里，用的是 ccLoad 自带的界面，所以这里不再
 // 单列 —— 自绘表单只会是个字段更少的弱化版。只读的观测（总览/日志）才自绘。
