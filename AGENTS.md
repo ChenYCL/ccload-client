@@ -404,6 +404,8 @@ v4.7.8-beta.1」，那说了「换了」没说「换了什么」—— 而内核
 ## 提交之前
 
 * `pnpm typecheck` / `cargo clippy -D warnings` / `cargo test` 三条全绿。
+* **提交信息从简：一行 `type(scope): 做了什么`，只说功能，不写推导过程、不列踩坑经过、
+  不摆权衡。想留背景就落进代码注释，别灌进 commit body。**
 * 别把这些提上去：内核二进制（约 128 MB）、`data/`、`*.db`、截图、
   `~/.claude` 之类的真实配置、任何 API key。`.gitignore` 已覆盖常见的，
   但仍然请 `git status` 看一眼再 `git add`。
