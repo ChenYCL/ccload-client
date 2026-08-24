@@ -119,7 +119,7 @@ export function ComboBox({
 
   // 往下放不下就翻到上面。链的最后一层永远贴着模态框底边，不翻的话下拉
   // 整个在视口外。
-  const MAX_H = 240;
+  const MAX_H = 400;
   const below = rect ? window.innerHeight - rect.bottom : 0;
   const flip = rect != null && below < Math.min(MAX_H, 160) && rect.top > below;
 

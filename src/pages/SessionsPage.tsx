@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, LifeBuoy, Loader2, RefreshCw, Scissors, Sparkles } from "lucide-react";
 import { api } from "../lib/api";
@@ -48,6 +48,11 @@ const KEEP_TAIL = 12;
 /// 超过这个数就标红。多数第三方中转卡在 200k–500k 之间，取个中间值提醒。
 const DANGER_CONTEXT = 400_000;
 
+/// 瘦身目标和总结模型记在 localStorage：这是「这台机器的中转天花板是多少、用哪个
+/// 模型压」的偏好，换次会话不该重填。和侧栏收起、日志实时开关同一个模式。
+const TARGET_KEY = "ccload.sessions.target";
+const MODEL_KEY = "ccload.sessions.model";
+
 type BatchItem = { id: string; slug: string; ok: boolean; detail: string };
 
 export function SessionsPage() {
@@ -59,9 +64,16 @@ export function SessionsPage() {
   // 瘦身目标存字符串而不是数字。数字态存不了「用户正在改」的中间态：全选后键入
   // 第一个字符前输入框是空串，`Number("") || DEFAULT` 会立刻把值弹回默认 —— 用户
   // 看到的就是「打字没反应」。字符串允许空着，用到的时候（点瘦身/失焦校验）才解析。
-  const [targetText, setTargetText] = useState(String(DEFAULT_TARGET));
+  const [targetText, setTargetText] = useState(
+    () => localStorage.getItem(TARGET_KEY) || String(DEFAULT_TARGET),
+  );
   const target = Number(targetText) || 0;
-  const [model, setModel] = useState("");
+  // 空串是合法值（= 按模型链自动挑），getItem 拿不到才回落空。
+  const [model, setModel] = useState(() => localStorage.getItem(MODEL_KEY) ?? "");
+  useEffect(() => {
+    localStorage.setItem(TARGET_KEY, targetText);
+    localStorage.setItem(MODEL_KEY, model);
+  }, [targetText, model]);
 
   const sessions = useQuery({
     queryKey: ["sessions"],
