@@ -248,6 +248,12 @@ jobs:
         with:
           path: dist-assets
 
+      # notes 里要嵌上游内核的更新日志，那段是个 node 脚本（要 fetch，Node ≥18）。
+      # runner 镜像自带的 node 版本会随镜像漂，钉一个免得哪天悄悄编不过。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
       - name: Flatten + checksums
         run: |
           mkdir -p release-assets
@@ -262,6 +268,10 @@ jobs:
         id: notes
         env:
           TAG: ${{ needs.bump.outputs.tag }}
+          # 上游内核的更新日志要跨仓库读 caidaoli/ccLoad 的 releases。公开仓库
+          # 不带 token 也读得到，但未认证配额是每小时 60 次/IP，而 runner 是共享
+          # 出口 —— 带上省得偶发限流让这一段无声消失。
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -282,6 +292,16 @@ jobs:
           git log --no-merges --pretty=format:'%s' "$RANGE" > /tmp/subjects.txt || true
 
           KERNEL=$(cat KERNEL_VERSION 2>/dev/null | tr -d '[:space:]' || echo unknown)
+          # 上一版包里装的内核。读的是那枚 tag 上的文件，不是 git log —— 内核版本
+          # 有可能被手动改过，而「上一版装的到底是哪一个」只有那个文件说了算。
+          KERNEL_PREV=""
+          if [ -n "$PREV" ]; then
+            KERNEL_PREV=$(git show "${PREV}:KERNEL_VERSION" 2>/dev/null | tr -d '[:space:]' || true)
+          fi
+
+          # 内核没换时脚本自己输出空串，这一节就整段不存在。
+          node scripts/kernel-changelog.mjs --from "$KERNEL_PREV" --to "$KERNEL" \
+            > /tmp/kernel-notes.md || true
 
           {
             echo "### ${COMPARE}"
@@ -321,6 +341,10 @@ jobs:
               echo
             fi
 
+            # 内核那一段接在壳体改动之后：先说我们改了什么，再说换进来的内核带来
+            # 了什么。内核没换时这个文件是空的，`cat` 出来什么都不加。
+            cat /tmp/kernel-notes.md
+
             echo "---"
             echo
             echo "自动构建：\`main\` 分支每次合入都会出一个 beta 包。"
@@ -331,7 +355,6 @@ jobs:
             echo "macOS 包是 universal（arm64 + x86_64）。壳体与内核架构必须一致，"
             echo "否则 Apple Silicon 上 Rosetta 翻译的 WebKit 会 SIGBUS 白屏。"
           } > /tmp/notes.md
-
           echo "--- 生成的 notes ---"
           cat /tmp/notes.md
 

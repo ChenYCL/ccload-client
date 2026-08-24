@@ -28,6 +28,11 @@ jobs:
           node scripts/check-readme-images.mjs
           node --test scripts/check-readme-images.test.mjs
 
+      # 发布说明里嵌的上游内核日志。纯函数部分离线可测，不打网络 ——
+      # 这段只在发版时跑，等发版才发现它坏了就太晚了。
+      - name: Test release-notes helpers
+        run: node --test scripts/kernel-changelog.test.mjs
+
       # 用 npm ci：仓库里只有 package-lock.json，多引入一份 pnpm 锁文件就是
       # 两份真相，迟早对不上。本地用 pnpm 不受影响。
       - run: npm ci

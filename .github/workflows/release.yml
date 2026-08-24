@@ -189,11 +189,20 @@ jobs:
     runs-on: ubuntu-22.04
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
+      # 要算「上一版装的是哪个内核」就得有完整历史和已有的 tag。
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/download-artifact@v4
         with:
           path: dist-assets
+
+      # 内核更新日志那段是个 node 脚本（要 fetch，Node ≥18）。钉版本，免得
+      # runner 镜像自带的 node 漂了之后悄悄编不过。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
       - name: Flatten + checksums
         run: |
@@ -203,8 +212,40 @@ jobs:
           sha256sum * > checksums.txt
           ls -lh
 
-      - id: kernel
-        run: echo "version=$(tr -d '[:space:]' < KERNEL_VERSION)" >> "$GITHUB_OUTPUT"
+      - name: Build release notes
+        env:
+          # 跨仓库读 caidaoli/ccLoad 的 releases。公开仓库不带 token 也读得到，
+          # 但未认证配额是每小时 60 次/IP，而 runner 是共享出口。
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          KERNEL=$(tr -d '[:space:]' < KERNEL_VERSION)
+
+          # 上一个**正式版** tag：beta 不算（正式版的用户不该看到 beta 之间的
+          # 流水），当前这一枚也要排掉（它就是我们正在发的这个）。
+          PREV=$(git tag -l 'v*' --sort=-creatordate \
+                 | grep -v -- '-beta' \
+                 | grep -vFx "${GITHUB_REF_NAME}" \
+                 | head -n1 || true)
+          KERNEL_PREV=""
+          if [ -n "$PREV" ]; then
+            KERNEL_PREV=$(git show "${PREV}:KERNEL_VERSION" 2>/dev/null | tr -d '[:space:]' || true)
+          fi
+
+          # 内核没换时脚本输出空串，这一节整段不存在。
+          node scripts/kernel-changelog.mjs --from "$KERNEL_PREV" --to "$KERNEL" \
+            > /tmp/kernel-notes.md || true
+
+          {
+            cat /tmp/kernel-notes.md
+            echo "打进本版的 ccLoad 内核：\`${KERNEL}\`"
+            echo
+            echo "macOS 包是 universal（arm64 + x86_64）。壳体与内核架构必须一致，"
+            echo "否则 Apple Silicon 上 Rosetta 翻译的 WebKit 会 SIGBUS 白屏。"
+          } > /tmp/notes.md
+
+          echo "--- 生成的 notes ---"
+          cat /tmp/notes.md
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
@@ -213,8 +254,4 @@ jobs:
           generate_release_notes: true
           # 先发草稿：包体上百 MB，发出去之前值得人眼看一下产物齐不齐。
           draft: true
-          body: |
-            打进本版的 ccLoad 内核：`${{ steps.kernel.outputs.version }}`
-
-            macOS 包是 universal（arm64 + x86_64）。壳体与内核架构必须一致，
-            否则 Apple Silicon 上 Rosetta 翻译的 WebKit 会 SIGBUS 白屏。
+          body_path: /tmp/notes.md
