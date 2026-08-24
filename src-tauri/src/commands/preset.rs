@@ -26,6 +26,7 @@ pub async fn preset_list(state: State<'_, AppState>) -> AppResult<Vec<SessionPre
 pub struct PresetPrefs {
     pub last_cwd: String,
     pub last_targets: Vec<CliTarget>,
+    pub hide_builtins: bool,
 }
 
 #[tauri::command]
@@ -34,7 +35,22 @@ pub async fn preset_prefs(state: State<'_, AppState>) -> AppResult<PresetPrefs> 
     Ok(PresetPrefs {
         last_cwd: store.last_cwd,
         last_targets: store.last_targets,
+        hide_builtins: store.hide_builtins,
     })
+}
+
+/// 藏 / 显内置预设。视图偏好，不动二进制里的内置，也不碰用户预设。
+/// 返回更新后的列表，前端直接替换缓存。
+#[tauri::command]
+pub async fn preset_set_hide_builtins(
+    state: State<'_, AppState>,
+    hide: bool,
+) -> AppResult<Vec<SessionPreset>> {
+    let path = store_path(&state);
+    let mut store = PresetStore::load(&path)?;
+    store.hide_builtins = hide;
+    store.save(&path)?;
+    Ok(merged_list(&store))
 }
 
 #[tauri::command]

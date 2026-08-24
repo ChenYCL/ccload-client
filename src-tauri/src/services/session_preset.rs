@@ -54,6 +54,10 @@ pub struct PresetStore {
     /// 上次勾选的 CLI。空 = 五家全开。
     #[serde(default)]
     pub last_targets: Vec<CliTarget>,
+    /// 列表里藏起内置预设。内置是编译进二进制的、删不掉（设计如此），但有人
+    /// 只想看自己的 —— 藏是个视图偏好，落在这里和 last_cwd 同级。
+    #[serde(default)]
+    pub hide_builtins: bool,
     #[serde(default)]
     pub presets: Vec<SessionPreset>,
 }
@@ -162,8 +166,15 @@ pub fn validate_preset(p: &SessionPreset) -> Result<(), AppError> {
 
 /// 内置在前，用户的接在后面。同 id 以用户的为准 —— 但 upsert 已经拒绝覆盖内置，
 /// 所以正常情况下不会撞。
+///
+/// `hide_builtins` 时内置整段不出 —— 列表里一个都看不见，但 `find_preset` 仍能按
+/// id 找到：藏着的东西不该同时「不存在」，旧结果里复制出的 resume 命令不受影响。
 pub fn merged_list(store: &PresetStore) -> Vec<SessionPreset> {
-    let mut out = builtins();
+    let mut out = if store.hide_builtins {
+        Vec::new()
+    } else {
+        builtins()
+    };
     for p in &store.presets {
         if out.iter().any(|b| b.id == p.id) {
             continue;
@@ -1514,8 +1525,6 @@ mod tests {
     #[test]
     fn merged_list_keeps_builtins_first() {
         let store = PresetStore {
-            last_cwd: String::new(),
-            last_targets: vec![],
             presets: vec![SessionPreset {
                 id: "mine".into(),
                 title: "我的".into(),
@@ -1526,10 +1535,37 @@ mod tests {
                     text: "hi".into(),
                 }],
             }],
+            ..PresetStore::default()
         };
         let list = merged_list(&store);
         assert_eq!(list[0].id, "warmup");
         assert_eq!(list.last().unwrap().id, "mine");
         assert_eq!(list.len(), builtins().len() + 1);
+    }
+
+    /// 藏内置：列表里一个内置都不出，只剩用户自己的；但 find_preset 仍按 id 找得到
+    /// —— 藏 ≠ 不存在，旧结果里的 resume 不受影响。
+    #[test]
+    fn hide_builtins_drops_them_from_the_list_but_not_from_lookup() {
+        let store = PresetStore {
+            hide_builtins: true,
+            presets: vec![SessionPreset {
+                id: "mine".into(),
+                title: "我的".into(),
+                summary: "s".into(),
+                builtin: false,
+                turns: vec![Turn {
+                    role: "user".into(),
+                    text: "hi".into(),
+                }],
+            }],
+            ..PresetStore::default()
+        };
+        let list = merged_list(&store);
+        assert_eq!(list.len(), 1, "藏内置后列表应只剩用户预设");
+        assert_eq!(list[0].id, "mine");
+        assert!(!list.iter().any(|p| p.builtin), "还有内置漏进列表");
+        // 藏着也仍找得到（复制出去的旧 resume 命令按 id 引用它）。
+        assert!(find_preset(&store, "warmup").is_some());
     }
 }

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Copy, FolderOpen, Plus, Trash2, Unlock } from "lucide-react";
+import { Copy, Eye, EyeOff, FolderOpen, Plus, Trash2, Unlock } from "lucide-react";
 import { api } from "../lib/api";
 import { errText } from "../lib/err";
 import { useT } from "../i18n";
@@ -70,6 +70,17 @@ export function UnlockPage() {
     onError: (e) => setMessage(errText(e)),
   });
 
+  // 藏 / 显内置。内置是编译进二进制的、删不掉（设计如此）；这个开关只改视图。
+  const hideBuiltins = prefs.data?.hide_builtins ?? false;
+  const toggleBuiltins = useMutation({
+    mutationFn: (hide: boolean) => api.presetSetHideBuiltins(hide),
+    onSuccess: (list) => {
+      qc.setQueryData(["presets"], list);
+      qc.invalidateQueries({ queryKey: ["presets-prefs"] });
+    },
+    onError: (e) => setMessage(errText(e)),
+  });
+
   const spawn = useMutation({
     mutationFn: (id: string) => api.presetSpawn(id, cwd, extra, launch, targets, confine),
     onSuccess: (r) => {
@@ -109,12 +120,24 @@ export function UnlockPage() {
             )}
           </p>
         </div>
-        <button
-          onClick={() => setEditing(blankPreset())}
-          className="flex shrink-0 items-center gap-1 rounded-lg bg-accent px-3.5 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-accent/90"
-        >
-          <Plus className="h-4 w-4" /> {t("新建预设")}
-        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          {/* 藏 / 显内置。内置删不掉（编译进二进制），只想看自己的就藏起来。 */}
+          <button
+            onClick={() => toggleBuiltins.mutate(!hideBuiltins)}
+            disabled={toggleBuiltins.isPending}
+            title={hideBuiltins ? t("内置预设已隐藏，点击显示") : t("隐藏内置预设（只是不显示，删不掉）")}
+            className="flex items-center gap-1 rounded-lg border border-border bg-surface-raised px-2.5 py-1.5 text-xs hover:bg-surface-2 disabled:opacity-40"
+          >
+            {hideBuiltins ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+            {hideBuiltins ? t("显示内置") : t("隐藏内置")}
+          </button>
+          <button
+            onClick={() => setEditing(blankPreset())}
+            className="flex items-center gap-1 rounded-lg bg-accent px-3.5 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-accent/90"
+          >
+            <Plus className="h-4 w-4" /> {t("新建预设")}
+          </button>
+        </div>
       </div>
 
       <div className="mt-5 card space-y-3 p-4">
@@ -201,6 +224,13 @@ export function UnlockPage() {
       </div>
 
       <ul className="mt-4 space-y-3">
+        {presets.data && presets.data.length === 0 && (
+          <li className="rounded-lg border border-dashed border-border px-3 py-4 text-center text-xs text-muted">
+            {hideBuiltins
+              ? t("内置预设已隐藏，且你还没建自己的。点右上「显示内置」，或「新建预设」。")
+              : t("还没有预设。点右上「新建预设」写第一份。")}
+          </li>
+        )}
         {(presets.data ?? []).map((preset) => (
           <li key={preset.id} className="card p-4">
             <div className="flex items-start justify-between gap-4">

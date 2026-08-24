@@ -271,6 +271,9 @@ export const api = {
 
   presetList: () => invoke<SessionPreset[]>("preset_list"),
   presetPrefs: () => invoke<PresetPrefs>("preset_prefs"),
+  /** 藏 / 显内置预设（视图偏好，不动二进制里的内置）。返回更新后的列表。 */
+  presetSetHideBuiltins: (hide: boolean) =>
+    invoke<SessionPreset[]>("preset_set_hide_builtins", { hide }),
   presetSave: (preset: SessionPreset) => invoke<SessionPreset[]>("preset_save", { preset }),
   presetDelete: (id: string) => invoke<SessionPreset[]>("preset_delete", { id }),
   /**

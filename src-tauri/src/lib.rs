@@ -193,6 +193,7 @@ pub fn run() {
             commands::session::session_compact,
             commands::preset::preset_list,
             commands::preset::preset_prefs,
+            commands::preset::preset_set_hide_builtins,
             commands::preset::preset_save,
             commands::preset::preset_delete,
             commands::preset::preset_spawn,

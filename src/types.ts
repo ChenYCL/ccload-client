@@ -822,6 +822,8 @@ export type SpawnResult = {
 export type PresetPrefs = {
   last_cwd: string;
   last_targets: CliTarget[];
+  /** 列表里藏起内置预设。内置删不掉（编译进二进制），藏只是视图偏好。 */
+  hide_builtins: boolean;
 };
 
 /* ---------------------------------------------------------------------------

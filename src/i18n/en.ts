@@ -877,6 +877,14 @@ registerDict("en", {
 
   // ---- 破禁 / 会话预设 ----
   新建预设: "New preset",
+  隐藏内置: "Hide built-ins",
+  显示内置: "Show built-ins",
+  "隐藏内置预设（只是不显示，删不掉）": "Hide the built-in presets (view only — they can't be deleted)",
+  "内置预设已隐藏，点击显示": "Built-in presets are hidden; click to show",
+  "内置预设已隐藏，且你还没建自己的。点右上「显示内置」，或「新建预设」。":
+    "Built-in presets are hidden and you haven't created your own. Click Show built-ins, or New preset.",
+  "还没有预设。点右上「新建预设」写第一份。":
+    "No presets yet. Click New preset in the top right to write your first.",
   编辑预设: "Edit preset",
   工作目录: "Working directory",
   选目录: "Choose folder",
