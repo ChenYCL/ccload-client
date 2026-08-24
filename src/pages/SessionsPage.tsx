@@ -63,7 +63,11 @@ export function SessionsPage() {
   const qc = useQueryClient();
   const [message, setMessage] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [target, setTarget] = useState(DEFAULT_TARGET);
+  // 瘦身目标存字符串而不是数字。数字态存不了「用户正在改」的中间态：全选后键入
+  // 第一个字符前输入框是空串，`Number("") || DEFAULT` 会立刻把值弹回默认 —— 用户
+  // 看到的就是「打字没反应」。字符串允许空着，用到的时候（点瘦身/失焦校验）才解析。
+  const [targetText, setTargetText] = useState(String(DEFAULT_TARGET));
+  const target = Number(targetText) || 0;
   const [model, setModel] = useState("");
 
   const sessions = useQuery({
@@ -153,8 +157,12 @@ export function SessionsPage() {
             type="number"
             step={10_000}
             min={20_000}
-            value={target}
-            onChange={(e) => setTarget(Number(e.target.value) || DEFAULT_TARGET)}
+            value={targetText}
+            onChange={(e) => setTargetText(e.target.value)}
+            // 失焦时才收口：空/非法值回落默认。打字过程中不碰它。
+            onBlur={() =>
+              setTargetText(String(Number(targetText) || DEFAULT_TARGET))
+            }
             className="w-32 rounded-lg border border-border bg-surface-raised px-2 py-1 font-mono"
           />
         </label>
