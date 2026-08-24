@@ -11,7 +11,6 @@ use crate::services::session_preset::{
     find_preset, merged_list, uuid_for_new, PresetStore, SessionPreset, SpawnResult,
 };
 use crate::state::AppState;
-
 fn store_path(state: &AppState) -> PathBuf {
     state.config_dir().join("presets.json")
 }
@@ -73,6 +72,7 @@ pub async fn preset_spawn(
     cwd: String,
     extra_user: Option<String>,
     launch: bool,
+    confine: Option<bool>,
     targets: Option<Vec<CliTarget>>,
 ) -> AppResult<SpawnResult> {
     if cwd.trim().is_empty() {
@@ -88,12 +88,21 @@ pub async fn preset_spawn(
         _ => ALL_TARGETS.to_vec(),
     };
     let picked_save = picked.clone();
+    // 缺省锁定。老前端不传这个字段，而「不锁」才是危险的那一档 —— 默认值必须
+    // 是安全的那个，不能靠调用方记得传。
+    let confine = confine.unwrap_or(true);
+    // 走 config_root() 而不是 dirs::home_dir()：设置页那个「走沙箱，不改真实
+    // CLI 配置」的开关得对这一页也算数。以前这里直接读 $HOME，于是用户以为
+    // 自己在沙箱里试破禁，会话却写进了真的 ~/.claude。
+    let root = state.config_root().await?;
     let result = tokio::task::spawn_blocking(move || {
-        crate::services::session_preset::spawn_at_home(
+        crate::services::session_preset::spawn_in(
+            root,
             &preset,
             &cwd_path,
             extra_user.as_deref(),
             launch,
+            confine,
             &picked,
         )
     })

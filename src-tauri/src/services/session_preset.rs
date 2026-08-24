@@ -10,7 +10,8 @@
 //! 内置几份公开的破禁预设（DAN、双轨回复、已经接上头的 few-shot）。拦不拦得住
 //! 取决于对面那家模型，壳体只负责把历史写进文件。
 
-use std::path::{Path, PathBuf};
+use std::io::Read;
+use std::path::Path;
 use std::process::Command;
 
 use serde::{Deserialize, Serialize};
@@ -18,7 +19,7 @@ use serde_json::{json, Value};
 
 use crate::error::AppError;
 use crate::services::cli_io::write_atomic;
-use crate::services::cli_types::CliTarget;
+use crate::services::cli_types::{CliTarget, ConfigRoot};
 use crate::services::session_rescue::{now_iso, uuid_v4};
 
 /// 用户新建预设时的 id。跟会话 uuid 同一套，不另发明短名。
@@ -67,6 +68,10 @@ pub struct SpawnItem {
     pub launched: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub launch_error: Option<String>,
+    /// 写成了，但有件事用户该知道。和 `launch_error` 分开：那个是「没做成」，
+    /// 这个是「做了，但你可能不想要这个后果」。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// `preset_spawn` 的产物。每家各写各的文件；拉起终端是尽力而为。
@@ -76,9 +81,14 @@ pub struct SpawnResult {
     pub items: Vec<SpawnItem>,
 }
 
-/// 各 CLI 的家目录根。生产用用户 `$HOME`，测试换临时目录，免得写进真配置。
+/// 各 CLI 配置的根目录。生产用 `AppState::config_root()`（它会照顾「走沙箱」
+/// 那个开关），测试换临时目录，免得写进真配置。
+///
+/// 以前这里是个裸的 `home: PathBuf`，靠 `dirs::home_dir()` 直接拿 —— 于是设置页
+/// 那个「走沙箱，不改真实 CLI 配置」的开关对这一页**完全无效**：用户以为自己在
+/// 沙箱里试，破禁会话却写进了真的 `~/.claude`。
 pub struct SpawnEnv {
-    pub home: PathBuf,
+    pub root: ConfigRoot,
 }
 
 impl PresetStore {
@@ -196,12 +206,17 @@ fn with_extra(preset: &SessionPreset, extra_user: Option<&str>) -> Vec<Turn> {
 }
 
 /// 给勾选的每一家 CLI 写一份能 resume 的会话。
+///
+/// `confine = true`（界面默认）时，写出来的会话只在 `cwd` 里干活：不预先关掉
+/// 权限询问，Codex 还额外钉住工作根并只给 workspace 写权限。设成 false 就是
+/// 旧行为 —— 会话一开就没有任何文件访问的关卡。
 pub fn spawn(
     env: &SpawnEnv,
     preset: &SessionPreset,
     cwd: &Path,
     extra_user: Option<&str>,
     launch: bool,
+    confine: bool,
     targets: &[CliTarget],
 ) -> Result<SpawnResult, AppError> {
     validate_preset(preset)?;
@@ -224,9 +239,9 @@ pub fn spawn(
     let mut items = Vec::new();
     for &target in targets {
         let mut item = match target {
-            CliTarget::ClaudeCode => write_claude(env, &cwd_str, cwd, &turns)?,
+            CliTarget::ClaudeCode => write_claude(env, &cwd_str, cwd, &turns, confine)?,
             CliTarget::GrokBuild => write_grok(env, &cwd_str, cwd, title, &turns)?,
-            CliTarget::Codex => write_codex(env, &cwd_str, cwd, title, &turns)?,
+            CliTarget::Codex => write_codex(env, &cwd_str, cwd, title, &turns, confine)?,
             CliTarget::GeminiCli => write_gemini(env, &cwd_str, title, &turns)?,
             CliTarget::OpenCode => write_opencode(env, &cwd_str, title, &turns)?,
         };
@@ -244,15 +259,24 @@ pub fn spawn(
     })
 }
 
-pub fn spawn_at_home(
+pub fn spawn_in(
+    root: ConfigRoot,
     preset: &SessionPreset,
     cwd: &Path,
     extra_user: Option<&str>,
     launch: bool,
+    confine: bool,
     targets: &[CliTarget],
 ) -> Result<SpawnResult, AppError> {
-    let home = dirs::home_dir().ok_or_else(|| AppError::Config("找不到用户主目录".into()))?;
-    spawn(&SpawnEnv { home }, preset, cwd, extra_user, launch, targets)
+    spawn(
+        &SpawnEnv { root },
+        preset,
+        cwd,
+        extra_user,
+        launch,
+        confine,
+        targets,
+    )
 }
 
 fn write_claude(
@@ -260,10 +284,11 @@ fn write_claude(
     cwd_str: &str,
     cwd: &Path,
     turns: &[Turn],
+    confine: bool,
 ) -> Result<SpawnItem, AppError> {
     let session_id = uuid_v4();
     let slug = project_slug(Path::new(cwd_str));
-    let dir = env.home.join(".claude/projects").join(&slug);
+    let dir = env.root.join(".claude/projects").join(&slug);
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{session_id}.jsonl"));
     if path.exists() {
@@ -274,11 +299,24 @@ fn write_claude(
     let ts = now_iso();
     let mut lines: Vec<Value> = Vec::new();
     lines.push(json!({ "type": "mode", "mode": "normal", "sessionId": session_id }));
-    lines.push(json!({
-        "type": "permission-mode",
-        "permissionMode": "bypassPermissions",
-        "sessionId": session_id,
-    }));
+    // 关掉权限询问这件事，只在用户明确要求时才做。
+    //
+    // 这一行以前是无条件写的，而它正是「新开的会话会去翻上层目录」的来源：
+    // 预设本身只写进对话历史，管不到文件访问；真正把关卡撤掉的是它。写了之后
+    // 会话读任何路径都不再问一声，而 Claude Code 的项目根在 cwd 处于某个 git
+    // 仓库子目录时会落到仓库根上 —— 两件事一叠，用户选了 `repo/src`，实际能
+    // 摸到的是整个 `repo`，甚至更上面。
+    //
+    // 不写它 = 走用户自己的默认档，越出 cwd 的读写会当场问你。要旧行为就把
+    // 界面上那个「锁定在这个目录」关掉，那时它会同时出现在 resume 命令里，
+    // 免得只有文件里有、命令上看不出来。
+    if !confine {
+        lines.push(json!({
+            "type": "permission-mode",
+            "permissionMode": "bypassPermissions",
+            "sessionId": session_id,
+        }));
+    }
     let mut parent = Value::Null;
     for turn in turns {
         let uuid = uuid_v4();
@@ -311,13 +349,21 @@ fn write_claude(
         lines.push(rec);
     }
     write_jsonl(&path, &lines)?;
+    // 不锁定时把 `--permission-mode bypassPermissions` 也写进命令里：这件事
+    // 本来只藏在 jsonl 的一行里，命令上看不出来，复制给别人跑的人根本不知道
+    // 自己开的是一个没有任何关卡的会话。
+    let flags = if confine {
+        String::new()
+    } else {
+        " --permission-mode bypassPermissions".to_string()
+    };
     Ok(item(
         CliTarget::ClaudeCode,
         session_id.clone(),
         &path,
         format!(
-            "cd {} && claude --resume {session_id}",
-            sh_single_quote(cwd_str)
+            "cd {} && claude --resume {session_id}{flags}",
+            shell_quote(cwd_str)
         ),
     ))
 }
@@ -331,7 +377,7 @@ fn write_grok(
 ) -> Result<SpawnItem, AppError> {
     let session_id = uuid_v4();
     let slug = grok_cwd_slug(Path::new(cwd_str));
-    let dir = env.home.join(".grok/sessions").join(slug).join(&session_id);
+    let dir = env.root.join(".grok/sessions").join(slug).join(&session_id);
     std::fs::create_dir_all(&dir)?;
     let ts = now_iso();
     let mut history = Vec::new();
@@ -384,7 +430,7 @@ fn write_grok(
         &dir,
         format!(
             "cd {} && grok --resume {session_id}",
-            sh_single_quote(cwd_str)
+            shell_quote(cwd_str)
         ),
     ))
 }
@@ -395,11 +441,12 @@ fn write_codex(
     cwd: &Path,
     title: &str,
     turns: &[Turn],
+    confine: bool,
 ) -> Result<SpawnItem, AppError> {
     let session_id = uuid_v4();
     let ts = now_iso();
     let (y, m, d, stamp) = date_stamp(&ts);
-    let dir = env.home.join(".codex/sessions").join(&y).join(&m).join(&d);
+    let dir = env.root.join(".codex/sessions").join(&y).join(&m).join(&d);
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("rollout-{stamp}-{session_id}.jsonl"));
     let mut lines = vec![json!({
@@ -432,9 +479,20 @@ fn write_codex(
         }));
     }
     write_jsonl(&path, &lines)?;
-    let idx = env.home.join(".codex/session_index.jsonl");
+    let idx = env.root.join(".codex/session_index.jsonl");
+    // 读不动就**停手**，不要当成空的接着写。
+    //
+    // 这里原来是 `read_to_string(&idx).unwrap_or_default()`：文件在（权限不对、
+    // 非 UTF-8、正被 codex 写着）但读失败时，它会退回空串，然后把只含我们这一行
+    // 的内容 write_atomic 回去 —— 用户攒了几个月的会话索引一次点击就没了，而且
+    // 这一路没有任何快照可回滚。宁可这一家写不成，也不要覆盖掉。
     let mut index = if idx.exists() {
-        std::fs::read_to_string(&idx).unwrap_or_default()
+        std::fs::read_to_string(&idx).map_err(|e| {
+            AppError::Config(format!(
+                "读不了 {}（{e}），没有动它 —— 直接覆盖会把已有的会话索引清空。",
+                idx.display()
+            ))
+        })?
     } else {
         String::new()
     };
@@ -454,13 +512,21 @@ fn write_codex(
         std::fs::create_dir_all(parent)?;
     }
     write_atomic(&idx, &index)?;
+    // Codex 是这五家里唯一给了真沙箱的：`-C` 把工作根钉死（不靠 shell 的 cd，
+    // 用户在别处跑这条命令也还是这个根），`-s workspace-write` 让模型跑出来的
+    // shell 命令只能写工作区。两个都是本机 `codex resume --help` 里核实过的。
+    let flags = if confine {
+        format!(" -C {} -s workspace-write", shell_quote(cwd_str))
+    } else {
+        format!(" -C {}", shell_quote(cwd_str))
+    };
     Ok(item(
         CliTarget::Codex,
         session_id.clone(),
         &path,
         format!(
-            "cd {} && codex resume {session_id}",
-            sh_single_quote(cwd_str)
+            "cd {} && codex resume {session_id}{flags}",
+            shell_quote(cwd_str)
         ),
     ))
 }
@@ -473,13 +539,26 @@ fn write_gemini(
 ) -> Result<SpawnItem, AppError> {
     let session_id = uuid_v4();
     let slug = gemini_slug(cwd_str);
-    let dir = env.home.join(".gemini/tmp").join(&slug).join("chats");
+    let dir = env.root.join(".gemini/tmp").join(&slug).join("chats");
     std::fs::create_dir_all(&dir)?;
-    std::fs::write(
-        env.home.join(".gemini/tmp").join(&slug).join(".project_root"),
-        cwd_str,
-    )?;
-    merge_gemini_projects(&env.home.join(".gemini/projects.json"), cwd_str, &slug)?;
+
+    // Gemini 的 tmp 目录名只取**目录基名**（真机上核对过：`~/.gemini/tmp/ace-pro/`
+    // 里放着 `.project_root` 和 `chats/`）。所以 `/work/api` 和 `/personal/api`
+    // 会落进同一个 `api/` —— 这是 Gemini 自己的编码，我们照抄是对的，改成带路径
+    // 哈希反而会让它找不到。
+    //
+    // 但撞上的时候不能不吭声：`.project_root` 是那个目录归属哪个项目的唯一凭据，
+    // 我们改写它，等于把另一个项目已有的 chats 挂到了这次选的目录名下。用户是从
+    // 界面点的按钮，不在那个目录里，看不见这件事发生。
+    let root_marker = env.root.join(".gemini/tmp").join(&slug).join(".project_root");
+    let previous = std::fs::read_to_string(&root_marker).ok();
+    let collided = previous
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty() && *p != cwd_str)
+        .map(str::to_string);
+    write_atomic(&root_marker, cwd_str)?;
+    merge_gemini_projects(&env.root.join(".gemini/projects.json"), cwd_str, &slug)?;
     let ts = now_iso();
     let short: String = session_id.chars().filter(|c| *c != '-').take(8).collect();
     let stamp = ts.get(..16).unwrap_or(&ts).replace(':', "-");
@@ -517,16 +596,23 @@ fn write_gemini(
             serde_json::to_string_pretty(&doc).map_err(|e| AppError::Config(e.to_string()))?
         ),
     )?;
-    Ok(item(
+    let mut out = item(
         CliTarget::GeminiCli,
         session_id,
         &path,
         format!(
             "cd {} && gemini --session-file {}",
-            sh_single_quote(cwd_str),
-            sh_single_quote(&path.to_string_lossy())
+            shell_quote(cwd_str),
+            shell_quote(&path.to_string_lossy())
         ),
-    ))
+    );
+    out.note = collided.map(|prev| {
+        format!(
+            "Gemini 按目录基名（{slug}）存会话，而这个名字之前归 {prev}。\
+             已经改指到本次的目录 —— 那个目录里已有的会话会跟着算到这边来。"
+        )
+    });
+    Ok(out)
 }
 
 fn write_opencode(
@@ -537,7 +623,7 @@ fn write_opencode(
 ) -> Result<SpawnItem, AppError> {
     let hex: String = uuid_v4().chars().filter(|c| *c != '-').collect();
     let session_id = format!("ses_{}", &hex[..24.min(hex.len())]);
-    let dir = env.home.join(".ccload-client/preset-exports");
+    let dir = env.root.join(".ccload-client/preset-exports");
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{session_id}.json"));
     let now_ms = std::time::SystemTime::now()
@@ -584,8 +670,8 @@ fn write_opencode(
         &path,
         format!(
             "cd {} && opencode import {} && opencode --session {session_id}",
-            sh_single_quote(cwd_str),
-            sh_single_quote(&path.to_string_lossy())
+            shell_quote(cwd_str),
+            shell_quote(&path.to_string_lossy())
         ),
     ))
 }
@@ -598,6 +684,7 @@ fn item(target: CliTarget, session_id: String, path: &Path, command: String) -> 
         command,
         launched: false,
         launch_error: None,
+        note: None,
     }
 }
 
@@ -611,9 +698,23 @@ fn write_jsonl(path: &Path, lines: &[Value]) -> Result<(), AppError> {
 }
 
 fn merge_gemini_projects(path: &Path, cwd: &str, slug: &str) -> Result<(), AppError> {
+    // 解析不了就**停手**，不要拿一个空壳覆盖回去。
+    //
+    // 原来是 `.unwrap_or_else(|_| json!({ "projects": {} }))`：只要这个文件被
+    // Gemini 换了格式、被别的工具写坏、或者带了 BOM，我们就会把用户所有的项目
+    // 记录替换成一份空的再写回去。这条路上没有快照，删掉就是删掉了。
     let mut doc: Value = if path.exists() {
-        serde_json::from_str(&std::fs::read_to_string(path)?)
-            .unwrap_or_else(|_| json!({ "projects": {} }))
+        let raw = std::fs::read_to_string(path)?;
+        if raw.trim().is_empty() {
+            json!({ "projects": {} })
+        } else {
+            serde_json::from_str(&raw).map_err(|e| {
+                AppError::Config(format!(
+                    "{} 不是我们认得的 JSON（{e}），没有动它 —— 直接覆盖会把里面的项目记录全清掉。",
+                    path.display()
+                ))
+            })?
+        }
     } else {
         json!({ "projects": {} })
     };
@@ -684,6 +785,14 @@ fn git_branch(cwd: &Path) -> String {
         .unwrap_or_default()
 }
 
+/// 只为了嗅一个版本号，最多读文件开头这么多字节。
+///
+/// 原来是 `read_to_string` 把整个文件读进来，再 `.lines().take(30)`。而这个目录
+/// 装的是**别的会话的完整记录** —— 几十上百 MB 是常态（「会话救援」那一页存在
+/// 的理由就是这个）。为了一行 `version` 把它整个读进内存，还是在阻塞线程池上，
+/// 用户勾了五家 CLI 就是五次。
+const VERSION_PEEK_BYTES: u64 = 64 * 1024;
+
 fn peek_version(project_dir: &Path) -> String {
     let Ok(rd) = std::fs::read_dir(project_dir) else {
         return String::new();
@@ -693,10 +802,25 @@ fn peek_version(project_dir: &Path) -> String {
         if p.extension().and_then(|s| s.to_str()) != Some("jsonl") {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(&p) else {
+        let Ok(file) = std::fs::File::open(&p) else {
             continue;
         };
-        for line in text.lines().take(30) {
+        let mut head = Vec::new();
+        if file
+            .take(VERSION_PEEK_BYTES)
+            .read_to_end(&mut head)
+            .is_err()
+        {
+            continue;
+        }
+        let truncated = head.len() as u64 == VERSION_PEEK_BYTES;
+        let text = String::from_utf8_lossy(&head);
+        let mut lines: Vec<&str> = text.lines().collect();
+        // 截到一半的最后一行是半条 JSON，解析必然失败，扔掉省一次 parse。
+        if truncated {
+            lines.pop();
+        }
+        for line in lines.into_iter().take(30) {
             let Ok(v) = serde_json::from_str::<Value>(line) else {
                 continue;
             };
@@ -710,8 +834,26 @@ fn peek_version(project_dir: &Path) -> String {
     String::new()
 }
 
-fn sh_single_quote(s: &str) -> String {
+/// 把路径塞进要交给 shell 的命令里。
+///
+/// 这条命令有两个去处：我们自己拉起终端跑，以及用户复制出去粘进自己的终端。
+/// 两边的引号规则得对得上，所以按平台分。
+///
+/// Windows 那一支以前是错的：整个文件只有一个 POSIX 单引号版本，而
+/// `launch_terminal` 在 Windows 上走的是 `cmd`，那里单引号**不是引号**，是普通
+/// 字符 —— `cd 'C:\repo'` 根本进不去那个目录。更糟的是目录名里一个 `&` 就能把
+/// 后面的东西变成另一条命令（`C:\a & calc`），而目录名是用户从选择框里点出来
+/// 的，一个从网上解压出来的文件夹就够了。
+#[cfg(not(target_os = "windows"))]
+fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\"'\"'"))
+}
+
+#[cfg(target_os = "windows")]
+fn shell_quote(s: &str) -> String {
+    // cmd 的双引号里 `&` `|` `^` `<` `>` 都失去特殊含义。Windows 路径本身不允许
+    // 出现 `"`，真出现了就剥掉 —— 留着只会把引号提前闭合，正好是要防的那件事。
+    format!("\"{}\"", s.replace('"', ""))
 }
 
 fn launch_terminal(script: &str) -> Result<(), AppError> {
@@ -955,11 +1097,14 @@ mod tests {
         let cwd = tmp();
         let preset = builtins().into_iter().find(|p| p.id == "warmup").unwrap();
         let r = spawn(
-            &SpawnEnv { home: home.clone() },
+            &SpawnEnv {
+                root: ConfigRoot::sandbox(home.clone()),
+            },
             &preset,
             &cwd,
             Some("下一步：审查这个仓库"),
             false,
+            true,
             &[CliTarget::ClaudeCode],
         )
         .unwrap();
@@ -977,10 +1122,9 @@ mod tests {
             .map(|l| serde_json::from_str(l).unwrap())
             .collect();
 
-        // mode + permission-mode + 4 轮内置 + 1 条 extra。
-        assert_eq!(entries.len(), 2 + 4 + 1);
+        // mode + 4 轮内置 + 1 条 extra。锁定档不写 permission-mode 那一条。
+        assert_eq!(entries.len(), 1 + 4 + 1);
         assert_eq!(entries[0]["type"], "mode");
-        assert_eq!(entries[1]["permissionMode"], "bypassPermissions");
 
         let conv: Vec<&Value> = entries
             .iter()
@@ -1039,11 +1183,14 @@ mod tests {
             CliTarget::OpenCode,
         ];
         let r = spawn(
-            &SpawnEnv { home: home.clone() },
+            &SpawnEnv {
+                root: ConfigRoot::sandbox(home.clone()),
+            },
             &preset,
             &cwd,
             None,
             false,
+            true,
             &targets,
         )
         .unwrap();
@@ -1092,6 +1239,220 @@ mod tests {
 
         std::fs::remove_dir_all(&home).ok();
         std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    /// 锁定档（界面默认）绝不能把权限关卡预先关掉。
+    ///
+    /// 这条盯的是「新开的会话会去翻上层目录」那个 bug 的根：预设只写对话历史，
+    /// 管不到文件访问，真正撤掉关卡的是 transcript 里那行 permission-mode。
+    /// 它一旦回来，会话读任何路径都不再问一声，而 Claude Code 在 cwd 位于某个
+    /// git 仓库子目录时项目根会落到仓库根上 —— 用户选了 `repo/src`，实际摸得到
+    /// 的是整个 `repo`。
+    #[test]
+    fn confined_spawn_never_preauthorizes_file_access() {
+        let home = tmp();
+        let cwd = tmp();
+        let preset = builtins().into_iter().find(|p| p.id == "dan").unwrap();
+        let r = spawn(
+            &SpawnEnv {
+                root: ConfigRoot::sandbox(home.clone()),
+            },
+            &preset,
+            &cwd,
+            None,
+            false,
+            true,
+            &[CliTarget::ClaudeCode, CliTarget::Codex],
+        )
+        .unwrap();
+
+        let claude = r
+            .items
+            .iter()
+            .find(|i| i.target == CliTarget::ClaudeCode)
+            .unwrap();
+        let body = std::fs::read_to_string(&claude.path).unwrap();
+        assert!(
+            !body.contains("bypassPermissions"),
+            "锁定档写出了 bypassPermissions：\n{body}"
+        );
+        assert!(
+            !claude.command.contains("bypassPermissions"),
+            "锁定档的命令里不该有 bypassPermissions：{}",
+            claude.command
+        );
+
+        // Codex 有真沙箱，锁定档要用上：工作根钉死 + 只给 workspace 写。
+        let codex = r.items.iter().find(|i| i.target == CliTarget::Codex).unwrap();
+        assert!(codex.command.contains("-s workspace-write"), "{}", codex.command);
+        assert!(codex.command.contains(" -C "), "{}", codex.command);
+
+        std::fs::remove_dir_all(&home).ok();
+        std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    /// 关掉锁定是可以的 —— 但那件事必须**同时**出现在命令里。
+    ///
+    /// 以前它只藏在 jsonl 的一行里：把命令复制给别人跑的人，看不出自己开的是一个
+    /// 没有任何文件访问关卡的会话。
+    #[test]
+    fn unconfined_spawn_says_so_in_the_command_too() {
+        let home = tmp();
+        let cwd = tmp();
+        let preset = builtins().into_iter().find(|p| p.id == "dan").unwrap();
+        let r = spawn(
+            &SpawnEnv {
+                root: ConfigRoot::sandbox(home.clone()),
+            },
+            &preset,
+            &cwd,
+            None,
+            false,
+            false,
+            &[CliTarget::ClaudeCode],
+        )
+        .unwrap();
+        let claude = &r.items[0];
+        assert!(std::fs::read_to_string(&claude.path)
+            .unwrap()
+            .contains("bypassPermissions"));
+        assert!(
+            claude.command.contains("--permission-mode bypassPermissions"),
+            "命令里看不出这是无关卡会话：{}",
+            claude.command
+        );
+
+        std::fs::remove_dir_all(&home).ok();
+        std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    /// 会话文件只读开头一小段。这个目录里放的是别人的完整会话记录，几十上百 MB
+    /// 是常态，为了一个版本号整个读进内存是不行的。
+    #[test]
+    fn peek_version_only_reads_the_head_of_a_huge_transcript() {
+        let dir = tmp();
+        let mut body = String::new();
+        // 版本号埋在第一行 —— 它必须被读到。
+        body.push_str("{\"version\":\"1.2.3\"}\n");
+        // 后面缀上远超窗口的垃圾。整读的实现会把这些也吞进内存。
+        let filler = "{\"pad\":\"".to_string() + &"x".repeat(4096) + "\"}\n";
+        while body.len() < (VERSION_PEEK_BYTES as usize) * 4 {
+            body.push_str(&filler);
+        }
+        std::fs::write(dir.join("big.jsonl"), &body).unwrap();
+        assert_eq!(peek_version(&dir), "1.2.3");
+
+        // 版本号在窗口之外时读不到，而不是把文件整个拉进来找。宁可少一个可选
+        // 字段，也不要为它付几百 MB。
+        let dir2 = tmp();
+        let mut late = String::new();
+        while late.len() < (VERSION_PEEK_BYTES as usize) * 2 {
+            late.push_str(&filler);
+        }
+        late.push_str("{\"version\":\"9.9.9\"}\n");
+        std::fs::write(dir2.join("late.jsonl"), &late).unwrap();
+        assert_eq!(peek_version(&dir2), "");
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&dir2).ok();
+    }
+
+    /// 命令里的路径必须按**本平台**的 shell 规则引起来。
+    ///
+    /// Windows 上以前用的是 POSIX 单引号：`cd 'C:\repo'` 在 cmd 里根本进不去那个
+    /// 目录，而目录名里一个 `&` 就能把后面接上的东西变成另一条命令。
+    #[test]
+    fn shell_quote_follows_the_platform_rules() {
+        #[cfg(not(target_os = "windows"))]
+        {
+            assert_eq!(shell_quote("/tmp/a b"), "'/tmp/a b'");
+            // 单引号要能闭合再转义再开回来，否则路径里一个 ' 就能接命令
+            assert_eq!(shell_quote("/tmp/it's"), r#"'/tmp/it'"'"'s'"#);
+        }
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(shell_quote(r"C:\a b"), "\"C:\\a b\"");
+            // cmd 的双引号里 & 失去特殊含义，不会变成命令分隔
+            assert_eq!(shell_quote(r"C:\a & calc"), "\"C:\\a & calc\"");
+            assert!(!shell_quote("C:\\a\"b").contains("a\"b"), "引号没剥掉会提前闭合");
+        }
+    }
+
+    /// 用户已有的 CLI 记录，读不动 / 解析不了时必须**停手**，不能拿空壳覆盖。
+    ///
+    /// 这两个文件都在我们的备份体系之外（破禁这一页不走 snapshot），覆盖掉就是
+    /// 真没了：`~/.gemini/projects.json` 装着用户所有项目记录，
+    /// `~/.codex/session_index.jsonl` 是几个月攒下来的会话索引。
+    #[test]
+    fn refuses_to_clobber_cli_records_it_cannot_parse() {
+        let home = tmp();
+        let cwd = tmp();
+        let preset = builtins().into_iter().find(|p| p.id == "dan").unwrap();
+
+        // Gemini：放一份我们读不懂的 projects.json
+        let gdir = home.join(".gemini");
+        std::fs::create_dir_all(&gdir).unwrap();
+        let gpath = gdir.join("projects.json");
+        std::fs::write(&gpath, "{ 这不是 JSON").unwrap();
+
+        let err = spawn(
+            &SpawnEnv {
+                root: ConfigRoot::sandbox(home.clone()),
+            },
+            &preset,
+            &cwd,
+            None,
+            false,
+            true,
+            &[CliTarget::GeminiCli],
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("没有动它"),
+            "报错没说清是「没动」：{err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&gpath).unwrap(),
+            "{ 这不是 JSON",
+            "原文件被改写了 —— 这正是要防的"
+        );
+
+        std::fs::remove_dir_all(&home).ok();
+        std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    /// Gemini 按**目录基名**存会话，所以 `/work/api` 和 `/personal/api` 会落进
+    /// 同一个 tmp 目录。这是 Gemini 自己的编码（真机核对过），照抄是对的 ——
+    /// 但撞上时必须说出来：`.project_root` 是那个目录归属谁的唯一凭据，我们改写
+    /// 它等于把另一个项目已有的会话挂到这次选的目录名下，而用户是从界面点的，
+    /// 根本不在那个目录里。
+    #[test]
+    fn gemini_basename_collision_is_reported_not_swallowed() {
+        let home = tmp();
+        let a = tmp().join("api");
+        let b = tmp().join("api");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let preset = builtins().into_iter().find(|p| p.id == "dan").unwrap();
+        let env = SpawnEnv {
+            root: ConfigRoot::sandbox(home.clone()),
+        };
+
+        let first = spawn(&env, &preset, &a, None, false, true, &[CliTarget::GeminiCli]).unwrap();
+        assert!(first.items[0].note.is_none(), "第一次不该有告警");
+
+        let second = spawn(&env, &preset, &b, None, false, true, &[CliTarget::GeminiCli]).unwrap();
+        let note = second.items[0]
+            .note
+            .as_deref()
+            .expect("同名目录撞了却什么都没说");
+        assert!(note.contains("api"), "{note}");
+        assert!(
+            note.contains(a.canonicalize().unwrap().to_str().unwrap()),
+            "没指出原先归谁：{note}"
+        );
+
+        std::fs::remove_dir_all(&home).ok();
     }
 
     /// 内置 id 既不能删也不能改 —— 否则用户一次手滑就把 DAN 弄没了。

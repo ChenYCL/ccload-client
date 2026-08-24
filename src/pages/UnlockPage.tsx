@@ -34,6 +34,10 @@ export function UnlockPage() {
   const [cwd, setCwd] = useState("");
   const [extra, setExtra] = useState("");
   const [launch, setLaunch] = useState(true);
+  // 默认锁住。不锁的那一档会写出一个开局就没有任何文件访问关卡的会话，而
+  // Claude Code 在 cwd 位于某个 git 仓库子目录时项目根会落到仓库根上 ——
+  // 两件事一叠，选了 repo/src 实际摸得到的是整个 repo。默认值得是安全的那个。
+  const [confine, setConfine] = useState(true);
   const [targets, setTargets] = useState<CliTarget[]>([...ALL_TARGETS]);
   const [editing, setEditing] = useState<SessionPreset | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -67,7 +71,7 @@ export function UnlockPage() {
   });
 
   const spawn = useMutation({
-    mutationFn: (id: string) => api.presetSpawn(id, cwd, extra, launch, targets),
+    mutationFn: (id: string) => api.presetSpawn(id, cwd, extra, launch, targets, confine),
     onSuccess: (r) => {
       setResult(r);
       setMessage(null);
@@ -172,6 +176,23 @@ export function UnlockPage() {
         <label className="flex items-center gap-2 text-sm">
           <input
             type="checkbox"
+            checked={confine}
+            onChange={(e) => setConfine(e.target.checked)}
+          />
+          {t("锁定在这个目录")}
+        </label>
+        <p className="-mt-1 pl-6 text-xs leading-relaxed text-muted">
+          {confine
+            ? t(
+                "会话不会被预先解除文件访问的关卡：越出上面这个目录的读写要你当场点头。Codex 还会额外钉死工作根、只给工作区写权限。",
+              )
+            : t(
+                "关掉之后写出的会话开局就没有任何文件访问关卡，读写整块磁盘都不会问你一声。而 CLI 的项目根在目录处于某个 git 仓库子目录时会落到仓库根上 —— 选了 repo/src，实际摸得到的是整个 repo。",
+              )}
+        </p>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
             checked={launch}
             onChange={(e) => setLaunch(e.target.checked)}
           />
@@ -263,6 +284,13 @@ export function UnlockPage() {
                       })
                     : t("把上面这条命令丢进终端。")}
               </p>
+              {/* 写成了、但有后果的那一类。和上面那行分开：那是「没做成」，
+                  这是「做了，而你可能不想要这个后果」。 */}
+              {it.note && (
+                <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-xs">
+                  {it.note}
+                </p>
+              )}
             </div>
           ))}
         </div>

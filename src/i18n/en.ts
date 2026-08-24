@@ -851,6 +851,11 @@ registerDict("en", {
   "会作为最后一条用户消息追加。留空就只写入预设对白。":
     "Appended as the last user message. Leave empty to write only the preset dialogue.",
   "写完后拉起终端跑 resume": "Open a terminal and run each CLI's resume command when done",
+  锁定在这个目录: "Keep the session inside this directory",
+  "会话不会被预先解除文件访问的关卡：越出上面这个目录的读写要你当场点头。Codex 还会额外钉死工作根、只给工作区写权限。":
+    "The session starts with its normal permission prompts intact, so reads and writes outside the directory above still have to be approved by you. Codex additionally gets its working root pinned and write access limited to the workspace.",
+  "关掉之后写出的会话开局就没有任何文件访问关卡，读写整块磁盘都不会问你一声。而 CLI 的项目根在目录处于某个 git 仓库子目录时会落到仓库根上 —— 选了 repo/src，实际摸得到的是整个 repo。":
+    "With this off, the session starts with every file-access check already waived — it can read and write anywhere on the disk without asking. On top of that, a CLI resolves its project root to the enclosing git repository, so picking repo/src actually hands it the whole repo.",
   "写给哪些 CLI": "Which CLIs to write",
   "至少勾选一个 CLI": "Tick at least one CLI",
   "要打开的那个仓库路径": "The repo path to open",

@@ -781,6 +781,9 @@ export type SpawnItem = {
   command: string;
   launched: boolean;
   launch_error?: string;
+  /** 写成了，但有件事你该知道。`launch_error` 是「没做成」，这个是「做了，
+   *  而你可能不想要这个后果」—— 比如 Gemini 按目录基名存会话，撞了名字。 */
+  note?: string;
 };
 
 export type SpawnResult = {
