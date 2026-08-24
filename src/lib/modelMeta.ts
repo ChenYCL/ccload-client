@@ -12,12 +12,26 @@ const CONTEXT_PRESETS: [RegExp, number][] = [
   [/o[34]/, 200_000],
   [/gemini/i, 1_000_000],
   [/glm/i, 200_000],
+  [/deepseek-v[34]/i, 1_000_000],
   [/deepseek/i, 128_000],
   [/qwen/i, 131_072],
+  [/grok-4\.[56]/i, 500_000],
   [/grok/i, 256_000],
 ];
 
+/// `[1m]` / `[500k]` 是上游挂在名字上的声明，比家族猜测准。
+function suffixWindow(alias: string): number | null {
+  const m = /\[(\d+(?:\.\d+)?)([mk]?)\]$/i.exec(alias.trim());
+  if (!m) return null;
+  const n = Number(m[1]);
+  if (!(n > 0)) return null;
+  const mul = m[2].toLowerCase() === "m" ? 1_000_000 : m[2].toLowerCase() === "k" ? 1_000 : 1;
+  return Math.round(n * mul);
+}
+
 export function defaultContextWindow(alias: string): number {
+  const fromSuffix = suffixWindow(alias);
+  if (fromSuffix) return fromSuffix;
   for (const [re, n] of CONTEXT_PRESETS) {
     if (re.test(alias)) return n;
   }

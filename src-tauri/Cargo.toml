@@ -33,6 +33,10 @@ tracing = "0.1"
 # 全是 `0.1.0-beta.20260822.4` 这种，semver 规定带预发布的**小于**同号正式版，
 # 而段内数字要按数值比（`beta.20260822.10` > `beta.20260822.9`，字典序会反）。
 semver = "1"
+# 快照对比用的行级 diff。只要 `text`，不要默认那堆 inline/unicode 分词 ——
+# 我们比的是配置文件（JSON/TOML/Markdown），按行看就够，字符级高亮只会让
+# 几百 KB 的 ~/.claude.json 慢下来。
+similar = { version = "3.2.0", default-features = false, features = ["text"] }
 
 # macOS 的自动大写/智能标点是系统级文本替换，HTML 的 autocapitalize 在桌面端
 # 只是软键盘提示，管不到它。要关只能在启动时改本应用的 NSUserDefaults。

@@ -61,6 +61,53 @@ export type BackupEntry = {
   files: BackupFile[];
 };
 
+/* ---------------------------------------------------------------------------
+   快照对比：一份快照相对某个基准改了什么。
+
+   「恢复」是不可逆地覆盖当前配置，而列表上只看得到时间和「N 个文件」——
+   先看 diff 再决定，才敢点那个按钮。
+--------------------------------------------------------------------------- */
+
+/** 对比基准。`current` 回答「恢复会把我现在的配置改成什么样」，所以是默认。 */
+export type DiffBase = "current" | "previous" | "pristine";
+
+export type DiffLine = {
+  kind: "same" | "add" | "del";
+  text: string;
+  /** 基准侧行号（1 起）。新增行没有。 */
+  old_no?: number;
+  /** 快照侧行号（1 起）。删除行没有。 */
+  new_no?: number;
+};
+
+export type FileDiff = {
+  rel: string;
+  /** false = 这份快照会新建这个文件。 */
+  base_exists: boolean;
+  /** false = 恢复这份会删掉这个文件。 */
+  target_exists: boolean;
+  lines: DiffLine[];
+  added: number;
+  removed: number;
+  identical: boolean;
+  /** 行数超上限被截断（计数仍是完整的）。 */
+  truncated: boolean;
+  /** 没法做文本对比的原因（二进制等）。 */
+  note?: string;
+};
+
+export type BackupDiff = {
+  id: string;
+  target: CliTarget;
+  base: DiffBase;
+  base_label: string;
+  /** 基准快照的 unix 秒；磁盘现状 / 基准缺失时没有。 */
+  base_created_at?: number;
+  /** 基准不存在时的说明。 */
+  base_missing?: string;
+  files: FileDiff[];
+};
+
 export type TakeoverOptions = {
   anthropic_model?: string;
   sonnet_model?: string;
@@ -182,6 +229,7 @@ export type Page =
   | "models"
   | "inject"
   | "sessions"
+  | "session-manage"
   | "unlock"
   | "extensions"
   | "graph"
@@ -783,6 +831,15 @@ export type CompactReport = {
   context_before: number;
   summary_tokens: number;
   backup: string;
+  /** 真正打成功的那个模型。自动挑选时和点的那个可能不是同一个。 */
+  model?: string;
+};
+
+export type DeleteReport = {
+  deleted: number;
+  bytes: number;
+  skipped_live: string[];
+  errors: string[];
 };
 
 /* ---------------------------------------------------------------------------

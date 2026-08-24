@@ -133,7 +133,7 @@ export function FallbackPage() {
         <div>
           <h1 className="t-display">{t("模型链")}</h1>
           <p className="mt-1 text-sm text-muted">
-            {t("ccLoad 内核只做一层模型重定向，然后按优先级切渠道。这里把一条 fallback 链（例如 fable-5 → kimi-k3 → opus-5）写成一组按优先级递减的渠道，内核的选择器就会自动走完整个链。")}
+            {t("ccLoad 内核只做一层模型重定向，然后按优先级切渠道。这里把一条 fallback 链（例如 opus → glm-5.3[1m] → grok-4.6）写成一组按优先级递减的渠道，内核的选择器就会自动走完整个链。应用时还会把链上最窄那一跳的窗口写进 Claude Code，让原生 /compact 按真实天花板提前动手。")}
           </p>
         </div>
         <button
@@ -187,6 +187,11 @@ export function FallbackPage() {
         ))}
       </ul>
 
+      {apply.isSuccess && apply.data && (
+        <p className="mt-3 whitespace-pre-line text-sm text-accent">
+          {apply.data.join("\n")}
+        </p>
+      )}
       {apply.isError && (
         <p className="mt-3 text-sm text-red-600">{errText(apply.error)}</p>
       )}

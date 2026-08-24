@@ -3,7 +3,11 @@
 use tauri::State;
 
 use crate::error::{AppError, AppResult};
-use crate::services::session_rescue::{self, CompactReport, SessionInfo, SlimReport};
+use crate::services::context_window::pick_compact_models;
+use crate::services::fallback::FallbackStore;
+use crate::services::session_rescue::{
+    self, CompactReport, DeleteReport, SessionInfo, SlimReport,
+};
 use crate::state::AppState;
 
 /// 扫出本机所有 Claude Code 会话。
@@ -36,8 +40,9 @@ pub async fn session_slim(
 
 /// 分块总结：把活动链切成小段各自总结，再追加原生的压缩边界 + 摘要。
 ///
-/// 模型走客户端令牌打内核的 `/v1/messages`，所以路由和故障转移都归内核管。
-/// 用哪个模型由调用方给 —— 这一页知道哪个渠道现在是好的，比这里猜准。
+/// 模型走客户端令牌打内核的 `/v1/messages`。调用方可以指定一个；空着则按模型链
+/// 从前往后挑窗口够的那几跳。400 too-long 时换下一个 —— 内核不把这种 400 当
+/// 故障转移，压缩这边必须自己认。
 #[tauri::command]
 pub async fn session_compact(
     state: State<'_, AppState>,
@@ -50,8 +55,68 @@ pub async fn session_compact(
         let s = state.settings.read().await;
         (s.kernel.base_url(), s.client_api_token.clone().unwrap_or_default())
     };
+    let candidates = compact_candidates(&state, &path, &model)?;
+    let mut last_err: Option<AppError> = None;
+    let mut tried = Vec::new();
+    for m in &candidates {
+        tried.push(m.clone());
+        match session_rescue::compact(&base_url, &token, m, &path, keep_tail, chunk_tokens)
+            .await
+        {
+            Ok(r) => return Ok(r),
+            Err(e) if session_rescue::is_prompt_too_long(&e) => {
+                last_err = Some(e);
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    let detail = last_err
+        .map(|e| e.to_string())
+        .unwrap_or_else(|| "没有可用的压缩模型".into());
+    Err(AppError::Config(format!(
+        "分块总结失败（试过 {}）：{detail}",
+        tried.join(" → ")
+    ))
+    .into())
+}
+
+/// 用户点的那个在前，链上窗口够的接在后面。点的那个自己也会 400，所以不能只试它。
+fn compact_candidates(
+    state: &AppState,
+    path: &str,
+    model: &str,
+) -> Result<Vec<String>, AppError> {
+    let needed = session_rescue::last_context_of(path)?;
+    let store = FallbackStore::load(&state.config_dir().join("fallback.json"))?;
+    let mut out = Vec::new();
+    let picked = model.trim();
+    if !picked.is_empty() {
+        out.push(picked.to_string());
+    }
+    for chain in &store.chains {
+        for m in pick_compact_models(needed, &chain.hops) {
+            if !out.iter().any(|s| s == &m) {
+                out.push(m);
+            }
+        }
+    }
+    if out.is_empty() {
+        return Err(AppError::Config(
+            "没有指定压缩模型，模型链里也没有窗口够的一跳。先在上面选一个，或先应用一条模型链。".into(),
+        ));
+    }
+    Ok(out)
+}
+
+/// 删掉选中的会话。不可恢复，调用方必须先弹确认。
+///
+/// 一条失败不拖累其余：清一堆旧会话时，不该因为其中一个被占用就整批停住。
+/// 活着的会话后端会跳过，不报错。
+#[tauri::command]
+pub async fn session_delete(paths: Vec<String>) -> AppResult<DeleteReport> {
     Ok(
-        session_rescue::compact(&base_url, &token, &model, &path, keep_tail, chunk_tokens)
-            .await?,
+        tokio::task::spawn_blocking(move || session_rescue::delete_sessions(&paths))
+            .await
+            .map_err(|e| AppError::Config(format!("删除会话失败：{e}")))??,
     )
 }

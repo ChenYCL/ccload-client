@@ -13,6 +13,7 @@ registerDict("en", {
   总览: "Overview",
   实时日志: "Live logs",
   订阅用量: "Subscription usage",
+  会话管理: "Session manager",
   "CLI 接管": "CLI takeover",
   调度图: "Dispatch graph",
   模型链: "Model chain",
@@ -542,6 +543,8 @@ registerDict("en", {
   "Opus 4.8 / Opus 5，完全不看": "Opus 4.8 / Opus 5, ignoring",
   "ccLoad 内核只做一层模型重定向，然后按优先级切渠道。这里把一条 fallback 链（例如 fable-5 → kimi-k3 → opus-5）写成一组按优先级递减的渠道，内核的选择器就会自动走完整个链。":
     "The ccLoad kernel does a single model redirect and then switches channels by priority. This page turns a fallback chain (e.g. fable-5 → kimi-k3 → opus-5) into a set of channels with descending priority, so the kernel's existing selector walks the whole chain for you.",
+  "ccLoad 内核只做一层模型重定向，然后按优先级切渠道。这里把一条 fallback 链（例如 opus → glm-5.3[1m] → grok-4.6）写成一组按优先级递减的渠道，内核的选择器就会自动走完整个链。应用时还会把链上最窄那一跳的窗口写进 Claude Code，让原生 /compact 按真实天花板提前动手。":
+    "The ccLoad kernel does a single model redirect and then switches channels by priority. This page turns a fallback chain (e.g. opus → glm-5.3[1m] → grok-4.6) into a set of channels with descending priority, so the kernel's existing selector walks the whole chain. Applying it also writes the narrowest hop's window into Claude Code, so native /compact fires against the real ceiling instead of a [1m] suffix that is not there.",
   "ccLoad 自带的管理界面，在独立窗口中打开，字段随内核升级自动跟进。":
     "ccLoad's own admin UI, opened in a separate window. Its fields follow the kernel as it is upgraded.",
   "hook 在配置里没有名字，后端用「事件 + 命令」认它。改动命令等于新增一条，原来那条要回列表里单独删除。":
@@ -639,6 +642,24 @@ registerDict("en", {
     "Bind each provider to a channel that already exists in the kernel (this client will not create channels or invent credentials for you), then fill in its",
   "每次接管前会自动快照。标记「原始」的是首次接管前的用户配置。":
     "A snapshot is taken before every takeover. The one marked “pristine” is your config from before the first takeover.",
+  对比: "Diff",
+  "看这份快照和现在的配置差在哪": "See how this snapshot differs from the current config",
+  快照对比: "Snapshot diff",
+  和谁比: "Compare against",
+  磁盘现状: "On disk now",
+  上一份快照: "Previous snapshot",
+  原始配置: "Original config",
+  基准: "baseline",
+  "红色 − 是「{base}」里有的，绿色 + 是这份快照里的。恢复后会变成绿色那一侧。":
+    "Red − is in “{base}”; green + is in this snapshot. Restore will make the config look like the green side.",
+  "对比中…": "Comparing…",
+  "没有差异 —— 这份快照和「{base}」的内容完全一致。":
+    "No differences — this snapshot matches “{base}” exactly.",
+  会新建: "Will be created",
+  会被删除: "Will be deleted",
+  无差异: "identical",
+  "差异太长，只显示了前面一部分；上面的 +N/−M 是完整计数。":
+    "The diff is truncated; the +N/−M counts above are complete.",
   "沙箱已开：写入 ~/.ccload-client/sandbox，真实 CLI 配置不会被改。":
     "Sandbox is on: writes go to ~/.ccload-client/sandbox and your real CLI config is left alone.",
   "添加一行": "Add a row",
@@ -843,8 +864,31 @@ registerDict("en", {
   总结用的模型: "Model used for summarising",
   两种救法的区别: "How the two rescues differ",
   "选一个内核里有的模型": "Pick a model the kernel actually serves",
+  "空着 = 按模型链自动挑窗口够的": "Leave blank to pick a hop whose window fits",
+  自动: "auto",
+  "用 {model} 切成 {n} 块分别总结，保留最近 {k} 轮原文，摘要约 {s}（原 {before}）":
+    "Used {model}; summarised in {n} chunks, kept the last {k} turns verbatim; summary is about {s} (was {before})",
+  "对勾上的会话逐条分块总结。空着模型就按模型链挑窗口够的那一跳":
+    "Chunk-summarises each checked session in turn. Leave the model blank to pick a hop whose window fits",
+  "分块总结后追加一个原生压缩边界。空着模型就按模型链挑窗口够的那一跳":
+    "Summarises in chunks, then appends a native compaction boundary. Leave the model blank to pick a hop whose window fits",
   "内核里没有可用模型": "No models available from the kernel",
   "没有找到任何会话。": "No sessions found.",
+  "没有匹配的会话。换个关键词或清除筛选。":
+    "No matching sessions. Try another keyword or clear the filters.",
+  "搜名字、uuid 或路径": "Search name, uuid, or path",
+  搜索会话: "Search sessions",
+  按项目筛选: "Filter by project",
+  "全部项目（{n}）": "All projects ({n})",
+  排序: "Sort",
+  最近改动: "Most recent",
+  最早改动: "Oldest",
+  峰值最大: "Largest peak",
+  当前最大: "Largest current",
+  文件最大: "Largest file",
+  清除筛选: "Clear filters",
+  "共 {n} 个会话": "{n} sessions",
+  "{shown} / {total}": "{shown} / {total}",
   "先在上面选一个模型": "Pick a model above first",
   "{n} 分钟前": "{n} min ago",
   "{n} 小时前": "{n}h ago",
@@ -874,6 +918,30 @@ registerDict("en", {
     "Chunked summary \u2014 splits the conversation into small pieces, summarises each, merges them, then appends exactly the same boundary Claude Code writes when it compacts on its own. Every single request stays far below the ceiling, so unlike /compact it cannot overflow. It costs tokens, but the information survives as a summary.",
   "两种都会先把原文件另存一份 .bak，而且都不删记录 —— transcript 是靠 uuid 串起来的链表，删行会让恢复出来的会话缺胳膊少腿。":
     "Both save the original to a .bak first, and neither deletes any record \u2014 a transcript is a linked list held together by uuids, so dropping lines leaves the resumed session full of holes.",
+
+  全选当前列表: "Select all in this list",
+  一键救援: "Rescue selected",
+  "一键救援（{n}）": "Rescue selected ({n})",
+  "先勾要救的会话": "Check the sessions you want to rescue first",
+  "对勾上的会话逐条分块总结。花 token，但信息以摘要留下来":
+    "Chunk-summarises each checked session in turn. Costs tokens, keeps the information as a summary",
+  "一键救援 = 对勾上的会话逐条分块总结，活着的和没有用量的会跳过。":
+    "Rescue selected = chunk-summarise each checked session in turn. Live sessions and ones with no usage data are skipped.",
+  "救援中 {i}/{n}：{name}": "Rescuing {i}/{n}: {name}",
+  "一键救援完成：成功 {ok}，失败 {fail}": "Rescue finished: {ok} ok, {fail} failed",
+  "清太久没碰的 Claude Code 会话。删掉的文件不可恢复，救援留下的备份会一起清。正在运行的会话不会被动。":
+    "Clear Claude Code sessions you have not touched in a while. Deleted files cannot be recovered, and any rescue backups go with them. Sessions that are currently running are left alone.",
+  按最后改动筛选: "Filter by last change",
+  不限时间: "Any time",
+  "{n} 天前及更早": "{n} days ago or older",
+  "删除选中（{n} · {size}）": "Delete selected ({n} \u00b7 {size})",
+  删除选中: "Delete selected",
+  "已删除 {n} 个会话，腾出 {size}": "Deleted {n} sessions, freed {size}",
+  "跳过 {n} 个正在运行的": "Skipped {n} that are still running",
+  "确认删除 {n} 个会话？": "Delete {n} sessions?",
+  "将永久删除 {n} 个文件（约 {size}），救援留下的备份一并清掉。没有回收站。":
+    "Permanently delete {n} files (about {size}). Rescue backups go with them. There is no recycle bin.",
+  "… 还有 {n} 个": "\u2026 and {n} more",
 
   // ---- 破禁 / 会话预设 ----
   新建预设: "New preset",

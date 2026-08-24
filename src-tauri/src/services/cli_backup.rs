@@ -82,6 +82,12 @@ impl BackupStore {
         self.lock.lock().unwrap_or_else(|p| p.into_inner())
     }
 
+    /// 快照根目录。`cli_backup_diff` 要按 `<dir>/<id>/<stored>` 直接读快照里的
+    /// 文件内容 —— 只读，不经过 restore（restore 会往真实配置写）。
+    pub fn dir(&self) -> &std::path::Path {
+        &self.dir
+    }
+
     fn manifest_path(&self) -> PathBuf {
         self.dir.join("manifest.json")
     }

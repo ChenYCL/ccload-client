@@ -14,6 +14,7 @@ import { ForcedRoutePage } from "./pages/ForcedRoutePage";
 import { ModelsPage } from "./pages/ModelsPage";
 import { InjectPage } from "./pages/InjectPage";
 import { SessionsPage } from "./pages/SessionsPage";
+import { SessionManagePage } from "./pages/SessionManagePage";
 import { UnlockPage } from "./pages/UnlockPage";
 import { ExtensionsPage } from "./pages/ExtensionsPage";
 import { GraphPage } from "./pages/GraphPage";
@@ -32,6 +33,7 @@ const PAGES: Record<Page, () => JSX.Element> = {
   models: ModelsPage,
   inject: InjectPage,
   sessions: SessionsPage,
+  "session-manage": SessionManagePage,
   unlock: UnlockPage,
   extensions: ExtensionsPage,
   graph: GraphPage,

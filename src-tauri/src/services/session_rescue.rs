@@ -98,6 +98,19 @@ pub struct CompactReport {
     /// 摘要本身的估算大小 —— 压缩完大概会落在这个量级。
     pub summary_tokens: u64,
     pub backup: String,
+    /// 真正打成功的那个模型。自动挑选时和用户点的可能不是同一个。
+    #[serde(default)]
+    pub model: String,
+}
+
+/// 批量删除结果。一条失败不拖累其余 —— 清 20 个旧会话时，不该因为其中一个
+/// 被占用就整批停住。
+#[derive(Debug, Clone, Serialize)]
+pub struct DeleteReport {
+    pub deleted: usize,
+    pub bytes: u64,
+    pub skipped_live: Vec<String>,
+    pub errors: Vec<String>,
 }
 
 /// `~/.claude/projects`。造新会话和扫旧会话走同一个根，slug 对不上 `--resume` 就找不着。
@@ -324,6 +337,122 @@ pub fn list_sessions() -> Result<Vec<SessionInfo>, AppError> {
     // 大的排前面：这一页的用途就是找出哪条快撑爆了。
     out.sort_by_key(|s| std::cmp::Reverse(s.peak_context));
     Ok(out)
+}
+
+/// 删掉选中的会话。不可恢复 —— Claude Code 没有回收站，所以调用方必须先弹确认。
+///
+/// 硬约束：
+/// * 路径 canonicalize 之后必须落在 `~/.claude/projects` 下面，防止 `../` 逃出；
+/// * 只认 `uuid.jsonl`，不认备份、目录、别的扩展名；
+/// * 活着的会话跳过：进程里有内存态，删了它一落盘又写回来，用户会以为没删掉。
+///
+/// 同 uuid 旁边的 `.jsonl.bak-*` 一起清 —— 那是救援留下的备份，只删 jsonl
+/// 腾不出真正的空间。
+pub fn delete_sessions(paths: &[String]) -> Result<DeleteReport, AppError> {
+    delete_under(&sessions_root()?, &live_session_ids(), paths)
+}
+
+fn delete_under(
+    root: &Path,
+    live: &HashSet<String>,
+    paths: &[String],
+) -> Result<DeleteReport, AppError> {
+    if paths.is_empty() {
+        return Err(AppError::Config("没有选中任何会话".into()));
+    }
+    let root = root.canonicalize().map_err(|e| {
+        AppError::Io(format!("找不到会话目录 {}：{e}", root.display()))
+    })?;
+
+    let mut report = DeleteReport {
+        deleted: 0,
+        bytes: 0,
+        skipped_live: Vec::new(),
+        errors: Vec::new(),
+    };
+    // 同一条会话被勾两次只删一次。
+    let mut seen = HashSet::new();
+    for raw in paths {
+        let path = PathBuf::from(raw);
+        let canon = match path.canonicalize() {
+            Ok(p) => p,
+            Err(e) => {
+                report.errors.push(format!("{raw}：找不到（{e}）"));
+                continue;
+            }
+        };
+        if !seen.insert(canon.clone()) {
+            continue;
+        }
+        match delete_one(&root, live, &canon) {
+            Ok(DeleteOne::Deleted { bytes }) => {
+                report.deleted += 1;
+                report.bytes += bytes;
+            }
+            Ok(DeleteOne::Live(id)) => report.skipped_live.push(id),
+            Err(e) => report.errors.push(format!("{}：{e}", canon.display())),
+        }
+    }
+    Ok(report)
+}
+
+enum DeleteOne {
+    Deleted { bytes: u64 },
+    Live(String),
+}
+
+fn delete_one(root: &Path, live: &HashSet<String>, canon: &Path) -> Result<DeleteOne, AppError> {
+    if !is_session_file(root, canon) {
+        return Err(AppError::Config(
+            "不是会话文件（只接受 ~/.claude/projects 下的 .jsonl）".into(),
+        ));
+    }
+    let id = canon
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default()
+        .to_string();
+    if live.contains(&id) {
+        return Ok(DeleteOne::Live(id));
+    }
+
+    let mut bytes = std::fs::metadata(canon).map(|m| m.len()).unwrap_or(0);
+    std::fs::remove_file(canon)
+        .map_err(|e| AppError::Io(format!("删不掉：{e}")))?;
+
+    // 救援留下的备份跟会话是一对，只删 jsonl 磁盘上还是那几十 MB。
+    if let Some(dir) = canon.parent() {
+        let prefix = format!("{id}.jsonl.bak-");
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for e in entries.flatten() {
+                let name = e.file_name();
+                let Some(name) = name.to_str() else { continue };
+                if name.starts_with(&prefix) {
+                    bytes += e.metadata().map(|m| m.len()).unwrap_or(0);
+                    let _ = std::fs::remove_file(e.path());
+                }
+            }
+        }
+    }
+    Ok(DeleteOne::Deleted { bytes })
+}
+
+/// `root/<project>/<uuid>.jsonl`，和 [`list_sessions`] 扫的形状对齐。
+/// canonicalize 之后再比前缀，避免 `../` 和指向根外的符号链接。
+fn is_session_file(root: &Path, canon: &Path) -> bool {
+    if !canon.is_file() {
+        return false;
+    }
+    let name = canon.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    // 备份是 `uuid.jsonl.bak-<ts>`，ends_with(".jsonl") 过不了，这正是要的。
+    if !name.ends_with(".jsonl") {
+        return false;
+    }
+    let Some(parent) = canon.parent() else {
+        return false;
+    };
+    // 允许 root 下一层项目目录，也容忍误放在 root 根上的文件。
+    parent == root || parent.parent() == Some(root)
 }
 
 /// 扫一份文件。为了不把几十 MB 全解析一遍，只对可能有用的行做 JSON 解析。
@@ -863,6 +992,7 @@ pub async fn compact(
         context_before: last,
         summary_tokens,
         backup,
+        model: model.to_string(),
     })
 }
 
@@ -920,6 +1050,27 @@ async fn ask(base_url: &str, token: &str, model: &str, prompt: &str) -> Result<S
         return Err(AppError::Config("模型没有返回任何摘要文本".into()));
     }
     Ok(text)
+}
+
+/// 内核把 prompt-too-long 当客户端错误（400 invalid-argument），不切渠道。
+/// 压缩这边要自己认出来再换下一个窗口够的模型。
+pub fn is_prompt_too_long(err: &AppError) -> bool {
+    match err {
+        AppError::Upstream { status, message } => {
+            *status == 400
+                && (message.contains("maximum prompt length")
+                    || message.contains("too long")
+                    || message.contains("context length")
+                    || message.contains("context window"))
+        }
+        _ => false,
+    }
+}
+
+/// 读一份 transcript 的真实上下文。给自动挑选压缩模型用，避免再估一遍。
+pub fn last_context_of(path: &str) -> Result<u64, AppError> {
+    let entries = load(std::path::Path::new(path))?;
+    Ok(real_context(&entries).0)
 }
 
 #[cfg(test)]
@@ -1261,5 +1412,108 @@ mod tests {
         let err = load(&path).unwrap_err();
         assert!(err.to_string().contains("第 2 行"), "没指出是哪一行：{err}");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn prompt_too_long_is_a_400_with_the_upstream_wording() {
+        assert!(is_prompt_too_long(&AppError::Upstream {
+            status: 400,
+            message: "This model's maximum prompt length is 500000 but the request contains 517306 tokens.".into(),
+        }));
+        assert!(!is_prompt_too_long(&AppError::Upstream {
+            status: 429,
+            message: "rate limited".into(),
+        }));
+        assert!(!is_prompt_too_long(&AppError::Config("nope".into())));
+    }
+
+    fn write_session(dir: &Path, id: &str, body: &str) -> PathBuf {
+        let path = dir.join(format!("{id}.jsonl"));
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    /// 删 jsonl 的同时清掉救援留下的备份，否则磁盘上还是那几十 MB。
+    #[test]
+    fn delete_removes_jsonl_and_its_backups() {
+        let root = std::env::temp_dir().join(format!("ccload-del-{}", uuid_v4()));
+        let proj = root.join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        let id = uuid_v4();
+        let path = write_session(&proj, &id, "{\"type\":\"user\"}\n");
+        let bak = proj.join(format!("{id}.jsonl.bak-1"));
+        std::fs::write(&bak, "old").unwrap();
+        // 别的会话的备份不能被捎走。
+        let other = uuid_v4();
+        let other_bak = proj.join(format!("{other}.jsonl.bak-1"));
+        std::fs::write(&other_bak, "keep").unwrap();
+
+        let report = delete_under(&root, &HashSet::new(), &[path.display().to_string()]).unwrap();
+        assert_eq!(report.deleted, 1);
+        assert!(report.bytes > 0);
+        assert!(!path.exists(), "jsonl 还在");
+        assert!(!bak.exists(), "备份还在");
+        assert!(other_bak.exists(), "别的会话的备份被误删");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 活着的会话必须跳过：删了进程一落盘又写回来，用户会以为没删掉。
+    #[test]
+    fn delete_skips_live_sessions() {
+        let root = std::env::temp_dir().join(format!("ccload-del-{}", uuid_v4()));
+        let proj = root.join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        let id = uuid_v4();
+        let path = write_session(&proj, &id, "{\"type\":\"user\"}\n");
+        let live = HashSet::from([id.clone()]);
+
+        let report = delete_under(&root, &live, &[path.display().to_string()]).unwrap();
+        assert_eq!(report.deleted, 0);
+        assert_eq!(report.skipped_live, vec![id]);
+        assert!(path.exists(), "活着的会话不该被动");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 路径必须落在会话根下面。`../` 或根外的文件一律拒绝，不能让这个按钮
+    /// 变成任意文件删除器。
+    #[test]
+    fn delete_refuses_paths_outside_the_sessions_root() {
+        let root = std::env::temp_dir().join(format!("ccload-del-{}", uuid_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let outside = std::env::temp_dir().join(format!("ccload-out-{}.jsonl", uuid_v4()));
+        std::fs::write(&outside, "secret\n").unwrap();
+
+        let report =
+            delete_under(&root, &HashSet::new(), &[outside.display().to_string()]).unwrap();
+        assert_eq!(report.deleted, 0);
+        assert_eq!(report.errors.len(), 1);
+        assert!(outside.exists(), "根外的文件被删了");
+        std::fs::remove_file(&outside).ok();
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 备份文件本身不能当会话删 —— 它不是 resume 认的那份。
+    #[test]
+    fn delete_refuses_backup_files() {
+        let root = std::env::temp_dir().join(format!("ccload-del-{}", uuid_v4()));
+        let proj = root.join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        let bak = proj.join(format!("{}.jsonl.bak-9", uuid_v4()));
+        std::fs::write(&bak, "old").unwrap();
+
+        let report = delete_under(&root, &HashSet::new(), &[bak.display().to_string()]).unwrap();
+        assert_eq!(report.deleted, 0);
+        assert!(bak.exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 空选必须报错，而不是假装成功删了 0 个。
+    #[test]
+    fn delete_refuses_an_empty_selection() {
+        let root = std::env::temp_dir().join(format!("ccload-del-{}", uuid_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let err = delete_under(&root, &HashSet::new(), &[]).unwrap_err();
+        assert!(err.to_string().contains("没有选中"), "{err}");
+        std::fs::remove_dir_all(&root).ok();
     }
 }

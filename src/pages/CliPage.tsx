@@ -1,9 +1,17 @@
 import { useT, type Translate } from "../i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
-import type { BackupEntry, CliTarget, ConfigFileView, TakeoverOptions, TakeoverPreview } from "../types";
+import type {
+  BackupEntry,
+  CliTarget,
+  ConfigFileView,
+  DiffBase,
+  FileDiff,
+  TakeoverOptions,
+  TakeoverPreview,
+} from "../types";
 import { useEffect, useMemo, useState } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, GitCompare } from "lucide-react";
 import { errText } from "../lib/err";
 import { Modal } from "../components/Modal";
 import { TextArea, TextInput } from "../components/ui/Input";
@@ -45,6 +53,8 @@ export function CliPage() {
     opencode: {},
   });
   const [editing, setEditing] = useState<CliTarget | null>(null);
+  // 正在对比的那份快照。恢复不可逆，先看清楚会改什么再点。
+  const [diffing, setDiffing] = useState<BackupEntry | null>(null);
 
   // 快照按 CLI 分组。一台机器上五家轮着接管、导入模型、装扩展，混在一条时间轴上
   // 时「Claude Code 上一次好的配置」要在十几条里翻 —— 而回滚从来是「某一家」的事，
@@ -79,7 +89,7 @@ export function CliPage() {
         </div>
         <button
           onClick={() => setShowBackups(!showBackups)}
-          className="rounded-lg border border-border bg-surface-raised px-3 py-1.5 text-sm hover:bg-surface-2"
+          className="shrink-0 whitespace-nowrap rounded-lg border border-border bg-surface-raised px-3 py-1.5 text-sm hover:bg-surface-2"
         >
           {showBackups ? t("← 返回接管") : t("快照历史")}
         </button>
@@ -150,6 +160,7 @@ export function CliPage() {
                       b={b}
                       disabled={restore.isPending}
                       onRestore={() => restore.mutate(b.id)}
+                      onDiff={() => setDiffing(b)}
                     />
                   ))}
                 </ul>
@@ -169,6 +180,10 @@ export function CliPage() {
           onClose={() => setEditing(null)}
           onSaved={() => qc.invalidateQueries({ queryKey: ["cli-preview"] })}
         />
+      )}
+
+      {diffing && (
+        <BackupDiffModal entry={diffing} onClose={() => setDiffing(null)} />
       )}
     </div>
   );
@@ -722,10 +737,12 @@ function BackupRow({
   b,
   disabled,
   onRestore,
+  onDiff,
 }: {
   b: BackupEntry;
   disabled: boolean;
   onRestore: () => void;
+  onDiff: () => void;
 }) {
   const t = useT();
   const date = new Date(b.created_at * 1000).toLocaleString("zh-CN", {
@@ -753,6 +770,14 @@ function BackupRow({
           {t("原始")}
         </span>
       )}
+      {/* 恢复是不可逆地覆盖当前配置，所以「对比」排在它前面 —— 先看清楚会改什么。 */}
+      <button
+        onClick={onDiff}
+        title={t("看这份快照和现在的配置差在哪")}
+        className="flex shrink-0 items-center gap-1 rounded-lg border border-border bg-surface-raised px-2.5 py-1.5 text-xs hover:bg-surface-2"
+      >
+        <GitCompare className="h-3.5 w-3.5" /> {t("对比")}
+      </button>
       <button
         disabled={disabled}
         onClick={onRestore}
@@ -872,5 +897,204 @@ function ConfigEditor({
         )}
       </>
     </Modal>
+  );
+}
+
+/// 快照对比。
+///
+/// 存在的理由：「恢复」是不可逆地覆盖当前配置，而列表上只看得到时间、原因和
+/// 「N 个文件」—— 不看内容就点，等于拿现在的配置赌一把。
+///
+/// 默认基准是**磁盘现状**，因为决定要不要恢复时唯一相关的问题是「它会把我现在
+/// 的配置改成什么样」。另外两个基准回答别的问题：跟上一份比 = 这次动作改了什么
+/// （快照是在写入**之前**拍的），跟原始比 = 从接管到现在一共漂了多少。
+function BackupDiffModal({
+  entry,
+  onClose,
+}: {
+  entry: BackupEntry;
+  onClose: () => void;
+}) {
+  const t = useT();
+  const [base, setBase] = useState<DiffBase>("current");
+  const diff = useQuery({
+    queryKey: ["backup-diff", entry.id, base],
+    queryFn: () => api.cliBackupDiff(entry.id, base),
+    staleTime: 30_000,
+  });
+
+  const stamp = (s: number) =>
+    new Date(s * 1000).toLocaleString("zh-CN", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+
+  const d = diff.data;
+  // 全都没差异时给一句话，而不是留一片空白让人以为没加载出来。
+  const allSame = d && d.files.length > 0 && d.files.every((f) => f.identical);
+
+  return (
+    <Modal onClose={onClose} className="max-w-5xl">
+      <>
+        <h2 className="t-title">{t("快照对比")}</h2>
+        <p className="mt-1 text-xs text-muted">
+          {TARGET_LABELS[entry.target]} · {stamp(entry.created_at)} ·{" "}
+          {reasonLabel(entry.reason, t)}
+        </p>
+
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <span className="text-xs text-muted">{t("和谁比")}</span>
+          {(
+            [
+              ["current", t("磁盘现状")],
+              ["previous", t("上一份快照")],
+              ["pristine", t("原始配置")],
+            ] as [DiffBase, string][]
+          ).map(([k, label]) => (
+            <button
+              key={k}
+              onClick={() => setBase(k)}
+              className={cn(
+                "rounded-lg border px-2.5 py-1 text-xs",
+                base === k
+                  ? "border-accent bg-accent/10 text-accent"
+                  : "border-border text-muted hover:bg-surface-2",
+              )}
+            >
+              {label}
+            </button>
+          ))}
+          {d?.base_created_at && (
+            <span className="font-mono text-[11px] text-muted">
+              {stamp(d.base_created_at)}
+            </span>
+          )}
+        </div>
+
+        {/* 左边是基准、右边是这份快照，说清楚方向 —— 不然 +/- 到底哪边是哪边全靠猜。 */}
+        <p className="mt-2 text-[11px] text-muted">
+          {t("红色 − 是「{base}」里有的，绿色 + 是这份快照里的。恢复后会变成绿色那一侧。", {
+            base: d?.base_label ?? t("基准"),
+          })}
+        </p>
+
+        {diff.isPending && (
+          <p className="mt-4 text-sm text-muted">{t("对比中…")}</p>
+        )}
+        {diff.isError && (
+          <p className="mt-4 text-sm text-red-600">{errText(diff.error)}</p>
+        )}
+        {d?.base_missing && (
+          <p className="mt-4 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs">
+            {d.base_missing}
+          </p>
+        )}
+        {allSame && (
+          <p className="mt-4 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs">
+            {t("没有差异 —— 这份快照和「{base}」的内容完全一致。", {
+              base: d?.base_label ?? "",
+            })}
+          </p>
+        )}
+
+        <div className="mt-4 max-h-[60vh] space-y-3 overflow-auto">
+          {(d?.files ?? []).map((f) => (
+            <FileDiffBlock key={f.rel} f={f} />
+          ))}
+        </div>
+
+        <div className="mt-5 flex justify-end">
+          <button
+            onClick={onClose}
+            className="rounded-lg border border-border bg-surface-raised px-3 py-1.5 text-sm hover:bg-surface-2"
+          >
+            {t("关闭")}
+          </button>
+        </div>
+      </>
+    </Modal>
+  );
+}
+
+/// 一个文件的 diff 块。内容一致的文件默认折起来 —— 一次快照往往只改一个文件，
+/// 把没动的那几个摊开会把真正的改动挤出屏幕。
+function FileDiffBlock({ f }: { f: FileDiff }) {
+  const t = useT();
+  const [open, setOpen] = useState(!f.identical);
+
+  return (
+    <div className="overflow-hidden rounded-lg border border-border">
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex w-full items-center gap-2 bg-surface-2/50 px-3 py-2 text-left hover:bg-surface-2"
+      >
+        <span className="min-w-0 flex-1 truncate font-mono text-xs">{f.rel}</span>
+        {!f.base_exists && (
+          <span className="shrink-0 rounded bg-emerald-500/20 px-1.5 py-0.5 text-[10px] text-emerald-700">
+            {t("会新建")}
+          </span>
+        )}
+        {!f.target_exists && (
+          <span className="shrink-0 rounded bg-red-500/15 px-1.5 py-0.5 text-[10px] text-red-700">
+            {t("会被删除")}
+          </span>
+        )}
+        {f.identical ? (
+          <span className="shrink-0 text-[11px] text-muted">{t("无差异")}</span>
+        ) : (
+          <span className="shrink-0 font-mono text-[11px]">
+            <span className="text-emerald-700">+{f.added}</span>{" "}
+            <span className="text-red-600">−{f.removed}</span>
+          </span>
+        )}
+        <span className="shrink-0 text-[11px] text-muted">{open ? "▾" : "▸"}</span>
+      </button>
+
+      {open && f.note && (
+        <p className="px-3 py-2 text-xs text-muted">{f.note}</p>
+      )}
+      {open && !f.note && f.lines.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse font-mono text-[11px]">
+            <tbody>
+              {f.lines.map((l, i) => (
+                <tr
+                  key={i}
+                  className={cn(
+                    l.kind === "add" && "bg-emerald-500/10",
+                    l.kind === "del" && "bg-red-500/10",
+                  )}
+                >
+                  <td className="w-10 select-none border-r border-border/50 px-1.5 text-right text-muted/60">
+                    {l.old_no ?? ""}
+                  </td>
+                  <td className="w-10 select-none border-r border-border/50 px-1.5 text-right text-muted/60">
+                    {l.new_no ?? ""}
+                  </td>
+                  <td
+                    className={cn(
+                      "w-4 select-none px-1 text-center",
+                      l.kind === "add" && "text-emerald-700",
+                      l.kind === "del" && "text-red-600",
+                    )}
+                  >
+                    {l.kind === "add" ? "+" : l.kind === "del" ? "−" : ""}
+                  </td>
+                  <td className="whitespace-pre-wrap break-all px-2 py-0.5">{l.text}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {open && f.truncated && (
+        <p className="border-t border-border/50 px-3 py-2 text-[11px] text-muted">
+          {t("差异太长，只显示了前面一部分；上面的 +N/−M 是完整计数。")}
+        </p>
+      )}
+    </div>
   );
 }

@@ -1,18 +1,22 @@
 <p align="center">
-  <img src="docs/assets/logo.png" width="88" height="88" alt="ccLoad" />
-</p>
-
-# ccLoad Desktop
-
-**给 Claude Code、Codex、Gemini、Grok Build、OpenCode 用的 ccLoad 桌面端。**
-
-**[English](./README.md) | 简体中文**
-
-> 一键接管 CLI | 本机或远端网关 | 不冲掉你的 MCP | 写错可回滚 | 沙箱可先试 | 自带看图与生图 MCP
-
-<p align="center">
   <img src="docs/assets/hero.png" alt="ccLoad Desktop — 一个网关，接管所有 CLI" />
 </p>
+
+<h1 align="center">ccLoad Desktop</h1>
+
+<p align="center">
+  <b>给 Claude Code、Codex、Gemini、Grok Build、OpenCode 用的 ccLoad 桌面端。</b>
+</p>
+
+<p align="center">
+  <b><a href="./README.md">English</a> | 简体中文</b>
+</p>
+
+<p align="center">
+  <img src="docs/assets/badges.svg" alt="Tauri 2 · React 18 · Rust · macOS/Windows/Linux · GitHub Actions · MIT" />
+</p>
+
+> 一键接管 CLI | 本机或远端网关 | 不冲掉你的 MCP | 写错可回滚 | 沙箱可先试 | 把模型强制钉到某个渠道 | 救回卡死的会话 | 自带看图与生图 MCP
 
 ccLoad 已经把多上游的脏活做完了：选渠道、故障切换、协议转换、看用量。还散落在电脑上的，是另一摊 —— 五家 CLI、五套「请求发到哪」，换一次网关要贴五次地址，用切换器还可能把 MCP 和正在用的模型一起盖掉。
 
@@ -105,9 +109,11 @@ ccLoad Desktop 直接处理这些问题：
 
 ### 监控 · 订阅用量
 
-各 OAuth 渠道的套餐额度窗口（5 小时 / 周 / 月）和剩余量。数字全部来自内核 —— 它在刷新凭证时顺带采样上游的额度端点。客户端不自己算：每家上游的口径都不一样（Codex 按 percent、Z.ai 按 limits[]、xAI 按 cents），内核已经归一过一遍，再算一遍只会得出第二个不一致的答案。
+各 OAuth 渠道的套餐额度窗口（5 小时 / 周 / 月）和剩余量。数字全部来自内核 —— 它在刷新凭证时顺带采样上游的额度端点。客户端不自己算：每家上游的口径都不一样（Codex 按 percent、Z.ai 按 limits[]、xAI 按 cents、Cursor 分 Cursor Models / Other Models / 月度上限），内核已经归一过一遍，再算一遍只会得出第二个不一致的答案。
 
 「刷新额度」是真的去问一次上游，所以不自动轮询，只在你点的时候跑。API Key 渠道按量付费、没有套餐窗口，不在这一页。
+
+![订阅用量](docs/assets/ui/page-usage.png)
 
 ### 监控 · 会话救援
 
@@ -115,7 +121,15 @@ ccLoad Desktop 直接处理这些问题：
 
 Claude Code 按**模型声明的**窗口决定何时自动压缩，走 ccLoad 时真正拦你的却是**中转那一家的上限**。典型的坑是模型名挂着 `[1m]`、中转其实只给 500k：阈值被算在一个不存在的分母上，等它触发已经越过真实天花板，而这之后 `/compact` 自己也发不出去 —— 它同样要把整段 transcript 发上去。
 
-这一页把 transcript 里的图片和超长文本砍掉，必要时分块总结、尾巴留几轮原文，让会话能接着 resume。**token 数不是估的**：每条 assistant 记录里有上游回报的 usage，真实上下文 = `input_tokens + cache_read + cache_creation` —— 这是唯一和 400 报错里那个数字对得上的口径，只看 `input_tokens` 会小一个数量级。瘦身前先备份。
+这一页把 transcript 里的图片和超长文本砍掉，必要时分块总结、尾巴留几轮原文，让会话能接着 resume。勾上几条再点「一键救援」，会对它们逐条分块总结。**token 数不是估的**：每条 assistant 记录里有上游回报的 usage，真实上下文 = `input_tokens + cache_read + cache_creation` —— 这是唯一和 400 报错里那个数字对得上的口径，只看 `input_tokens` 会小一个数量级。瘦身前先备份。
+
+![会话救援](docs/assets/ui/page-sessions.png)
+
+### 监控 · 会话管理
+
+清太久没碰的 Claude Code 会话。按项目、最后改动时间筛，勾上再一键删除。删掉的文件不可恢复，救援留下的备份会一起清；正在运行的会话不会被动。
+
+![会话管理](docs/assets/ui/page-session-manage.png)
 
 ### 配置 · CLI 接管
 
@@ -135,6 +149,14 @@ Claude Code 按**模型声明的**窗口决定何时自动压缩，走 ccLoad �
 
 ![模型链](docs/assets/ui/page-fallback.png)
 
+### 配置 · 强制路由
+
+模型链讲的是优雅降级，这一页正相反 —— **我说发去哪就发去哪**。CLI 请求某个模型名（`claude-fable-5`），就把它强制发到你选的渠道 + 上游模型，做法和 [ai-go / cc-switch](https://github.com/farion1231/cc-switch) 一样，但完全用内核自己的件拼出来。选一个渠道，它的模型联动列在下面，勾多个即可；不校验上游，手填任意名字照样发。
+
+内核按优先级选路，所以单纯 redirect 只会和「已经服务这个别名的渠道」**平分**流量 —— 一个只赢一半的强制不算强制。应用时会把目标排到现有服务该别名的渠道**之上**（在活体内核上验过：请求 `claude-fable-5` → 落到 Grok 渠道、上游模型被改写成 `grok-4.5`），确保独占而不是五五开。多个目标按序：第一个首选，其余是备用落点。
+
+![强制路由](docs/assets/ui/page-forced-route.png)
+
 ### 配置 · 模型导入
 
 把启用中渠道真正能提供的名字，追加进 Codex / OpenCode 的列表。Claude Code 没有目录文件，只有几个槽位：你选了 opus / sonnet / … 才写，没选的行跳过，避免盖掉你正在用的模型。
@@ -153,9 +175,15 @@ Claude Code 按**模型声明的**窗口决定何时自动压缩，走 ccLoad �
 
 勾选不等于写入，要按每一行的「写入 / 更新」。改了没写会当场提示。说明写了但服务器一家都没装，也会当场提示 —— 那等于教模型去调一个不存在的工具，它会照着找、找不到，然后自己编一条路。
 
+![系统注入](docs/assets/ui/page-inject.png)
+
 ### 配置 · 会话预设
 
 预备好一段开场对白，落盘时按每家 CLI 自己的会话格式各写一份，然后用那一家原生的 resume 接着聊。用途是把重复的开场（角色设定、项目背景、固定的工作约定）固化下来，不必每次重打。对白内容由你自己写，客户端只负责按各家格式落盘 —— 对面模型认不认，取决于对面那家模型。
+
+写出来的会话默认**锁在选定目录里**：不预先解除任何文件访问关卡，越出目录的读写照样要你当场点头，Codex 还会额外钉死工作根。内置预设编译在二进制里，删不掉（一次手滑就丢了 DAN），但有个开关能在你只想看自己的时候把它们藏起来。
+
+![会话预设](docs/assets/ui/page-unlock.png)
 
 ### 配置 · 扩展管理
 

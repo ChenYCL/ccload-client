@@ -1,18 +1,22 @@
 <p align="center">
-  <img src="docs/assets/logo.png" width="88" height="88" alt="ccLoad" />
-</p>
-
-# ccLoad Desktop
-
-**Desktop client for ccLoad — for Claude Code, Codex, Gemini, Grok Build, and OpenCode.**
-
-**English | [简体中文](./README.zh-CN.md)**
-
-> Point every CLI at one gateway | Local or remote | Keep your MCP | Undo a takeover | Try in a sandbox first | Ships its own vision and image MCP
-
-<p align="center">
   <img src="docs/assets/hero.png" alt="ccLoad Desktop — one kernel, every CLI" />
 </p>
+
+<h1 align="center">ccLoad Desktop</h1>
+
+<p align="center">
+  <b>Desktop client for ccLoad — for Claude Code, Codex, Gemini, Grok Build, and OpenCode.</b>
+</p>
+
+<p align="center">
+  <b>English | <a href="./README.zh-CN.md">简体中文</a></b>
+</p>
+
+<p align="center">
+  <img src="docs/assets/badges.svg" alt="Tauri 2 · React 18 · Rust · macOS/Windows/Linux · GitHub Actions · MIT" />
+</p>
+
+> Point every CLI at one gateway | Local or remote | Keep your MCP | Undo a takeover | Try in a sandbox first | Force a model to a channel | Rescue a stuck session | Ships its own vision and image MCP
 
 ccLoad already removes the operational mess of multiple AI API upstreams: routing, failover, protocol conversion, usage. What is still messy is the laptop — five coding CLIs, five “send requests here” settings. Changing gateways means pasting an address five times. Many switchers rewrite the whole file and take your MCP servers and current model with them.
 
@@ -105,9 +109,11 @@ The top list is in-flight requests (not in history yet). The table is finished o
 
 ### Monitor · Subscription usage
 
-Plan quota windows (5-hour / weekly / monthly) and what is left, per OAuth channel. Every number comes from the kernel, which samples the upstream quota endpoint while refreshing credentials. The client does not compute quota itself: every upstream reports it differently (Codex in percent, Z.ai in `limits[]`, xAI in cents), the kernel already normalised it once, and normalising again would only produce a second, disagreeing answer.
+Plan quota windows (5-hour / weekly / monthly) and what is left, per OAuth channel. Every number comes from the kernel, which samples the upstream quota endpoint while refreshing credentials. The client does not compute quota itself: every upstream reports it differently (Codex in percent, Z.ai in `limits[]`, xAI in cents, Cursor as Cursor-Models / Other-Models / monthly limit), the kernel already normalised it once, and normalising again would only produce a second, disagreeing answer.
 
 "Refresh quota" really does ask the upstream, so this page does not poll — it runs when you click. API-key channels are pay-as-you-go with no plan window and are not listed here.
+
+![Subscription usage](docs/assets/ui/page-usage.png)
 
 ### Monitor · Session rescue
 
@@ -115,7 +121,15 @@ For a session stuck on `400 too long`.
 
 Claude Code decides when to auto-compact from the window the **model** declares, but through ccLoad the ceiling that actually stops you is the **relay's**. The classic trap is a model name carrying `[1m]` while the relay grants 500k: the threshold is measured against a denominator that does not exist, and by the time it fires you are past the real ceiling — after which `/compact` cannot get out either, because it has to send the whole transcript too.
 
-This page strips images and over-long text out of the transcript, summarises in chunks when it has to, and keeps the last few turns verbatim, so the session can be resumed. **The token count is not an estimate**: every assistant record carries the usage the upstream reported, and the real context is `input_tokens + cache_read + cache_creation` — the only figure that matches the number in the 400. Reading `input_tokens` alone is off by an order of magnitude. A backup is taken before trimming.
+This page strips images and over-long text out of the transcript, summarises in chunks when it has to, and keeps the last few turns verbatim, so the session can be resumed. Check a few rows and hit Rescue selected to chunk-summarise them in turn. **The token count is not an estimate**: every assistant record carries the usage the upstream reported, and the real context is `input_tokens + cache_read + cache_creation` — the only figure that matches the number in the 400. Reading `input_tokens` alone is off by an order of magnitude. A backup is taken before trimming.
+
+![Session rescue](docs/assets/ui/page-sessions.png)
+
+### Monitor · Session manager
+
+Clear Claude Code sessions you have not touched in a while. Filter by project or last-changed, check the ones you want gone, delete them in one go. Deleted files cannot be recovered, and any rescue backups go with them. Sessions that are currently running are left alone.
+
+![Session manager](docs/assets/ui/page-session-manage.png)
 
 ### Configure · CLI takeover
 
@@ -135,6 +149,14 @@ A fallback: try this, then that. Written as channels in decreasing priority so t
 
 ![Model chain](docs/assets/ui/page-fallback.png)
 
+### Configure · Forced route
+
+The chain is graceful degradation; this is the opposite mindset — **send it where I say**. A CLI requests a model name (`claude-fable-5`), and the request is forced onto the channel + upstream model you pick, exactly the way [ai-go / cc-switch](https://github.com/farion1231/cc-switch) does it, but built from the kernel's own primitives. Pick a channel, its models cascade below, tick as many as you like; the upstream is never validated, so a name you type by hand is sent all the same.
+
+The kernel routes by priority, so a plain redirect would only *share* traffic with a channel already serving that alias — a force that wins half the time. On apply, the target is pushed **above** any enabled channel already serving that alias (verified against a live kernel: request for `claude-fable-5` → landed on the Grok channel, upstream model rewritten to `grok-4.5`), so it is an exclusive take-over, not a 50/50 split. Multiple targets are ordered: the first is primary, the rest are backups.
+
+![Forced route](docs/assets/ui/page-forced-route.png)
+
 ### Configure · Model import
 
 Aliases your live channels can actually serve, appended to Codex / OpenCode catalogs. Claude Code has no catalog file, only a few slots: a row is written only if you pick opus / sonnet / … — otherwise it is skipped, so the model you are using is not overwritten.
@@ -153,9 +175,15 @@ Three optional blocks: how to use the vision MCP, how to use the image MCP, and 
 
 Ticking a box is not writing. Each row has its own Write / Update, and edited-but-unwritten state is called out. So is guidance written for a server that is not installed anywhere — that teaches the model to call a tool that does not exist, which it will hunt for, fail to find, and then improvise around.
 
+![System injection](docs/assets/ui/page-inject.png)
+
 ### Configure · Session presets
 
 Prepares an opening exchange and writes it out in each CLI's own session format, so you can pick it up with that tool's native resume. It is for freezing a repeated opening — role setup, project background, standing working agreements — instead of retyping it every time. You write the exchange; the client only lays it down in each format. Whether the model on the other end goes along with it is up to that model.
+
+Every generated session is **confined to the chosen directory** by default: no file-access checks are pre-waived, so reads and writes outside it still prompt, and Codex additionally gets its working root pinned. Built-in presets are compiled into the binary — they cannot be deleted (that would take one misclick to lose), but a toggle hides them when you only want your own.
+
+![Session presets](docs/assets/ui/page-unlock.png)
 
 ### Configure · Extensions
 

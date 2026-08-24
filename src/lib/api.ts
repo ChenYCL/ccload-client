@@ -6,9 +6,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type {
   AppSettings,
+  BackupDiff,
   BackupEntry,
   CliTarget,
   ConfigFileView,
+  DiffBase,
   EnvKeyInfo,
   Envelope,
   ExtensionItem,
@@ -25,6 +27,7 @@ import type {
   ImportPreview,
   ImportResult,
   CompactReport,
+  DeleteReport,
   SessionPreset,
   PresetPrefs,
   SpawnResult,
@@ -85,6 +88,14 @@ export const api = {
     invoke<BackupEntry[]>("cli_backups", { target: target ?? null }),
   cliRestore: (backupId: string) =>
     invoke<string[]>("cli_restore", { backupId }),
+  /**
+   * 一份快照相对某个基准改了什么。
+   *
+   * 基准默认 `current`（磁盘现状）—— 决定「要不要点恢复」时唯一相关的问题是
+   * 「它会把我现在的配置改成什么样」。也可以比上一份快照或原始配置。
+   */
+  cliBackupDiff: (backupId: string, base: DiffBase = "current") =>
+    invoke<BackupDiff>("cli_backup_diff", { backupId, base }),
   cliReadFiles: (target: CliTarget) =>
     invoke<ConfigFileView[]>("cli_read_files", { target }),
   cliWriteFile: (target: CliTarget, rel: string, body: string) =>
@@ -266,6 +277,11 @@ export const api = {
    */
   sessionCompact: (path: string, model: string, keepTail: number, chunkTokens: number) =>
     invoke<CompactReport>("session_compact", { path, model, keepTail, chunkTokens }),
+  /**
+   * 删掉选中的会话。不可恢复，调用方必须先弹确认。
+   * 活着的会话后端会跳过；一条失败不拖累其余。
+   */
+  sessionDelete: (paths: string[]) => invoke<DeleteReport>("session_delete", { paths }),
 
   pickFolder: () => invoke<string | null>("pick_folder"),
 

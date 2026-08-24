@@ -4,6 +4,8 @@
 use tauri::State;
 
 use crate::error::{AppError, AppResult};
+use crate::services::cli_backup::unique_stamp;
+use crate::services::context_window::{chain_ceiling, inject_claude_window};
 use crate::services::fallback::{
     hop_priority, model_entry, validate_chain, FallbackChain, FallbackStore,
 };
@@ -212,6 +214,15 @@ pub async fn fallback_apply(
                 .unwrap_or_else(|| "?".into()),
             hop.upstream, chain.alias, hop.upstream
         ));
+    }
+    // 把链上最窄那一跳的窗口写进 Claude Code。原生 /compact 按这个数提前动手，
+    // 而不是按模型名上的 [1m] 估到一个不存在的分母上。没接管就跳过。
+    if let Some(tokens) = chain_ceiling(&chain.hops) {
+        let root = state.config_root().await?;
+        match inject_claude_window(&root, &state.backups, &unique_stamp(), tokens) {
+            Ok(msg) => log.push(msg),
+            Err(e) => log.push(format!("窗口注入失败：{e}")),
+        }
     }
     Ok(log)
 }

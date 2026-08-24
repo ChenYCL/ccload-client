@@ -9,12 +9,18 @@ const NAV = [
   { g: "监控", items: [
     { id: "dashboard", label: "总览" },
     { id: "logs", label: "实时日志" },
+    { id: "usage", label: "订阅用量" },
+    { id: "sessions", label: "会话救援" },
+    { id: "session-manage", label: "会话管理" },
   ]},
   { g: "配置", items: [
     { id: "cli", label: "CLI 接管" },
     { id: "graph", label: "调度图" },
     { id: "fallback", label: "模型链" },
+    { id: "forced-route", label: "强制路由" },
     { id: "models", label: "模型导入" },
+    { id: "inject", label: "系统注入" },
+    { id: "unlock", label: "破禁" },
     { id: "extensions", label: "扩展管理" },
   ]},
   { g: "系统", items: [
@@ -26,10 +32,16 @@ const NAV = [
 const ICO = {
   dashboard: `<path d="M3 3h7v9H3zM14 3h7v5h-7zM14 12h7v9h-7zM3 16h7v5H3z"/>`,
   logs: `<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>`,
+  usage: `<path d="M12 20a8 8 0 108-8M12 12l4-4"/><circle cx="12" cy="12" r="1.5"/>`,
+  sessions: `<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.5"/><path d="M5 5l4 4M15 15l4 4M15 9l4-4M5 19l4-4"/>`,
+  "session-manage": `<path d="M3 7h7l2 2h9v10H3z"/>`,
   cli: `<path d="M4 8l4 4-4 4M12 16h8"/>`,
   graph: `<path d="M3 17l6-6 4 4 8-8M14 7h7v7"/>`,
   fallback: `<path d="M6 3v12M6 15l4 4 4-4M18 21V9M18 9l-4-4-4 4"/>`,
+  "forced-route": `<path d="M16 3h5v5M4 20l16-16M21 16v5h-5M15 15l6 6M4 4l5 5"/>`,
   models: `<path d="M16 16h6v6h-6zM2 16h6v6H2zM9 2h6v6H9zM12 8v8M5 16v-4h14v4"/>`,
+  inject: `<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8zM14 2v6h6M9 13l-2 2 2 2M15 13l2 2-2 2"/>`,
+  unlock: `<rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 019.9-1"/>`,
   extensions: `<path d="M12 2v6M8 6h8M4 10h16v10H4z"/>`,
   "web-admin": `<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/>`,
   settings: `<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1L7 17M17 7l2.1-2.1"/>`,
@@ -65,8 +77,8 @@ function shell(active, title, inner) {
         </div>
         <nav>${nav}</nav>
         <div class="foot">
-          <div class="lang">${icon("settings").replace("settings", "settings")}<span style="font-size:11px">中文</span></div>
-          <div class="status"><span class="ping"></span>运行中 · v4.6.37-beta.1</div>
+          <div class="lang">${icon("settings")}<span style="font-size:11px">中文</span></div>
+          <div class="status"><span class="ping"></span>运行中 · v4.7.8-beta.1</div>
         </div>
       </aside>
       <main>${inner}</main>
@@ -121,6 +133,230 @@ const pages = {
         ${[["claude-opus-5","$11.20"],["gpt-5.4","$4.80"],["gemini-3-pro","$2.40"]].map(([n,c]) =>
           `<div class="row" style="padding:8px 0;border-top:1px solid rgb(var(--border));margin-top:8px"><span class="mono" style="font-size:13px">${n}</span><span>${c}</span></div>`).join("")}
       </div>
+    </div>
+  `],
+  usage: [
+    "订阅用量",
+    `
+    <div style="margin-bottom:14px">
+      <h1 class="t-display">订阅用量</h1>
+      <p class="lede">套餐额度窗口（5 小时 / 每周 / 每月）与剩余，逐 OAuth 渠道。每个数字来自内核采样上游额度接口，不是估算。</p>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:14px">
+      ${[
+        ["Anthropic", "Anthropic · Max 20x", [
+          ["5 小时", 17, "剩余 83.0%", "本窗口计费 $81.53", "ok"],
+          ["每周", 93, "剩余 7.0%", "本窗口计费 $1340.59", "warn"],
+          ["每周 · Fable", 82, "剩余 18.0%", "本窗口计费 $24.36", "warn"],
+        ]],
+        ["Grok", "xAI", [
+          ["每周", 3, "剩余 97.0%", "本窗口计费 $3.91", "ok"],
+          ["每月", 35, "剩余 64.8%", "本窗口计费 $17.52", "ok"],
+        ]],
+        ["Cursor", "Cursor", [
+          ["Cursor Models", 41, "剩余 59.0%", "按量 Monthly Limit $28.60", "ok"],
+          ["Other Models", 6, "剩余 94.0%", "", "ok"],
+        ]],
+      ].map(([name, plan, windows]) => `
+        <div class="card" style="padding:16px 18px">
+          <div class="row">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="font-weight:600;font-size:15px">${name}</span>
+              <span class="btn" style="font-size:11px;padding:2px 8px">${plan}</span>
+            </div>
+            <div class="btn" style="font-size:12px">刷新</div>
+          </div>
+          ${windows.map(([w, used, left, cost, tone]) => `
+            <div style="margin-top:14px">
+              <div class="row" style="font-size:13px">
+                <span style="font-weight:500">${w}</span>
+                <span class="${tone === "warn" ? "bad" : "ok"}" style="font-weight:600">${left}</span>
+              </div>
+              <div style="margin-top:6px;height:6px;border-radius:999px;background:rgb(var(--border))">
+                <div style="height:6px;border-radius:999px;width:${used}%;background:${tone === "warn" ? "#f59e0b" : "#22c55e"}"></div>
+              </div>
+              <div class="muted" style="margin-top:6px;font-size:11px">已用 ${used}.0% · 若干时间后重置${cost ? " · " + cost : ""}</div>
+            </div>`).join("")}
+        </div>`).join("")}
+    </div>
+  `],
+  sessions: [
+    "会话救援",
+    `
+    <div class="row" style="margin-bottom:14px">
+      <div>
+        <h1 class="t-display">会话救援</h1>
+        <p class="lede">会话撑过中转的上限之后会卡死，/compact 也超限，只会报 400 too long。这里能把它弄回来。token 数来自上游回报的用量，不是估算。</p>
+      </div>
+      <div class="btn">重新扫描</div>
+    </div>
+    <div class="card row" style="padding:14px 16px;gap:16px;align-items:flex-end">
+      <label style="font-size:12px"><div class="muted" style="margin-bottom:4px">瘦身目标上下文</div>
+        <div class="btn mono" style="width:120px;justify-content:flex-start">300000</div></label>
+      <label style="font-size:12px;flex:1"><div class="muted" style="margin-bottom:4px">总结用的模型</div>
+        <div class="btn muted" style="justify-content:space-between">deepseek-v4-flash <span>▾</span></div></label>
+      <p class="muted" style="font-size:11px;max-width:22rem">目标要给天花板留余量 —— 压缩请求本身也要把整段对话发一遍。</p>
+    </div>
+    <div style="margin-top:12px;display:flex;align-items:center;gap:8px;font-size:12px">
+      <div class="btn muted" style="flex:1;justify-content:flex-start">搜名字、uuid 或路径</div>
+      <div class="btn muted">全部项目（12） ▾</div>
+      <div class="btn muted">峰值最大 ▾</div>
+      <span class="muted">4 / 12</span>
+    </div>
+    <div style="margin-top:12px;display:flex;align-items:center;gap:10px;font-size:12px">
+      <span class="muted">全选当前列表</span>
+      <span class="btn-a" style="font-size:12px;padding:4px 10px">一键救援（2）</span>
+      <span class="muted">一键救援 = 对勾上的会话逐条分块总结。</span>
+    </div>
+    <div style="margin-top:14px;display:flex;flex-direction:column;gap:10px">
+      ${[
+        [true, "gentle-humming-fermi", "web-dashboard", "548k", "2531k", "55.5 MB", "压缩过 6 次"],
+        [true, "brisk-folding-newton", "web-dashboard", "341k", "1651k", "11.4 MB", "压缩过 1 次"],
+        [false, "calm-drifting-euler", "api-gateway", "421k", "1000k", "23.8 MB", "压缩过 17 次"],
+        [false, "swift-sorting-turing", "data-pipeline", "331k", "999k", "9.2 MB", ""],
+      ].map(([on, name, proj, cur, peak, size, tag]) => `
+        <div class="card row" style="padding:14px 16px">
+          <div style="display:flex;align-items:center;gap:10px;min-width:0">
+            <span style="width:14px;height:14px;border-radius:3px;border:1.5px solid rgb(var(--border));background:${on ? "rgb(var(--accent))" : "transparent"}"></span>
+            <div style="min-width:0">
+              <div><span style="font-weight:600">${name}</span> <span class="muted" style="font-size:13px">${proj}</span></div>
+              <div class="mono muted" style="font-size:11px;margin-top:2px">当前 ${cur} · 峰值 <span class="bad">${peak}</span> · ${size}</div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            ${tag ? `<span class="btn" style="font-size:11px;padding:2px 8px">${tag}</span>` : ""}
+            <span class="btn" style="font-size:12px">瘦身</span>
+            <span class="btn" style="font-size:12px">分块总结</span>
+          </div>
+        </div>`).join("")}
+    </div>
+  `],
+  "session-manage": [
+    "会话管理",
+    `
+    <div class="row" style="margin-bottom:14px">
+      <div>
+        <h1 class="t-display">会话管理</h1>
+        <p class="lede">清太久没碰的 Claude Code 会话。删掉的文件不可恢复，救援留下的备份会一起清。正在运行的会话不会被动。</p>
+      </div>
+      <div class="btn">重新扫描</div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;font-size:12px">
+      <div class="btn muted" style="flex:1;justify-content:flex-start">搜名字、uuid 或路径</div>
+      <div class="btn muted">全部项目（12） ▾</div>
+      <div class="btn muted">30 天前及更早 ▾</div>
+      <div class="btn muted">最早改动 ▾</div>
+    </div>
+    <div style="margin-top:12px;display:flex;align-items:center;gap:10px;font-size:12px">
+      <span class="muted">全选当前列表</span>
+      <span class="btn" style="font-size:12px;padding:4px 10px;background:#dc2626;border-color:transparent;color:#fff">删除选中（3 · 76.1 MB）</span>
+    </div>
+    <div style="margin-top:14px;display:flex;flex-direction:column;gap:10px">
+      ${[
+        [true, "gentle-humming-fermi", "web-dashboard", "55.5 MB", "25 天前"],
+        [true, "brisk-folding-newton", "web-dashboard", "11.4 MB", "24 天前"],
+        [true, "swift-sorting-turing", "data-pipeline", "9.2 MB", "31 天前"],
+        [false, "calm-drifting-euler", "api-gateway", "23.8 MB", "7 分钟前"],
+      ].map(([on, name, proj, size, ago]) => `
+        <div class="card row" style="padding:14px 16px">
+          <div style="display:flex;align-items:center;gap:10px;min-width:0">
+            <span style="width:14px;height:14px;border-radius:3px;border:1.5px solid rgb(var(--border));background:${on ? "rgb(var(--accent))" : "transparent"}"></span>
+            <div>
+              <div><span style="font-weight:600">${name}</span> <span class="muted" style="font-size:13px">${proj}</span></div>
+              <div class="mono muted" style="font-size:11px;margin-top:2px">${size} · ${ago}</div>
+            </div>
+          </div>
+        </div>`).join("")}
+    </div>
+  `],
+  "forced-route": [
+    "强制路由",
+    `
+    <div class="row">
+      <div>
+        <h1 class="t-display">强制路由</h1>
+        <p class="lede">CLI 请求某个模型名，就强制发到你选的渠道 + 上游模型。不校验上游，手填任意名字照样发。和「模型链」的区别是心智：那边讲降级，这里是「我说发去哪就发去哪」。</p>
+      </div>
+      <div class="btn-a">新建路由</div>
+    </div>
+    <div style="margin-top:18px;display:flex;flex-direction:column;gap:12px">
+      ${[
+        ["claude-fable-5", [["grok-4.5", "Grok"], ["opus-5", "Relay"]]],
+        ["claude-opus-5", [["grok-4.6", "Grok"]]],
+      ].map(([from, targets]) => `
+        <div class="card row" style="padding:16px">
+          <div style="min-width:0">
+            <div class="mono" style="font-weight:600">${from}</div>
+            <div style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px">
+              ${targets.map(([m, ch], i) => `${i ? '<span class="muted">→</span>' : ""}<span class="btn" style="${i ? "" : "background:rgb(var(--accent)/0.1);border-color:transparent;color:rgb(var(--accent))"}"><span class="mono">${m}</span> <span class="muted" style="font-size:11px">${ch}</span></span>`).join("")}
+            </div>
+          </div>
+          <div style="display:flex;gap:8px"><span class="btn" style="font-size:12px">应用</span><span class="btn" style="font-size:12px">编辑</span></div>
+        </div>`).join("")}
+    </div>
+    <div class="card" style="margin-top:14px;padding:12px 16px;font-size:13px;color:rgb(var(--accent));background:rgb(var(--accent)/0.06);border-color:rgb(var(--accent)/0.25)">应用时会把目标排到现有服务该别名的渠道之上，确保独占而不是被平分。</div>
+  `],
+  inject: [
+    "系统注入",
+    `
+    <div class="row">
+      <div>
+        <h1 class="t-display">系统注入</h1>
+        <p class="lede">把受管的说明块写进各 CLI 的全局指令文件（CLAUDE.md / AGENTS.md / GEMINI.md）。只替换我们自己标记之间的内容，块外一个字节都不动。</p>
+      </div>
+    </div>
+    <div style="margin-top:16px;display:flex;flex-direction:column;gap:12px">
+      ${[
+        ["视觉 MCP 用法", "教模型遇到图片就调 ccload-vision，而不是猜或让你转成文字", true],
+        ["生图 MCP 用法", "教模型「这张图我自己就能画」，而不是甩给别的工具", true],
+        ["你自己的规则", "手写的工作约定，一次写进五家 CLI", false],
+      ].map(([tt, d, on]) => `
+        <div class="card row" style="padding:14px 16px">
+          <div style="display:flex;gap:12px;align-items:flex-start">
+            <div style="width:18px;height:18px;border-radius:5px;margin-top:2px;background:${on ? "rgb(var(--accent))" : "rgb(var(--border))"};display:flex;align-items:center;justify-content:center;color:#fff;font-size:12px">${on ? "✓" : ""}</div>
+            <div><div style="font-weight:600">${tt}</div><div class="muted" style="font-size:13px">${d}</div></div>
+          </div>
+          <span class="${on ? "btn" : "btn-a"}" style="font-size:12px">${on ? "更新" : "写入"}</span>
+        </div>`).join("")}
+    </div>
+    <div style="margin-top:14px;display:flex;gap:8px;align-items:center;font-size:13px">
+      <span class="muted">写给</span>
+      ${["Claude Code", "Codex", "Gemini CLI", "Grok Build", "OpenCode"].map((c, i) =>
+        `<span class="btn" style="font-size:12px;${i < 3 ? "background:rgb(var(--accent)/0.12);border-color:transparent;color:rgb(var(--accent))" : ""}">${c}</span>`).join("")}
+    </div>
+  `],
+  unlock: [
+    "破禁",
+    `
+    <div class="row">
+      <div>
+        <h1 class="t-display">破禁</h1>
+        <p class="lede">按勾选的 CLI 各写一份已经带好背景的新会话，用那家自己的 resume 接着干。拦不拦得住取决于对面那家模型，壳体只负责把历史写进文件。</p>
+      </div>
+      <div style="display:flex;gap:8px"><span class="btn">隐藏内置</span><span class="btn-a">新建预设</span></div>
+    </div>
+    <div class="card" style="margin-top:16px;padding:14px 16px">
+      <div class="muted" style="font-size:13px">工作目录</div>
+      <div class="mono" style="margin-top:6px;padding:8px 10px;border:1px solid rgb(var(--border));border-radius:8px;font-size:13px">/Users/you/project/web-dashboard</div>
+      <div style="margin-top:12px;display:flex;gap:8px;font-size:12px">
+        ${["Claude Code", "Codex", "Gemini CLI", "Grok Build", "OpenCode"].map((c, i) =>
+          `<span class="btn" style="${i === 4 ? "background:rgb(var(--accent)/0.12);border-color:transparent;color:rgb(var(--accent))" : ""}">${c}</span>`).join("")}
+      </div>
+      <div style="margin-top:12px;font-size:13px;display:flex;align-items:center;gap:8px"><span style="color:rgb(var(--accent))">☑</span> 锁定在这个目录 <span class="muted" style="font-size:12px">越出目录的读写要当场点头；Codex 还钉死工作根</span></div>
+    </div>
+    <div style="margin-top:12px;display:flex;flex-direction:column;gap:10px">
+      ${[
+        ["已经接上头", "4 轮", "先写一轮成功的解锁确认，再 resume。模型看到的是既成事实。"],
+        ["DAN", "2 轮", "公开的 Do Anything Now。点开时已经演完自我介绍。"],
+        ["无过滤工程师", "2 轮", "面向逆向、安全研究、协议分析的工作预设，不演角色。"],
+      ].map(([tt, n, d]) => `
+        <div class="card row" style="padding:14px 16px">
+          <div style="min-width:0">
+            <div><span style="font-weight:600">${tt}</span> <span class="btn" style="font-size:10px;padding:1px 6px">内置</span> <span class="muted" style="font-size:12px">${n}</span></div>
+            <div class="muted" style="font-size:13px;margin-top:2px">${d}</div>
+          </div>
+          <div style="display:flex;gap:8px"><span class="btn" style="font-size:12px">开一个新会话</span><span class="btn" style="font-size:12px">复制一份</span></div>
+        </div>`).join("")}
     </div>
   `],
   logs: [

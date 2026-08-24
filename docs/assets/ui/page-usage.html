@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>订阅用量</title>
+  <link rel="stylesheet" href="./shell.css" />
+</head>
+<body>
+  <div class="win">
+    <div class="chrome"><i class="dot r"></i><i class="dot y"></i><i class="dot g"></i><span>ccLoad</span></div>
+    <div class="app">
+      <aside class="aside">
+        <div class="brand">
+          <svg class="mark" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+          <div><div class="t">ccLoad</div><small>desktop client</small></div>
+        </div>
+        <nav><div style="margin-bottom:16px"><div class="gt">监控</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h7v9H3zM14 3h7v5h-7zM14 12h7v9h-7zM3 16h7v5H3z"/></svg>总览</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>实时日志</div><div class="item on"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20a8 8 0 108-8M12 12l4-4"/><circle cx="12" cy="12" r="1.5"/></svg>订阅用量</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.5"/><path d="M5 5l4 4M15 15l4 4M15 9l4-4M5 19l4-4"/></svg>会话救援</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h7l2 2h9v10H3z"/></svg>会话管理</div></div><div style="margin-bottom:16px"><div class="gt">配置</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8l4 4-4 4M12 16h8"/></svg>CLI 接管</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8M14 7h7v7"/></svg>调度图</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v12M6 15l4 4 4-4M18 21V9M18 9l-4-4-4 4"/></svg>模型链</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3h5v5M4 20l16-16M21 16v5h-5M15 15l6 6M4 4l5 5"/></svg>强制路由</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16 16h6v6h-6zM2 16h6v6H2zM9 2h6v6H9zM12 8v8M5 16v-4h14v4"/></svg>模型导入</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8zM14 2v6h6M9 13l-2 2 2 2M15 13l2 2-2 2"/></svg>系统注入</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 019.9-1"/></svg>破禁</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v6M8 6h8M4 10h16v10H4z"/></svg>扩展管理</div></div><div style="margin-bottom:16px"><div class="gt">系统</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></svg>内核后台</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1L7 17M17 7l2.1-2.1"/></svg>设置</div></div></nav>
+        <div class="foot">
+          <div class="lang"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1L7 17M17 7l2.1-2.1"/></svg><span style="font-size:11px">中文</span></div>
+          <div class="status"><span class="ping"></span>运行中 · v4.7.8-beta.1</div>
+        </div>
+      </aside>
+      <main>
+    <div style="margin-bottom:14px">
+      <h1 class="t-display">订阅用量</h1>
+      <p class="lede">套餐额度窗口（5 小时 / 每周 / 每月）与剩余，逐 OAuth 渠道。每个数字来自内核采样上游额度接口，不是估算。</p>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:14px">
+      
+        <div class="card" style="padding:16px 18px">
+          <div class="row">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="font-weight:600;font-size:15px">Anthropic</span>
+              <span class="btn" style="font-size:11px;padding:2px 8px">Anthropic · Max 20x</span>
+            </div>
+            <div class="btn" style="font-size:12px">刷新</div>
+          </div>
+          
+            <div style="margin-top:14px">
+              <div class="row" style="font-size:13px">
+                <span style="font-weight:500">5 小时</span>
+                <span class="ok" style="font-weight:600">剩余 83.0%</span>
+              </div>
+              <div style="margin-top:6px;height:6px;border-radius:999px;background:rgb(var(--border))">
+                <div style="height:6px;border-radius:999px;width:17%;background:#22c55e"></div>
+              </div>
+              <div class="muted" style="margin-top:6px;font-size:11px">已用 17.0% · 若干时间后重置 · 本窗口计费 $81.53</div>
+            </div>
+            <div style="margin-top:14px">
+              <div class="row" style="font-size:13px">
+                <span style="font-weight:500">每周</span>
+                <span class="bad" style="font-weight:600">剩余 7.0%</span>
+              </div>
+              <div style="margin-top:6px;height:6px;border-radius:999px;background:rgb(var(--border))">
+                <div style="height:6px;border-radius:999px;width:93%;background:#f59e0b"></div>
+              </div>
+              <div class="muted" style="margin-top:6px;font-size:11px">已用 93.0% · 若干时间后重置 · 本窗口计费 $1340.59</div>
+            </div>
+            <div style="margin-top:14px">
+              <div class="row" style="font-size:13px">
+                <span style="font-weight:500">每周 · Fable</span>
+                <span class="bad" style="font-weight:600">剩余 18.0%</span>
+              </div>
+              <div style="margin-top:6px;height:6px;border-radius:999px;background:rgb(var(--border))">
+                <div style="height:6px;border-radius:999px;width:82%;background:#f59e0b"></div>
+              </div>
+              <div class="muted" style="margin-top:6px;font-size:11px">已用 82.0% · 若干时间后重置 · 本窗口计费 $24.36</div>
+            </div>
+        </div>
+        <div class="card" style="padding:16px 18px">
+          <div class="row">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="font-weight:600;font-size:15px">Grok</span>
+              <span class="btn" style="font-size:11px;padding:2px 8px">xAI</span>
+            </div>
+            <div class="btn" style="font-size:12px">刷新</div>
+          </div>
+          
+            <div style="margin-top:14px">
+              <div class="row" style="font-size:13px">
+                <span style="font-weight:500">每周</span>
+                <span class="ok" style="font-weight:600">剩余 97.0%</span>
+              </div>
+              <div style="margin-top:6px;height:6px;border-radius:999px;background:rgb(var(--border))">
+                <div style="height:6px;border-radius:999px;width:3%;background:#22c55e"></div>
+              </div>
+              <div class="muted" style="margin-top:6px;font-size:11px">已用 3.0% · 若干时间后重置 · 本窗口计费 $3.91</div>
+            </div>
+            <div style="margin-top:14px">
+              <div class="row" style="font-size:13px">
+                <span style="font-weight:500">每月</span>
+                <span class="ok" style="font-weight:600">剩余 64.8%</span>
+              </div>
+              <div style="margin-top:6px;height:6px;border-radius:999px;background:rgb(var(--border))">
+                <div style="height:6px;border-radius:999px;width:35%;background:#22c55e"></div>
+              </div>
+              <div class="muted" style="margin-top:6px;font-size:11px">已用 35.0% · 若干时间后重置 · 本窗口计费 $17.52</div>
+            </div>
+        </div>
+        <div class="card" style="padding:16px 18px">
+          <div class="row">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="font-weight:600;font-size:15px">Cursor</span>
+              <span class="btn" style="font-size:11px;padding:2px 8px">Cursor</span>
+            </div>
+            <div class="btn" style="font-size:12px">刷新</div>
+          </div>
+          
+            <div style="margin-top:14px">
+              <div class="row" style="font-size:13px">
+                <span style="font-weight:500">Cursor Models</span>
+                <span class="ok" style="font-weight:600">剩余 59.0%</span>
+              </div>
+              <div style="margin-top:6px;height:6px;border-radius:999px;background:rgb(var(--border))">
+                <div style="height:6px;border-radius:999px;width:41%;background:#22c55e"></div>
+              </div>
+              <div class="muted" style="margin-top:6px;font-size:11px">已用 41.0% · 若干时间后重置 · 按量 Monthly Limit $28.60</div>
+            </div>
+            <div style="margin-top:14px">
+              <div class="row" style="font-size:13px">
+                <span style="font-weight:500">Other Models</span>
+                <span class="ok" style="font-weight:600">剩余 94.0%</span>
+              </div>
+              <div style="margin-top:6px;height:6px;border-radius:999px;background:rgb(var(--border))">
+                <div style="height:6px;border-radius:999px;width:6%;background:#22c55e"></div>
+              </div>
+              <div class="muted" style="margin-top:6px;font-size:11px">已用 6.0% · 若干时间后重置</div>
+            </div>
+        </div>
+    </div>
+  </main>
+    </div>
+  </div>
+</body>
+</html>

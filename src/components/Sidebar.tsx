@@ -14,6 +14,7 @@ import {
   Globe,
   LayoutDashboard,
   LifeBuoy,
+  FolderOpen,
   Unlock,
   ScrollText,
   Settings,
@@ -45,6 +46,7 @@ const GROUPS: { title: string; items: { id: Page; label: string; icon: typeof Ac
       { id: "logs", label: "实时日志", icon: ScrollText },
       { id: "usage", label: "订阅用量", icon: Gauge },
       { id: "sessions", label: "会话救援", icon: LifeBuoy },
+      { id: "session-manage", label: "会话管理", icon: FolderOpen },
     ],
   },
   {

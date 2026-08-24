@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="718" height="20" role="img" aria-label="Tauri 2 · React 18 · Rust stable · macOS Windows Linux · GitHub Actions · MIT">
+  <style>text{font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:11px;fill:#fff}</style>
+  <!-- Tauri | 2 -->
+  <g>
+    <clipPath id="b1"><rect width="66" height="20" rx="3"/></clipPath>
+    <g clip-path="url(#b1)">
+      <rect width="44" height="20" fill="#555"/><rect x="44" width="22" height="20" fill="#24C8DB"/>
+      <text x="22" y="14" text-anchor="middle">Tauri</text><text x="55" y="14" text-anchor="middle">2</text>
+    </g>
+  </g>
+  <!-- React | 18 -->
+  <g transform="translate(72)">
+    <clipPath id="b2"><rect width="74" height="20" rx="3"/></clipPath>
+    <g clip-path="url(#b2)">
+      <rect width="46" height="20" fill="#555"/><rect x="46" width="28" height="20" fill="#087EA4"/>
+      <text x="23" y="14" text-anchor="middle">React</text><text x="60" y="14" text-anchor="middle">18</text>
+    </g>
+  </g>
+  <!-- Rust | stable -->
+  <g transform="translate(152)">
+    <clipPath id="b3"><rect width="90" height="20" rx="3"/></clipPath>
+    <g clip-path="url(#b3)">
+      <rect width="40" height="20" fill="#555"/><rect x="40" width="50" height="20" fill="#000000"/>
+      <text x="20" y="14" text-anchor="middle">Rust</text><text x="65" y="14" text-anchor="middle">stable</text>
+    </g>
+  </g>
+  <!-- Platforms | macOS · Windows · Linux -->
+  <g transform="translate(248)">
+    <clipPath id="b4"><rect width="234" height="20" rx="3"/></clipPath>
+    <g clip-path="url(#b4)">
+      <rect width="66" height="20" fill="#555"/><rect x="66" width="168" height="20" fill="#8A8A8A"/>
+      <text x="33" y="14" text-anchor="middle">平台</text><text x="150" y="14" text-anchor="middle">macOS · Windows · Linux</text>
+    </g>
+  </g>
+  <!-- CI | GitHub Actions -->
+  <g transform="translate(488)">
+    <clipPath id="b5"><rect width="132" height="20" rx="3"/></clipPath>
+    <g clip-path="url(#b5)">
+      <rect width="28" height="20" fill="#555"/><rect x="28" width="104" height="20" fill="#2088FF"/>
+      <text x="14" y="14" text-anchor="middle">CI</text><text x="80" y="14" text-anchor="middle">GitHub Actions</text>
+    </g>
+  </g>
+  <!-- License | MIT -->
+  <g transform="translate(626)">
+    <clipPath id="b6"><rect width="92" height="20" rx="3"/></clipPath>
+    <g clip-path="url(#b6)">
+      <rect width="56" height="20" fill="#555"/><rect x="56" width="36" height="20" fill="#3FB950"/>
+      <text x="28" y="14" text-anchor="middle">License</text><text x="74" y="14" text-anchor="middle">MIT</text>
+    </g>
+  </g>
+</svg>

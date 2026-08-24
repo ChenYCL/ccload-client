@@ -4,9 +4,19 @@ import { AlertTriangle, LifeBuoy, Loader2, RefreshCw, Scissors, Sparkles } from 
 import { api } from "../lib/api";
 import { cn } from "../lib/cn";
 import { errText } from "../lib/err";
-import { useT, type Translate } from "../i18n";
+import { useT } from "../i18n";
 import { ComboBox } from "../components/ui/ComboBox";
+import { Select, TextInput } from "../components/ui/Input";
 import { kernelAliases, type ChannelModels } from "../lib/modelOptions";
+import {
+  filterSessions,
+  fmtAgo,
+  fmtBytes,
+  fmtTokens,
+  projectName,
+  uniqueProjects,
+  type SessionSort,
+} from "../lib/sessionList";
 import type { CompactReport, SessionInfo, SlimReport } from "../types";
 
 /// 会话救援。
@@ -38,31 +48,14 @@ const KEEP_TAIL = 12;
 /// 超过这个数就标红。多数第三方中转卡在 200k–500k 之间，取个中间值提醒。
 const DANGER_CONTEXT = 400_000;
 
-function fmtTokens(n: number): string {
-  if (n <= 0) return "—";
-  if (n < 1000) return String(n);
-  return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
-}
-
-function fmtBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
-  return `${(n / 1024 / 1024).toFixed(1)} MB`;
-}
-
-function fmtAgo(unixSec: number, t: Translate): string {
-  if (!unixSec) return "";
-  const sec = Math.floor(Date.now() / 1000) - unixSec;
-  if (sec < 3600) return t("{n} 分钟前", { n: Math.max(1, Math.floor(sec / 60)) });
-  if (sec < 86_400) return t("{n} 小时前", { n: Math.floor(sec / 3600) });
-  return t("{n} 天前", { n: Math.floor(sec / 86_400) });
-}
+type BatchItem = { id: string; slug: string; ok: boolean; detail: string };
 
 export function SessionsPage() {
   const t = useT();
   const qc = useQueryClient();
   const [message, setMessage] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
   // 瘦身目标存字符串而不是数字。数字态存不了「用户正在改」的中间态：全选后键入
   // 第一个字符前输入框是空串，`Number("") || DEFAULT` 会立刻把值弹回默认 —— 用户
   // 看到的就是「打字没反应」。字符串允许空着，用到的时候（点瘦身/失焦校验）才解析。
@@ -115,7 +108,8 @@ export function SessionsPage() {
       done(
         t("分块总结完成"),
         r.backup,
-        t("切成 {n} 块分别总结，保留最近 {k} 轮原文，摘要约 {s}（原 {before}）", {
+        t("用 {model} 切成 {n} 块分别总结，保留最近 {k} 轮原文，摘要约 {s}（原 {before}）", {
+          model: r.model || model || t("自动"),
           n: r.chunks,
           k: r.kept_tail,
           s: fmtTokens(r.summary_tokens),
@@ -126,8 +120,100 @@ export function SessionsPage() {
     onSettled: () => setBusyId(null),
   });
 
-  const busy = slim.isPending || compact.isPending;
-  const rows = sessions.data ?? [];
+  /// 一键救援 = 对勾上的会话逐条分块总结。串行：这些请求打同一个渠道，并发
+  /// 只会把它顶到限流，而救援本来就不赶那几秒。
+  const batch = useMutation({
+    mutationFn: async (items: SessionInfo[]) => {
+      const out: BatchItem[] = [];
+      for (const s of items) {
+        setBusyId(s.id);
+        setMessage(
+          t("救援中 {i}/{n}：{name}", {
+            i: out.length + 1,
+            n: items.length,
+            name: s.slug || s.id.slice(0, 8),
+          }),
+        );
+        try {
+          const r = await api.sessionCompact(s.path, model, KEEP_TAIL, CHUNK_TOKENS);
+          out.push({
+            id: s.id,
+            slug: s.slug || s.id.slice(0, 8),
+            ok: true,
+            detail: t("用 {model} 切成 {n} 块分别总结，保留最近 {k} 轮原文，摘要约 {s}（原 {before}）", {
+              model: r.model || model || t("自动"),
+              n: r.chunks,
+              k: r.kept_tail,
+              s: fmtTokens(r.summary_tokens),
+              before: fmtTokens(r.context_before),
+            }),
+          });
+        } catch (e) {
+          out.push({
+            id: s.id,
+            slug: s.slug || s.id.slice(0, 8),
+            ok: false,
+            detail: errText(e),
+          });
+        }
+      }
+      return out;
+    },
+    onSuccess: (items) => {
+      const ok = items.filter((x) => x.ok).length;
+      const fail = items.length - ok;
+      const lines = items.map((x) => `${x.ok ? "✓" : "✗"} ${x.slug}：${x.detail}`);
+      setMessage(
+        `${t("一键救援完成：成功 {ok}，失败 {fail}", { ok, fail })}\n${lines.join("\n")}`,
+      );
+      setSelected(new Set());
+      qc.invalidateQueries({ queryKey: ["sessions"] });
+    },
+    onError: (e) => setMessage(errText(e)),
+    onSettled: () => setBusyId(null),
+  });
+
+  const busy = slim.isPending || compact.isPending || batch.isPending;
+
+  /// 列表的筛选 / 搜索 / 排序。
+  ///
+  /// 这一页扫的只有 Claude Code 一家（`~/.claude/projects`），所以没有「按 CLI 分」
+  /// 这个维度 —— 名字右边那个标签是**项目**（cwd 的最后一段），几十个会话堆在一起
+  /// 时真正要缩小范围的也是它。
+  const [query, setQuery] = useState("");
+  const [project, setProject] = useState("");
+  const [sort, setSort] = useState<SessionSort>("recent");
+
+  const all = sessions.data ?? [];
+  const projects = useMemo(() => uniqueProjects(all), [all]);
+  const rows = useMemo(
+    () => filterSessions(all, { query, project, sort }),
+    [all, query, project, sort],
+  );
+
+  /// 能勾的：没在跑、有真实上下文。活着的改了会被进程盖回去；没用量的不敢压。
+  const selectable = rows.filter((s) => !s.live && s.last_context > 0);
+  const selectedRows = selectable.filter((s) => selected.has(s.id));
+  const allChecked = selectable.length > 0 && selectedRows.length === selectable.length;
+
+  const toggle = (id: string, on: boolean) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  };
+  const toggleAll = (on: boolean) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      for (const s of selectable) {
+        if (on) next.add(s.id);
+        else next.delete(s.id);
+      }
+      return next;
+    });
+  };
 
   return (
     <div>
@@ -172,7 +258,7 @@ export function SessionsPage() {
             value={model}
             onChange={setModel}
             options={models}
-            placeholder={t("选一个内核里有的模型")}
+            placeholder={t("空着 = 按模型链自动挑窗口够的")}
             emptyHint={t("内核里没有可用模型")}
           />
         </label>
@@ -183,16 +269,117 @@ export function SessionsPage() {
         </p>
       </div>
 
+      {/* 筛选 / 搜索 / 排序。几十个会话时不给这三样，找一个就只能靠滚。 */}
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <TextInput
+          small
+          className="min-w-56 flex-1"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder={t("搜名字、uuid 或路径")}
+          aria-label={t("搜索会话")}
+        />
+        <Select
+          small
+          className="w-52 shrink-0"
+          value={project}
+          onChange={(e) => setProject(e.target.value)}
+          aria-label={t("按项目筛选")}
+        >
+          <option value="">{t("全部项目（{n}）", { n: projects.length })}</option>
+          {projects.map(([p, n]) => (
+            <option key={p} value={p}>
+              {p}（{n}）
+            </option>
+          ))}
+        </Select>
+        <Select
+          small
+          className="w-40 shrink-0"
+          value={sort}
+          onChange={(e) => setSort(e.target.value as SessionSort)}
+          aria-label={t("排序")}
+        >
+          <option value="recent">{t("最近改动")}</option>
+          <option value="oldest">{t("最早改动")}</option>
+          <option value="peak">{t("峰值最大")}</option>
+          <option value="current">{t("当前最大")}</option>
+          <option value="size">{t("文件最大")}</option>
+        </Select>
+        {(query || project) && (
+          <button
+            onClick={() => {
+              setQuery("");
+              setProject("");
+            }}
+            className="shrink-0 whitespace-nowrap rounded-lg border border-border bg-surface-raised px-2.5 py-1 text-xs text-muted hover:bg-surface-2"
+          >
+            {t("清除筛选")}
+          </button>
+        )}
+        <span className="shrink-0 text-xs text-muted">
+          {rows.length === all.length
+            ? t("共 {n} 个会话", { n: all.length })
+            : t("{shown} / {total}", { shown: rows.length, total: all.length })}
+        </span>
+      </div>
+
+      {/* 批量操作条。没勾任何一条时按钮也在，免得「勾了才出现」让人找不到入口。 */}
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <label className="flex items-center gap-1.5 text-xs text-muted">
+          <input
+            type="checkbox"
+            checked={allChecked}
+            disabled={selectable.length === 0 || busy}
+            onChange={(e) => toggleAll(e.target.checked)}
+          />
+          {t("全选当前列表")}
+        </label>
+        <button
+          onClick={() => batch.mutate(selectedRows)}
+          disabled={busy || selectedRows.length === 0}
+          title={
+            selectedRows.length === 0
+              ? t("先勾要救的会话")
+              : t("对勾上的会话逐条分块总结。空着模型就按模型链挑窗口够的那一跳")
+          }
+          className="flex items-center gap-1 rounded-lg bg-accent px-2.5 py-1 text-xs font-medium text-white shadow-sm hover:bg-accent/90 disabled:opacity-40"
+        >
+          {batch.isPending ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : (
+            <Sparkles className="h-3 w-3" />
+          )}
+          {selectedRows.length > 0
+            ? t("一键救援（{n}）", { n: selectedRows.length })
+            : t("一键救援")}
+        </button>
+        <span className="text-[11px] text-muted">
+          {t("一键救援 = 对勾上的会话逐条分块总结，活着的和没有用量的会跳过。")}
+        </span>
+      </div>
+
       {rows.length === 0 && !sessions.isPending && (
-        <p className="mt-6 text-sm text-muted">{t("没有找到任何会话。")}</p>
+        <p className="mt-6 text-sm text-muted">
+          {all.length === 0 ? t("没有找到任何会话。") : t("没有匹配的会话。换个关键词或清除筛选。")}
+        </p>
       )}
 
       <ul className="mt-4 divide-y divide-border/60 rounded-xl border border-border">
         {rows.map((s) => {
           const danger = s.peak_context >= DANGER_CONTEXT;
           const working = busyId === s.id && busy;
+          const canSelect = !s.live && s.last_context > 0;
           return (
             <li key={s.id} className="flex flex-wrap items-center gap-3 px-3 py-2.5">
+              <input
+                type="checkbox"
+                checked={selected.has(s.id)}
+                disabled={!canSelect || busy}
+                onChange={(e) => toggle(s.id, e.target.checked)}
+                aria-label={t("选中 {name}", { name: s.slug || s.id.slice(0, 8) })}
+                className="shrink-0"
+              />
               <span
                 className={cn(
                   "h-1.5 w-1.5 shrink-0 rounded-full",
@@ -203,9 +390,7 @@ export function SessionsPage() {
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-sm" title={s.cwd}>
                   {s.slug || s.id.slice(0, 8)}
-                  <span className="ml-2 text-xs text-muted">
-                    {s.cwd.split("/").pop() || s.cwd}
-                  </span>
+                  <span className="ml-2 text-xs text-muted">{projectName(s)}</span>
                 </span>
                 <span className="mt-0.5 block truncate font-mono text-[10px] text-muted/80">
                   {s.id}
@@ -273,12 +458,8 @@ export function SessionsPage() {
                       setBusyId(s.id);
                       compact.mutate(s);
                     }}
-                    disabled={busy || !model || s.last_context === 0}
-                    title={
-                      !model
-                        ? t("先在上面选一个模型")
-                        : t("分块总结后追加一个原生压缩边界。旧内容一个字节不动，花 token 但保信息")
-                    }
+                    disabled={busy || s.last_context === 0}
+                    title={t("分块总结后追加一个原生压缩边界。空着模型就按模型链挑窗口够的那一跳")}
                     className="flex items-center gap-1 rounded-lg border border-border bg-surface-raised px-2 py-1 text-xs hover:bg-surface-2 disabled:opacity-40"
                   >
                     {working && compact.isPending ? (

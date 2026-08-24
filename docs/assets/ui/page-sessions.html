@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>会话救援</title>
+  <link rel="stylesheet" href="./shell.css" />
+</head>
+<body>
+  <div class="win">
+    <div class="chrome"><i class="dot r"></i><i class="dot y"></i><i class="dot g"></i><span>ccLoad</span></div>
+    <div class="app">
+      <aside class="aside">
+        <div class="brand">
+          <svg class="mark" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+          <div><div class="t">ccLoad</div><small>desktop client</small></div>
+        </div>
+        <nav><div style="margin-bottom:16px"><div class="gt">监控</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h7v9H3zM14 3h7v5h-7zM14 12h7v9h-7zM3 16h7v5H3z"/></svg>总览</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>实时日志</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20a8 8 0 108-8M12 12l4-4"/><circle cx="12" cy="12" r="1.5"/></svg>订阅用量</div><div class="item on"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.5"/><path d="M5 5l4 4M15 15l4 4M15 9l4-4M5 19l4-4"/></svg>会话救援</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h7l2 2h9v10H3z"/></svg>会话管理</div></div><div style="margin-bottom:16px"><div class="gt">配置</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8l4 4-4 4M12 16h8"/></svg>CLI 接管</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8M14 7h7v7"/></svg>调度图</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v12M6 15l4 4 4-4M18 21V9M18 9l-4-4-4 4"/></svg>模型链</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3h5v5M4 20l16-16M21 16v5h-5M15 15l6 6M4 4l5 5"/></svg>强制路由</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16 16h6v6h-6zM2 16h6v6H2zM9 2h6v6H9zM12 8v8M5 16v-4h14v4"/></svg>模型导入</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8zM14 2v6h6M9 13l-2 2 2 2M15 13l2 2-2 2"/></svg>系统注入</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 019.9-1"/></svg>破禁</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v6M8 6h8M4 10h16v10H4z"/></svg>扩展管理</div></div><div style="margin-bottom:16px"><div class="gt">系统</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></svg>内核后台</div><div class="item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1L7 17M17 7l2.1-2.1"/></svg>设置</div></div></nav>
+        <div class="foot">
+          <div class="lang"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1L7 17M17 7l2.1-2.1"/></svg><span style="font-size:11px">中文</span></div>
+          <div class="status"><span class="ping"></span>运行中 · v4.7.8-beta.1</div>
+        </div>
+      </aside>
+      <main>
+    <div class="row" style="margin-bottom:14px">
+      <div>
+        <h1 class="t-display">会话救援</h1>
+        <p class="lede">会话撑过中转的上限之后会卡死，/compact 也超限，只会报 400 too long。这里能把它弄回来。token 数来自上游回报的用量，不是估算。</p>
+      </div>
+      <div class="btn">重新扫描</div>
+    </div>
+    <div class="card row" style="padding:14px 16px;gap:16px;align-items:flex-end">
+      <label style="font-size:12px"><div class="muted" style="margin-bottom:4px">瘦身目标上下文</div>
+        <div class="btn mono" style="width:120px;justify-content:flex-start">300000</div></label>
+      <label style="font-size:12px;flex:1"><div class="muted" style="margin-bottom:4px">总结用的模型</div>
+        <div class="btn muted" style="justify-content:space-between">deepseek-v4-flash <span>▾</span></div></label>
+      <p class="muted" style="font-size:11px;max-width:22rem">目标要给天花板留余量 —— 压缩请求本身也要把整段对话发一遍。</p>
+    </div>
+    <div style="margin-top:12px;display:flex;align-items:center;gap:8px;font-size:12px">
+      <div class="btn muted" style="flex:1;justify-content:flex-start">搜名字、uuid 或路径</div>
+      <div class="btn muted">全部项目（12） ▾</div>
+      <div class="btn muted">峰值最大 ▾</div>
+      <span class="muted">4 / 12</span>
+    </div>
+    <div style="margin-top:12px;display:flex;align-items:center;gap:10px;font-size:12px">
+      <span class="muted">全选当前列表</span>
+      <span class="btn-a" style="font-size:12px;padding:4px 10px">一键救援（2）</span>
+      <span class="muted">一键救援 = 对勾上的会话逐条分块总结。</span>
+    </div>
+    <div style="margin-top:14px;display:flex;flex-direction:column;gap:10px">
+      
+        <div class="card row" style="padding:14px 16px">
+          <div style="display:flex;align-items:center;gap:10px;min-width:0">
+            <span style="width:14px;height:14px;border-radius:3px;border:1.5px solid rgb(var(--border));background:rgb(var(--accent))"></span>
+            <div style="min-width:0">
+              <div><span style="font-weight:600">gentle-humming-fermi</span> <span class="muted" style="font-size:13px">web-dashboard</span></div>
+              <div class="mono muted" style="font-size:11px;margin-top:2px">当前 548k · 峰值 <span class="bad">2531k</span> · 55.5 MB</div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="btn" style="font-size:11px;padding:2px 8px">压缩过 6 次</span>
+            <span class="btn" style="font-size:12px">瘦身</span>
+            <span class="btn" style="font-size:12px">分块总结</span>
+          </div>
+        </div>
+        <div class="card row" style="padding:14px 16px">
+          <div style="display:flex;align-items:center;gap:10px;min-width:0">
+            <span style="width:14px;height:14px;border-radius:3px;border:1.5px solid rgb(var(--border));background:rgb(var(--accent))"></span>
+            <div style="min-width:0">
+              <div><span style="font-weight:600">brisk-folding-newton</span> <span class="muted" style="font-size:13px">web-dashboard</span></div>
+              <div class="mono muted" style="font-size:11px;margin-top:2px">当前 341k · 峰值 <span class="bad">1651k</span> · 11.4 MB</div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="btn" style="font-size:11px;padding:2px 8px">压缩过 1 次</span>
+            <span class="btn" style="font-size:12px">瘦身</span>
+            <span class="btn" style="font-size:12px">分块总结</span>
+          </div>
+        </div>
+        <div class="card row" style="padding:14px 16px">
+          <div style="display:flex;align-items:center;gap:10px;min-width:0">
+            <span style="width:14px;height:14px;border-radius:3px;border:1.5px solid rgb(var(--border));background:transparent"></span>
+            <div style="min-width:0">
+              <div><span style="font-weight:600">calm-drifting-euler</span> <span class="muted" style="font-size:13px">api-gateway</span></div>
+              <div class="mono muted" style="font-size:11px;margin-top:2px">当前 421k · 峰值 <span class="bad">1000k</span> · 23.8 MB</div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="btn" style="font-size:11px;padding:2px 8px">压缩过 17 次</span>
+            <span class="btn" style="font-size:12px">瘦身</span>
+            <span class="btn" style="font-size:12px">分块总结</span>
+          </div>
+        </div>
+        <div class="card row" style="padding:14px 16px">
+          <div style="display:flex;align-items:center;gap:10px;min-width:0">
+            <span style="width:14px;height:14px;border-radius:3px;border:1.5px solid rgb(var(--border));background:transparent"></span>
+            <div style="min-width:0">
+              <div><span style="font-weight:600">swift-sorting-turing</span> <span class="muted" style="font-size:13px">data-pipeline</span></div>
+              <div class="mono muted" style="font-size:11px;margin-top:2px">当前 331k · 峰值 <span class="bad">999k</span> · 9.2 MB</div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            
+            <span class="btn" style="font-size:12px">瘦身</span>
+            <span class="btn" style="font-size:12px">分块总结</span>
+          </div>
+        </div>
+    </div>
+  </main>
+    </div>
+  </div>
+</body>
+</html>

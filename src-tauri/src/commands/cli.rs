@@ -7,6 +7,7 @@ use crate::services::cli_advanced::{
     known_env_keys, read_files, write_file, ConfigFileView, EnvKeyInfo, TakeoverOptions,
 };
 use crate::services::cli_backup::BackupEntry;
+use crate::services::cli_backup_diff::{diff_backup, BackupDiff, DiffBase};
 use crate::services::cli_config::{
     apply_takeover, preview, CliTarget, TakeoverPreview, TakeoverResult,
 };
@@ -92,6 +93,26 @@ pub async fn cli_restore(
 ) -> AppResult<Vec<String>> {
     let root = state.config_root().await?;
     Ok(state.backups.restore(&root, &backup_id)?)
+}
+
+/// 一份快照相对某个基准改了什么。
+///
+/// 「恢复」是不可逆地覆盖当前配置，而列表上只看得到时间和「N 个文件」——
+/// 先看 diff 再决定，才敢点那个按钮。基准默认是**磁盘现状**（回答「恢复会把我
+/// 现在的配置改成什么样」），也能选上一份快照或原始配置。
+#[tauri::command]
+pub async fn cli_backup_diff(
+    state: State<'_, AppState>,
+    backup_id: String,
+    base: Option<DiffBase>,
+) -> AppResult<BackupDiff> {
+    let root = state.config_root().await?;
+    Ok(diff_backup(
+        &state.backups,
+        &root,
+        &backup_id,
+        base.unwrap_or(DiffBase::Current),
+    )?)
 }
 
 /// Read every config file for a target as raw text, for the editor UI.

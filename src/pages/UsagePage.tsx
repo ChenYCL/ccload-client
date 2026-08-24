@@ -27,6 +27,7 @@ const OAUTH_AUTH_TYPES = new Set([
   "xai_oauth",
   "anthropic_oauth",
   "zai_oauth",
+  "cursor_oauth",
 ]);
 
 /// 供应商标签是专有名词，中英文一样，不进词典。
@@ -36,6 +37,7 @@ const AUTH_LABELS: Record<string, string> = {
   xai_oauth: "xAI",
   anthropic_oauth: "Anthropic",
   zai_oauth: "Z.ai",
+  cursor_oauth: "Cursor",
 };
 
 /// 上游额度名 → 它比「窗口时长」多说的那一点信息。
