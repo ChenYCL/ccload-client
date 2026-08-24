@@ -162,6 +162,45 @@ registerDict("en", {
   "上游模型，例如 kimi-k3": "Upstream model, e.g. kimi-k3",
   选择渠道: "Pick a channel",
 
+  // ---- 强制路由 ----
+  强制路由: "Forced route",
+  "CLI 请求某个模型名，就强制把它发到你选的渠道 + 上游模型。选一个渠道，联动列出它的模型，勾多个即可 —— 不校验上游，手填任意名字照样发。和「模型链」的区别是心智：那边讲主力冷了往下降级，这里是「我说发去哪就发去哪」。":
+    "When a CLI requests a given model name, force it to the channel + upstream model you pick. Choose a channel, its models cascade below — check as many as you like; the upstream is never validated, so a name you type by hand is sent all the same. The difference from Model chain is the mindset: that one degrades gracefully when the primary cools; this one just sends it where you say.",
+  新建路由: "New route",
+  "还没有路由。点「新建路由」把第一个别名钉到一个渠道+模型上。":
+    "No routes yet. Click New route to pin your first alias to a channel + model.",
+  "把这条路由写进各目标渠道": "Write this route into each target channel",
+  "删除路由 {from}": "Delete route {from}",
+  "（还没有目标）": "(no targets yet)",
+  "第 {n} 个": "#{n}",
+  首选: "Primary",
+  "备用 {n}": "Backup {n}",
+  " · 渠道已禁用，不会被选中": " · channel disabled, will not be picked",
+  " · 没绑渠道，应用时跳过": " · no channel bound, skipped on apply",
+  未绑渠道: "no channel",
+  编辑强制路由: "Edit forced route",
+  "命中「请求别名」就强制发到下面的目标。多个目标按序：第一个是首选，命中即用，后面的是备用落点。应用时会把目标排到现有服务该别名的渠道之上，确保独占而不是被平分。":
+    "A request matching the alias is forced to the targets below. Multiple targets are ordered: the first is primary and is used when reachable; the rest are backups. On apply, targets are pushed above any existing channel serving this alias, so it's an exclusive take-over rather than a 50/50 split.",
+  "请求别名（CLI 里写的模型名）": "Request alias (the model name the CLI sends)",
+  请求别名: "Request alias",
+  "内核里还没有渠道；名字可以手填": "No channels in the kernel yet; you can type the name",
+  "目标（按序，第一个优先级最高）": "Targets (in order; the first has the highest priority)",
+  "还没有目标。在下面选个渠道、勾几个模型，点「加入选中」。":
+    "No targets yet. Pick a channel below, check a few models, then click Add selected.",
+  上移: "Move up",
+  下移: "Move down",
+  移除这个目标: "Remove this target",
+  批量添加目标: "Add targets in bulk",
+  目标渠道: "Target channel",
+  "（已禁用）": " (disabled)",
+  "这个渠道还没配模型 —— 下面手填要发的模型名。":
+    "This channel has no models configured — type the model name to send below.",
+  "或手填一个模型名（不校验上游，照发）":
+    "Or type a model name (upstream not validated, sent as-is)",
+  手填模型名: "Type a model name",
+  加入选中: "Add selected",
+  "（{n}）": " ({n})",
+
   // ---- 扩展管理 ----
   搜索名称或描述: "Search name or description",
   外部工具服务器: "External tool servers",

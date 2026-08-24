@@ -16,6 +16,7 @@ import type {
   ExtensionSpec,
   ExtensionSupport,
   FallbackChain,
+  ForcedRoute,
   GraphDoc,
   GraphValidation,
   ImageApi,
@@ -98,6 +99,18 @@ export const api = {
     invoke<FallbackChain[]>("fallback_delete", { alias }),
   fallbackApply: (alias: string) =>
     invoke<string[]>("fallback_apply", { alias }),
+
+  /* --- 强制路由 --------------------------------------------------------- */
+
+  /** ai-go 那种「请求某模型 → 钉到渠道+上游模型」。存这里，apply 才写渠道。 */
+  forcedRouteList: () => invoke<ForcedRoute[]>("forced_route_list"),
+  forcedRouteSave: (route: ForcedRoute) =>
+    invoke<ForcedRoute[]>("forced_route_save", { route }),
+  forcedRouteDelete: (from: string) =>
+    invoke<ForcedRoute[]>("forced_route_delete", { from }),
+  /** 把 from 别名以递减优先级写进每个目标渠道，redirect 到目标上游模型。 */
+  forcedRouteApply: (from: string) =>
+    invoke<string[]>("forced_route_apply", { from }),
 
   /* --- 调度图 ------------------------------------------------------------ */
 
@@ -260,18 +273,26 @@ export const api = {
   presetPrefs: () => invoke<PresetPrefs>("preset_prefs"),
   presetSave: (preset: SessionPreset) => invoke<SessionPreset[]>("preset_save", { preset }),
   presetDelete: (id: string) => invoke<SessionPreset[]>("preset_delete", { id }),
+  /**
+   * 写出会话并（可选）拉起终端。
+   *
+   * `confine` 是「这个会话只在 cwd 里干活」：不预先关掉权限询问，Codex 还会钉住
+   * 工作根。默认 true —— 不锁才是危险的那一档，默认值必须是安全的那个。
+   */
   presetSpawn: (
     id: string,
     cwd: string,
     extraUser: string,
     launch: boolean,
     targets: CliTarget[],
+    confine = true,
   ) =>
     invoke<SpawnResult>("preset_spawn", {
       id,
       cwd,
       extraUser: extraUser || null,
       launch,
+      confine,
       targets,
     }),
 

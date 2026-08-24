@@ -4,6 +4,7 @@ pub mod cli;
 pub mod config_io;
 pub mod extensions;
 pub mod fallback;
+pub mod forced_route;
 pub mod graph;
 pub mod inject;
 pub mod kernel;

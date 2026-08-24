@@ -10,6 +10,7 @@ pub mod cli_io;
 pub mod cli_types;
 pub mod embed_proxy;
 pub mod fallback;
+pub mod forced_route;
 pub mod graph;
 pub mod image_mcp;
 pub mod kernel;
