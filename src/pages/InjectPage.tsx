@@ -77,8 +77,12 @@ export function InjectPage() {
   const visionMissing = !!visionMcp.data && !visionMcp.data.some((s) => s.installed);
   const imageMissing = !!imageMcp.data && !imageMcp.data.some((s) => s.installed);
 
+  // 初值全空。真正的默认在下面那个 seeding effect 里定 —— 它要等 MCP 的安装
+  // 状态回来才知道该勾哪个。在这里写死 `vision: true` 的后果是：一家都没装的
+  // 机器上进页面就是勾着的，旁边黄条同时说着「还没装到任何 CLI」，按下写入就
+  // 真写了一段教模型调不存在工具的说明。
   const [spec, setSpec] = useState<InjectSpec>({
-    vision: true,
+    vision: false,
     image: false,
     tools: [],
     custom: "",
@@ -91,15 +95,28 @@ export function InjectPage() {
   // 逐字对不上，于是勾选框显示成没勾，整段旧文字被当成用户手写内容，再按一次
   // 「更新」就写出一段旧的加一段新的。
   //
+  // 没有任何已注入的块时（第一次来），按**服务器装没装**定初值：勾一段没装的
+  // 服务器等于教模型去调一个不存在的工具，这个默认必须跟着真实状态走，不能拍脑袋。
+  //
   // 只在第一次读到时填，之后不再覆盖，否则用户正在编辑时一次后台 refetch 就会
   // 把输入框冲掉。
   const [seeded, setSeeded] = useState(false);
   useEffect(() => {
-    if (seeded || !states.data) return;
+    // 三份数据都要到齐：MCP 状态还没回来就先种，会把「装了的」误判成没装，
+    // 而 seeded 是一次性的，判错了就一直错到用户手动去勾。
+    if (seeded || !states.data || !visionMcp.data || !imageMcp.data) return;
     const existing = states.data.find((s) => s.injected && s.spec);
-    if (existing?.spec) setSpec(existing.spec);
+    if (existing?.spec) {
+      setSpec(existing.spec);
+    } else {
+      setSpec((prev) => ({
+        ...prev,
+        vision: visionMcp.data.some((s) => s.installed),
+        image: imageMcp.data.some((s) => s.installed),
+      }));
+    }
     setSeeded(true);
-  }, [states.data, seeded]);
+  }, [states.data, visionMcp.data, imageMcp.data, seeded]);
 
   // 五家 CLI 已装的扩展，按 id 去重并记下装在哪几家。
   //
