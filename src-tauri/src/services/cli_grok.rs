@@ -9,13 +9,23 @@
 //! Official login has `[models]` but no `[model.*]` table. We must CREATE the
 //! custom table rather than update fields that do not exist. Unrelated tables
 //! (`cli`, `ui`, `marketplace`, `plugins`) are left untouched.
+//!
+//! `[models] default` alone does not take over Grok: it only picks the model for
+//! *new* sessions, `grok --resume` restores the model the session was pinned to,
+//! and Grok rewrites `default` itself whenever the user picks something in
+//! `/model`. Any of those leaves inference on the official session token. So we
+//! also override the built-in entry for the model the user is actually on —
+//! Grok merges a `[model.<builtin>]` table over its defaults, so setting just
+//! `base_url` + `api_key` there reroutes that model without redefining it.
 
 use crate::error::AppError;
 use crate::services::cli_io::write_atomic;
 use crate::services::cli_types::ConfigRoot;
 
 const PROFILE: &str = "ccload";
-const DEFAULT_MODEL: &str = "grok-4.5";
+/// Only a fallback: used when there is no `[models] default` to inherit (fresh
+/// install, empty file). Grok's own documented default for a new config.
+const FALLBACK_MODEL: &str = "grok-4.6";
 const DEFAULT_BACKEND: &str = "responses";
 const DEFAULT_WINDOW: i64 = 500_000;
 
@@ -68,11 +78,78 @@ pub fn apply(
         .map_err(|e| AppError::Config(format!("{}: {e}", path.display())))?;
 
     let profile = existing_profile(&doc).unwrap_or(PROFILE).to_string();
+    // Both read before the writers below clobber `default` and the profile's
+    // base_url.
+    let inherited = inherited_model(&doc, &profile);
+    let previous = profile_endpoint(&doc, &profile);
     ensure_models_default(&mut doc, &profile);
-    upsert_model_table(&mut doc, &profile, endpoint, api_token)?;
+    let routed = upsert_model_table(
+        &mut doc,
+        &profile,
+        inherited.as_deref(),
+        endpoint,
+        api_token,
+    )?;
+    if routed != profile {
+        override_builtin(&mut doc, &routed, endpoint, api_token)?;
+    }
+    if let Some(previous) = previous {
+        resync_previous_overrides(&mut doc, &previous, endpoint, api_token)?;
+    }
 
     write_atomic(&path, &doc.to_string())?;
     Ok(vec![path.display().to_string()])
+}
+
+fn trimmed(url: &str) -> &str {
+    url.trim().trim_end_matches('/')
+}
+
+/// The endpoint the profile pointed at before this run — the fingerprint for
+/// telling apart the entries we wrote from ones the user maintains by hand.
+fn profile_endpoint(doc: &toml_edit::DocumentMut, profile: &str) -> Option<String> {
+    let url = doc
+        .get("model")?
+        .get(profile)?
+        .get("base_url")?
+        .as_str()
+        .map(trimmed)?;
+    (!url.is_empty()).then(|| url.to_string())
+}
+
+/// Users switch models over time, so each takeover can leave a built-in override
+/// behind. Move every entry that still carries our old endpoint onto the new one
+/// — otherwise a rotated token 401s on every model but the current one, and the
+/// user sees it as "接管只对一个模型生效".
+///
+/// Matching on the old endpoint keeps this narrow: an entry pointing anywhere
+/// else is the user's own and is left alone.
+fn resync_previous_overrides(
+    doc: &mut toml_edit::DocumentMut,
+    previous: &str,
+    endpoint: &str,
+    api_token: &str,
+) -> Result<(), AppError> {
+    let Some(table) = doc.get_mut("model").and_then(|m| m.as_table_like_mut()) else {
+        return Ok(());
+    };
+    let stale: Vec<String> = table
+        .iter()
+        .filter(|(_, v)| {
+            v.as_table_like()
+                .and_then(|t| t.get("base_url"))
+                .and_then(|v| v.as_str())
+                .is_some_and(|url| trimmed(url) == previous)
+        })
+        .map(|(k, _)| k.to_string())
+        .collect();
+    for key in stale {
+        if let Some(entry) = table.get_mut(&key).and_then(|i| i.as_table_like_mut()) {
+            entry.insert("base_url", toml_edit::value(endpoint));
+            entry.insert("api_key", toml_edit::value(api_token));
+        }
+    }
+    Ok(())
 }
 
 fn existing_profile(doc: &toml_edit::DocumentMut) -> Option<&str> {
@@ -85,6 +162,16 @@ fn existing_profile(doc: &toml_edit::DocumentMut) -> Option<&str> {
     Some(default)
 }
 
+/// The model id the user was on before this takeover.
+///
+/// When `default` is not the profile we are about to write into, `existing_profile`
+/// already proved there is no `[model.<default>]` table — so the header name *is*
+/// the id Grok sends upstream, i.e. a built-in.
+fn inherited_model(doc: &toml_edit::DocumentMut, profile: &str) -> Option<String> {
+    let default = doc.get("models")?.get("default")?.as_str()?.trim();
+    (!default.is_empty() && default != profile).then(|| default.to_string())
+}
+
 fn ensure_models_default(doc: &mut toml_edit::DocumentMut, profile: &str) {
     let models = doc["models"].or_insert(toml_edit::table());
     if let Some(t) = models.as_table_like_mut() {
@@ -92,12 +179,15 @@ fn ensure_models_default(doc: &mut toml_edit::DocumentMut, profile: &str) {
     }
 }
 
+/// Writes `[model.<profile>]` and returns the upstream model id it routes to, so
+/// the caller knows which built-in entry needs the same endpoint.
 fn upsert_model_table(
     doc: &mut toml_edit::DocumentMut,
     profile: &str,
+    inherited: Option<&str>,
     endpoint: &str,
     api_token: &str,
-) -> Result<(), AppError> {
+) -> Result<String, AppError> {
     let models = doc["model"].or_insert(toml_edit::table());
     let table = models
         .as_table_like_mut()
@@ -105,7 +195,6 @@ fn upsert_model_table(
     if table.get(profile).is_none() {
         let mut created = toml_edit::table();
         if let Some(t) = created.as_table_mut() {
-            t["model"] = toml_edit::value(DEFAULT_MODEL);
             t["name"] = toml_edit::value("ccLoad");
             t["api_backend"] = toml_edit::value(DEFAULT_BACKEND);
             t["context_window"] = toml_edit::value(DEFAULT_WINDOW);
@@ -116,9 +205,47 @@ fn upsert_model_table(
         .get_mut(profile)
         .and_then(|i| i.as_table_like_mut())
         .ok_or_else(|| AppError::Config(format!("[model.{profile}] is not a table")))?;
+    // Follow whatever the user last picked in Grok. Only when there is nothing to
+    // inherit do we keep the stored value, so a re-apply after `/model grok-4.7`
+    // moves the profile forward instead of pinning it to a version we shipped.
+    let routed = inherited
+        .map(str::to_string)
+        .or_else(|| {
+            selected
+                .get("model")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| FALLBACK_MODEL.to_string());
+    selected.insert("model", toml_edit::value(&routed));
     selected.insert("base_url", toml_edit::value(endpoint));
     selected.insert("api_key", toml_edit::value(api_token));
     selected.insert("api_backend", toml_edit::value(DEFAULT_BACKEND));
+    Ok(routed)
+}
+
+/// Point a built-in model at ccLoad by merging over Grok's defaults. Only
+/// `base_url`/`api_key` — `api_backend`, `context_window` and the rest must keep
+/// inheriting, or a non-`responses` built-in would break.
+fn override_builtin(
+    doc: &mut toml_edit::DocumentMut,
+    model: &str,
+    endpoint: &str,
+    api_token: &str,
+) -> Result<(), AppError> {
+    let models = doc["model"].or_insert(toml_edit::table());
+    let table = models
+        .as_table_like_mut()
+        .ok_or_else(|| AppError::Config("[model] is not a table".into()))?;
+    if table.get(model).is_none() {
+        table.insert(model, toml_edit::table());
+    }
+    let entry = table
+        .get_mut(model)
+        .and_then(|i| i.as_table_like_mut())
+        .ok_or_else(|| AppError::Config(format!("[model.{model}] is not a table")))?;
+    entry.insert("base_url", toml_edit::value(endpoint));
+    entry.insert("api_key", toml_edit::value(api_token));
     Ok(())
 }
 
@@ -133,26 +260,204 @@ mod tests {
         (dir, root)
     }
 
+    fn seed(root: &ConfigRoot, body: &str) -> std::path::PathBuf {
+        let path = root.join(".grok/config.toml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    /// A `[model.x]` header is quoted only when the id needs it (`grok-4.6` has a
+    /// dot, `ccload` does not), so tests must accept both spellings.
+    fn has_table(body: &str, name: &str) -> bool {
+        body.contains(&format!("[model.{name}]")) || body.contains(&format!("[model.\"{name}\"]"))
+    }
+
     #[test]
     fn official_state_creates_model_table() {
         let (_keep, root) = tmp_root();
-        let path = root.join(".grok/config.toml");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(
-            &path,
+        let path = seed(
+            &root,
             "[cli]\nauto_update = true\n\n[models]\ndefault = \"grok-4.6\"\n",
-        )
-        .unwrap();
+        );
 
         apply(&root, "http://127.0.0.1:15722/v1", "tok-abc").unwrap();
         let out = std::fs::read_to_string(&path).unwrap();
         assert!(out.contains("auto_update = true"), "unrelated tables must survive");
-        assert!(out.contains("[model.ccload]") || out.contains("[model.\"ccload\"]"));
+        assert!(has_table(&out, "ccload"));
         assert!(out.contains("base_url = \"http://127.0.0.1:15722/v1\""));
         assert!(out.contains("api_key = \"tok-abc\""));
         assert_eq!(
             current_endpoint(&root).as_deref(),
             Some("http://127.0.0.1:15722/v1")
+        );
+    }
+
+    #[test]
+    fn profile_inherits_the_model_the_user_was_on() {
+        let (_keep, root) = tmp_root();
+        let path = seed(&root, "[models]\ndefault = \"grok-4.6\"\n");
+
+        apply(&root, "https://proxy.test/v1", "tok").unwrap();
+        let doc: toml_edit::DocumentMut = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert_eq!(
+            doc["model"]["ccload"]["model"].as_str(),
+            Some("grok-4.6"),
+            "must follow the user's model, not a version we hardcoded"
+        );
+    }
+
+    #[test]
+    fn builtin_entry_is_rerouted_so_resumed_sessions_follow() {
+        let (_keep, root) = tmp_root();
+        let path = seed(&root, "[models]\ndefault = \"grok-4.6\"\n");
+
+        apply(&root, "https://proxy.test/v1", "tok").unwrap();
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(has_table(&body, "grok-4.6"), "missing built-in override:\n{body}");
+        let doc: toml_edit::DocumentMut = body.parse().unwrap();
+        let builtin = &doc["model"]["grok-4.6"];
+        assert_eq!(builtin["base_url"].as_str(), Some("https://proxy.test/v1"));
+        assert_eq!(builtin["api_key"].as_str(), Some("tok"));
+        // Everything else keeps inheriting Grok's own defaults for that model.
+        assert!(builtin.get("api_backend").is_none());
+        assert!(builtin.get("context_window").is_none());
+    }
+
+    #[test]
+    fn reapply_refreshes_both_tables_and_keeps_the_model() {
+        let (_keep, root) = tmp_root();
+        let path = seed(&root, "[models]\ndefault = \"grok-4.6\"\n");
+
+        apply(&root, "https://old.test/v1", "old-tok").unwrap();
+        apply(&root, "https://new.test/v1", "new-tok").unwrap();
+
+        let doc: toml_edit::DocumentMut = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert_eq!(doc["models"]["default"].as_str(), Some("ccload"));
+        assert_eq!(doc["model"]["ccload"]["model"].as_str(), Some("grok-4.6"));
+        for table in ["ccload", "grok-4.6"] {
+            assert_eq!(
+                doc["model"][table]["base_url"].as_str(),
+                Some("https://new.test/v1"),
+                "[model.{table}] kept a stale endpoint"
+            );
+            assert_eq!(doc["model"][table]["api_key"].as_str(), Some("new-tok"));
+        }
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("old-tok"));
+    }
+
+    /// Grok rewrites `[models] default` itself when the user picks a model in
+    /// `/model`. The next apply must move the profile onto that model rather
+    /// than leave it pointing at whatever it was created with.
+    fn grok_switched_the_default_away(from: &str, to: &str) {
+        let (_keep, root) = tmp_root();
+        let path = seed(&root, &format!("[models]\ndefault = \"{from}\"\n"));
+        apply(&root, "https://proxy.test/v1", "tok").unwrap();
+
+        let mut doc: toml_edit::DocumentMut =
+            std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        doc["models"]["default"] = toml_edit::value(to);
+        std::fs::write(&path, doc.to_string()).unwrap();
+
+        apply(&root, "https://proxy.test/v1", "tok").unwrap();
+        let doc: toml_edit::DocumentMut = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert_eq!(doc["models"]["default"].as_str(), Some("ccload"));
+        assert_eq!(doc["model"]["ccload"]["model"].as_str(), Some(to));
+        assert_eq!(
+            doc["model"][to]["base_url"].as_str(),
+            Some("https://proxy.test/v1")
+        );
+    }
+
+    #[test]
+    fn reapply_follows_a_model_switch() {
+        grok_switched_the_default_away("grok-4.6", "grok-4.5");
+    }
+
+    /// Overrides left behind by earlier model switches must follow a rotated
+    /// token, or every model but the current one starts 401ing.
+    #[test]
+    fn a_rotated_token_reaches_overrides_left_by_earlier_switches() {
+        let (_keep, root) = tmp_root();
+        let path = seed(&root, "[models]\ndefault = \"grok-4.6\"\n");
+        apply(&root, "https://proxy.test/v1", "tok-1").unwrap();
+
+        // User switches to 4.5 in the TUI; Grok rewrites `default`.
+        let mut doc: toml_edit::DocumentMut =
+            std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        doc["models"]["default"] = toml_edit::value("grok-4.5");
+        // ...and keeps a hand-maintained entry of their own.
+        doc["model"]["scratch"]["base_url"] = toml_edit::value("https://mine.test/v1");
+        doc["model"]["scratch"]["api_key"] = toml_edit::value("mine");
+        std::fs::write(&path, doc.to_string()).unwrap();
+
+        apply(&root, "https://proxy.test/v1", "tok-2").unwrap();
+
+        let doc: toml_edit::DocumentMut = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        for table in ["ccload", "grok-4.6", "grok-4.5"] {
+            assert_eq!(
+                doc["model"][table]["api_key"].as_str(),
+                Some("tok-2"),
+                "[model.{table}] kept a revoked token"
+            );
+        }
+        assert_eq!(
+            doc["model"]["scratch"]["api_key"].as_str(),
+            Some("mine"),
+            "entries pointing elsewhere are the user's, not ours"
+        );
+    }
+
+    #[test]
+    fn an_endpoint_change_moves_every_entry_we_wrote() {
+        let (_keep, root) = tmp_root();
+        let path = seed(&root, "[models]\ndefault = \"grok-4.6\"\n");
+        apply(&root, "https://old.test/v1", "tok").unwrap();
+        apply(&root, "https://new.test/v1", "tok").unwrap();
+
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(!body.contains("old.test"), "stale endpoint survived:\n{body}");
+    }
+
+    #[test]
+    fn empty_config_falls_back_without_a_bogus_override() {
+        let (_keep, root) = tmp_root();
+        let path = root.join(".grok/config.toml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+
+        apply(&root, "https://proxy.test/v1", "tok").unwrap();
+        let doc: toml_edit::DocumentMut = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert_eq!(doc["model"]["ccload"]["model"].as_str(), Some(FALLBACK_MODEL));
+        assert_eq!(
+            doc["model"][FALLBACK_MODEL]["base_url"].as_str(),
+            Some("https://proxy.test/v1")
+        );
+    }
+
+    /// A user who already keeps their own `[model.mine]` profile: we write into
+    /// it instead of minting `ccload`, and must not fabricate a `[model.mine]`
+    /// "built-in" override for the profile name itself.
+    #[test]
+    fn user_owned_profile_is_not_overridden_as_a_builtin() {
+        let (_keep, root) = tmp_root();
+        let path = seed(
+            &root,
+            "[models]\ndefault = \"mine\"\n\n[model.mine]\nmodel = \"grok-4.5\"\n",
+        );
+
+        apply(&root, "https://proxy.test/v1", "tok").unwrap();
+        let doc: toml_edit::DocumentMut = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert_eq!(doc["models"]["default"].as_str(), Some("mine"));
+        assert_eq!(
+            doc["model"]["mine"]["model"].as_str(),
+            Some("grok-4.5"),
+            "an existing profile's model must not be rewritten"
+        );
+        assert!(doc["model"].get("ccload").is_none());
+        // The built-in it routes to still gets rerouted.
+        assert_eq!(
+            doc["model"]["grok-4.5"]["base_url"].as_str(),
+            Some("https://proxy.test/v1")
         );
     }
 }
