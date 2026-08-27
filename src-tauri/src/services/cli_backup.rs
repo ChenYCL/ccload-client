@@ -183,6 +183,20 @@ impl BackupStore {
         id: &str,
         reason: &str,
     ) -> Result<BackupEntry, AppError> {
+        self.snapshot_paths(root, target, id, reason, target.relative_paths())
+    }
+
+    /// Snapshot an explicit file list. Only takeover uses the full list; tests
+    /// use this to build an entry shaped like one an older build wrote, back
+    /// when a target had fewer known files.
+    pub fn snapshot_paths(
+        &self,
+        root: &ConfigRoot,
+        target: CliTarget,
+        id: &str,
+        reason: &str,
+        paths: &[&str],
+    ) -> Result<BackupEntry, AppError> {
         let _g = self.guard();
         let mut manifest = self.load()?;
         // The first snapshot of a target captures the user's original setup.
@@ -192,7 +206,7 @@ impl BackupStore {
         std::fs::create_dir_all(&snap_dir)?;
 
         let mut files = Vec::new();
-        for rel in target.relative_paths() {
+        for rel in paths {
             let src = root.join(rel);
             if src.exists() {
                 // Flatten the relative path so nested dirs need no mkdir.
@@ -365,6 +379,11 @@ impl BackupStore {
                 }
             }
         }
+        // Snapshots only replay the files they captured. A backup older than a
+        // target's current file list would otherwise leave the takeover half
+        // standing — see `heal_unsnapshotted`.
+        let recorded: Vec<String> = entry.files.iter().map(|f| f.rel.clone()).collect();
+        crate::services::cli_config::heal_unsnapshotted(root, entry.target, &recorded)?;
         Ok(touched)
     }
 }

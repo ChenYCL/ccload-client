@@ -118,6 +118,26 @@ pub fn merge(path: &Path, vars: &BTreeMap<String, String>) -> Result<(), AppErro
     write_atomic(path, &body)
 }
 
+/// Drop `keys` from the file. Deletes it outright once nothing but whitespace
+/// is left, so an undo does not leave an empty file we created lying around —
+/// but a file still holding the user's own vars or comments stays.
+pub fn remove_keys(path: &Path, keys: &[&str]) -> Result<(), AppError> {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return Ok(());
+    };
+    let kept: Vec<&str> = raw
+        .lines()
+        .filter(|line| !key_of(line).is_some_and(|k| keys.contains(&k)))
+        .collect();
+    if kept.iter().all(|l| l.trim().is_empty()) {
+        std::fs::remove_file(path)?;
+        return Ok(());
+    }
+    let mut body = kept.join("\n");
+    body.push('\n');
+    write_atomic(path, &body)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

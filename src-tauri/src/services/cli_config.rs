@@ -363,6 +363,27 @@ fn write_codex(
 /// Gemini reads env vars from a dotenv file, never from `settings.json`.
 pub(crate) const GEMINI_ENV: &str = ".gemini/.env";
 
+/// The env vars takeover owns in `~/.gemini/.env`.
+const GEMINI_TAKEOVER_VARS: &[&str] = &["GOOGLE_GEMINI_BASE_URL", "GEMINI_API_KEY"];
+
+/// Undo what a snapshot could not record.
+///
+/// `restore` replays the file list captured at snapshot time, so a backup taken
+/// before `.gemini/.env` joined `relative_paths()` lists only `settings.json` —
+/// restoring it puts `selectedType` back to the Google login while the `.env`
+/// keeps pointing Gemini at the kernel. The undo has to reach the file the
+/// snapshot never knew about, without touching vars the user put there.
+pub fn heal_unsnapshotted(
+    root: &ConfigRoot,
+    target: CliTarget,
+    recorded: &[String],
+) -> Result<(), AppError> {
+    if target != CliTarget::GeminiCli || recorded.iter().any(|r| r == GEMINI_ENV) {
+        return Ok(());
+    }
+    cli_dotenv::remove_keys(&root.join(GEMINI_ENV), GEMINI_TAKEOVER_VARS)
+}
+
 /// Pull ALL_CAPS entries out of a legacy `settings.json` `env` block so they can
 /// be re-homed in `.env`. The block is dropped once emptied — leaving it would
 /// keep showing stale values in the advanced form that Gemini never reads.
@@ -402,9 +423,11 @@ fn collect_gemini_env(
     }
 }
 
-/// `gateway` is the auth type Gemini itself infers when a base URL is present;
-/// we set it explicitly because an existing `selectedType` wins over that
-/// inference and would otherwise keep the CLI on the Google login.
+/// Gemini's own `getAuthTypeFromEnv` infers `gateway` from a base URL, but
+/// `validateAuthMethod` has no branch for it and bails with "Invalid auth
+/// method selected" — verified on gemini-cli 0.50.0. `gemini-api-key` is the
+/// type that both validates (it only wants `GEMINI_API_KEY`, which we write
+/// alongside) and honours `GOOGLE_GEMINI_BASE_URL`.
 fn set_gemini_auth_type(doc: &mut Value) -> Result<(), AppError> {
     let security = object_at(doc, "security")?;
     let slot = security
@@ -415,7 +438,7 @@ fn set_gemini_auth_type(doc: &mut Value) -> Result<(), AppError> {
     }
     slot.as_object_mut()
         .expect("just normalized")
-        .insert("selectedType".into(), Value::String("gateway".into()));
+        .insert("selectedType".into(), Value::String("gemini-api-key".into()));
     Ok(())
 }
 

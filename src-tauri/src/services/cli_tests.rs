@@ -596,8 +596,9 @@ fn gemini_env_lands_in_dotenv_and_auth_type_is_switched() {
         serde_json::from_str(&read(&root, ".gemini/settings.json")).unwrap();
     assert_eq!(
         settings.pointer("/security/auth/selectedType").unwrap(),
-        "gateway",
-        "oauth-personal outranks the base-URL sniffing and would keep the Google login"
+        "gemini-api-key",
+        "oauth-personal outranks the base-URL sniffing and would keep the Google login; \
+         `gateway` is inferred internally but validateAuthMethod rejects it"
     );
     assert_eq!(settings.pointer("/mcpServers/x/command").unwrap(), "y");
     assert_eq!(
@@ -723,4 +724,53 @@ fn gemini_restore_removes_the_dotenv_the_takeover_created() {
         "restore must delete what the takeover created"
     );
     assert_eq!(read(&root, ".gemini/settings.json"), r#"{"ui":{"theme":"dark"}}"#);
+}
+
+/// Restoring a backup taken before `.env` joined the target's file list must
+/// still undo the takeover — the snapshot cannot replay a file it never saw,
+/// so the redirect would otherwise outlive the restore and keep Gemini pointed
+/// at the kernel while settings.json claims the Google login is back.
+#[test]
+fn restoring_a_pre_dotenv_backup_still_undoes_the_redirect() {
+    let (_keep, root, bk) = sandbox();
+    write(
+        &root,
+        ".gemini/settings.json",
+        r#"{"security":{"auth":{"selectedType":"oauth-personal"}}}"#,
+    );
+    // A snapshot from before `.gemini/.env` was a known path.
+    let legacy = bk
+        .snapshot_paths(&root, CliTarget::GeminiCli, "legacy", "takeover", &[".gemini/settings.json"])
+        .unwrap();
+    takeover(&root, &bk, CliTarget::GeminiCli);
+    assert!(root.join(".gemini/.env").exists());
+
+    bk.restore(&root, &legacy.id).unwrap();
+    let settings: serde_json::Value =
+        serde_json::from_str(&read(&root, ".gemini/settings.json")).unwrap();
+    assert_eq!(settings.pointer("/security/auth/selectedType").unwrap(), "oauth-personal");
+    assert!(
+        !root.join(".gemini/.env").exists(),
+        "the redirect survived a restore"
+    );
+}
+
+/// ...but a `.env` the user also keeps their own vars in must survive; only the
+/// two keys takeover owns get swept.
+#[test]
+fn healing_keeps_the_users_own_env_vars() {
+    let (_keep, root, bk) = sandbox();
+    write(&root, ".gemini/.env", "# mine\nFIGMA_TOKEN=keep\n");
+    write(&root, ".gemini/settings.json", "{}");
+    let legacy = bk
+        .snapshot_paths(&root, CliTarget::GeminiCli, "legacy2", "takeover", &[".gemini/settings.json"])
+        .unwrap();
+    takeover(&root, &bk, CliTarget::GeminiCli);
+
+    bk.restore(&root, &legacy.id).unwrap();
+    let env = read(&root, ".gemini/.env");
+    assert!(env.contains("FIGMA_TOKEN=keep"), "{env}");
+    assert!(env.contains("# mine"), "comments survive too:\n{env}");
+    assert!(!env.contains("GEMINI_API_KEY"), "{env}");
+    assert!(!env.contains("GOOGLE_GEMINI_BASE_URL"), "{env}");
 }
