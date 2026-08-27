@@ -5,6 +5,7 @@ pub mod cli_advanced;
 pub mod cli_backup;
 pub mod cli_backup_diff;
 pub mod cli_config;
+pub mod cli_dotenv;
 pub mod cli_extensions;
 pub mod cli_grok;
 pub mod cli_io;

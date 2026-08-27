@@ -7,9 +7,10 @@ use serde_json::Value;
 
 use crate::error::AppError;
 use crate::services::cli_advanced::{
-    blocked_for_user, merge_extra_json, merge_extra_toml, normalize_fallback_models,
+    blocked_for_user, is_env_key, merge_extra_json, merge_extra_toml, normalize_fallback_models,
     TakeoverOptions,
 };
+use crate::services::cli_dotenv;
 use crate::services::cli_grok;
 use crate::services::cli_io::{
     object_at, read_json, write_atomic, write_pretty_json,
@@ -43,11 +44,9 @@ pub fn current_endpoint(root: &ConfigRoot, target: CliTarget) -> Option<String> 
             .pointer("/env/ANTHROPIC_BASE_URL")?
             .as_str()
             .map(str::to_string),
-        CliTarget::GeminiCli => read_json(&root.join(".gemini/settings.json"))
-            .ok()?
-            .pointer("/env/GOOGLE_GEMINI_BASE_URL")?
-            .as_str()
-            .map(str::to_string),
+        CliTarget::GeminiCli => {
+            cli_dotenv::get(&root.join(GEMINI_ENV), "GOOGLE_GEMINI_BASE_URL")
+        }
         CliTarget::OpenCode => read_json(&root.join(".config/opencode/opencode.json"))
             .ok()?
             .pointer("/provider/ccload/options/baseURL")?
@@ -72,21 +71,16 @@ pub fn current_token(root: &ConfigRoot, target: CliTarget) -> Option<String> {
             .pointer("/env/ANTHROPIC_AUTH_TOKEN")?
             .as_str()
             .map(str::to_string),
-        CliTarget::GeminiCli => read_json(&root.join(".gemini/settings.json"))
-            .ok()?
-            .pointer("/env/GEMINI_API_KEY")?
-            .as_str()
-            .map(str::to_string),
+        CliTarget::GeminiCli => cli_dotenv::get(&root.join(GEMINI_ENV), "GEMINI_API_KEY"),
         CliTarget::OpenCode => read_json(&root.join(".config/opencode/opencode.json"))
             .ok()?
             .pointer("/provider/ccload/options/apiKey")?
             .as_str()
             .map(str::to_string),
-        CliTarget::Codex => read_json(&root.join(".codex/auth.json"))
-            .ok()?
-            .get("CCLOAD_API_KEY")?
-            .as_str()
-            .map(str::to_string),
+        CliTarget::Codex => toml_string_at(
+            &root.join(".codex/config.toml"),
+            &["model_providers", "ccload", "experimental_bearer_token"],
+        ),
         CliTarget::GrokBuild => cli_grok::current_token(root),
     }
 }
@@ -212,30 +206,52 @@ pub fn apply_takeover(
             written.push(path.display().to_string());
         }
         CliTarget::GeminiCli => {
-            let path = root.join(".gemini/settings.json");
-            let mut doc = read_json(&path)?;
-            {
-                let env = object_at(&mut doc, "env")?;
-                env.insert("GOOGLE_GEMINI_BASE_URL".into(), Value::String(endpoint));
-                env.insert("GEMINI_API_KEY".into(), Value::String(api_token.into()));
-            }
+            let settings_path = root.join(".gemini/settings.json");
+            let mut doc = read_json(&settings_path)?;
+            // Gemini has no `env` block in settings.json — env vars only ever
+            // come from a `.env` file or the real process environment. Anything
+            // an older build wrote into `env` was dead on arrival; migrate it
+            // rather than leave two copies where only one is read.
+            let mut vars = drain_settings_env(&mut doc);
+            vars.insert("GOOGLE_GEMINI_BASE_URL".into(), endpoint.clone());
+            vars.insert("GEMINI_API_KEY".into(), api_token.to_string());
             if let Some(extra) = &opts.extra_env {
-                merge_extra_json(&mut doc, extra, CliTarget::GeminiCli, true)?;
+                collect_gemini_env(extra, &mut vars);
+                merge_extra_json(&mut doc, extra, CliTarget::GeminiCli, false)?;
             }
-            write_pretty_json(&path, &doc)?;
-            written.push(path.display().to_string());
+            let env_path = root.join(GEMINI_ENV);
+            cli_dotenv::merge(&env_path, &vars)?;
+            written.push(env_path.display().to_string());
+
+            // `selectedType` outranks the base-URL sniffing: left on
+            // `oauth-personal` Gemini keeps using the Google login and never
+            // looks at the key we just wrote.
+            set_gemini_auth_type(&mut doc)?;
+            write_pretty_json(&settings_path, &doc)?;
+            written.push(settings_path.display().to_string());
         }
         CliTarget::OpenCode => {
             let path = root.join(".config/opencode/opencode.json");
             let mut doc = read_json(&path)?;
-            object_at(&mut doc, "provider")?.insert(
-                "ccload".into(),
-                serde_json::json!({
-                    "npm": "@ai-sdk/openai-compatible",
-                    "name": "ccLoad",
-                    "options": { "baseURL": endpoint, "apiKey": api_token }
-                }),
-            );
+            {
+                // Merge key-by-key. Replacing the whole provider entry would
+                // drop `models` — the catalog 模型导入 builds — and leave the
+                // top-level `model` pointing at something that no longer exists.
+                let provider = object_at(&mut doc, "provider")?;
+                let slot = provider
+                    .entry("ccload".to_string())
+                    .or_insert_with(|| Value::Object(Default::default()));
+                if !slot.is_object() {
+                    *slot = Value::Object(Default::default());
+                }
+                let ccload = slot.as_object_mut().expect("just normalized");
+                ccload.insert("npm".into(), Value::String("@ai-sdk/openai-compatible".into()));
+                ccload.insert("name".into(), Value::String("ccLoad".into()));
+                let options = object_at(slot, "options")?;
+                options.insert("baseURL".into(), Value::String(endpoint));
+                options.insert("apiKey".into(), Value::String(api_token.into()));
+            }
+            ensure_opencode_default_model(&mut doc)?;
             if let Some(extra) = &opts.extra_env {
                 merge_extra_json(&mut doc, extra, CliTarget::OpenCode, false)?;
             }
@@ -289,17 +305,25 @@ fn write_codex(
         .or_insert(toml_edit::table())
         .as_table_mut()
         .ok_or_else(|| AppError::Config("model_providers is not a table".into()))?;
-    let mut ccload = toml_edit::table();
-    if let Some(t) = ccload.as_table_mut() {
-        t["name"] = toml_edit::value("ccLoad");
-        t["base_url"] = toml_edit::value(endpoint);
-        t["env_key"] = toml_edit::value("CCLOAD_API_KEY");
-        // Official config-reference: `responses` is the only supported wire API.
-        // ccLoad serves the Responses protocol at the /v1 prefix, so "chat" here
-        // was wrong against current Codex builds.
-        t["wire_api"] = toml_edit::value("responses");
+    if providers.get("ccload").is_none() {
+        providers["ccload"] = toml_edit::table();
     }
-    providers["ccload"] = ccload;
+    let entry = providers
+        .get_mut("ccload")
+        .and_then(|i| i.as_table_like_mut())
+        .ok_or_else(|| AppError::Config("[model_providers.ccload] is not a table".into()))?;
+    entry.insert("name", toml_edit::value("ccLoad"));
+    entry.insert("base_url", toml_edit::value(endpoint));
+    // `env_key` names an *environment variable*: Codex resolves it with
+    // std::env::var and never looks in auth.json, so a key parked there just
+    // gets `Missing environment variable: …` at the first request. The token
+    // has to travel in the config itself.
+    entry.insert("experimental_bearer_token", toml_edit::value(api_token));
+    entry.remove("env_key");
+    // Official config-reference: `responses` is the only supported wire API.
+    // ccLoad serves the Responses protocol at the /v1 prefix, so "chat" here
+    // was wrong against current Codex builds.
+    entry.insert("wire_api", toml_edit::value("responses"));
     doc["model_provider"] = toml_edit::value("ccload");
     // Model selection + context window. Empty strings skipped, same rule as the
     // Claude env keys — an empty model is not "unset" for Codex either.
@@ -318,12 +342,100 @@ fn write_codex(
     write_atomic(&toml_path, &doc.to_string())?;
     written.push(toml_path.display().to_string());
 
+    // Older builds parked the token in auth.json. Codex deserializes that file
+    // into a fixed struct, so the stray key was never read — and would be
+    // dropped silently the next time Codex refreshed its tokens. Clean it out
+    // rather than leave a dead secret lying in a file we do not own.
     let auth_path = root.join(".codex/auth.json");
-    let mut auth = read_json(&auth_path)?;
-    if let Some(obj) = auth.as_object_mut() {
-        obj.insert("CCLOAD_API_KEY".into(), Value::String(api_token.into()));
+    if auth_path.exists() {
+        let mut auth = read_json(&auth_path)?;
+        let removed = auth
+            .as_object_mut()
+            .is_some_and(|o| o.remove("CCLOAD_API_KEY").is_some());
+        if removed {
+            write_pretty_json(&auth_path, &auth)?;
+            written.push(auth_path.display().to_string());
+        }
     }
-    write_pretty_json(&auth_path, &auth)?;
-    written.push(auth_path.display().to_string());
     Ok(written)
+}
+
+/// Gemini reads env vars from a dotenv file, never from `settings.json`.
+pub(crate) const GEMINI_ENV: &str = ".gemini/.env";
+
+/// Pull ALL_CAPS entries out of a legacy `settings.json` `env` block so they can
+/// be re-homed in `.env`. The block is dropped once emptied — leaving it would
+/// keep showing stale values in the advanced form that Gemini never reads.
+fn drain_settings_env(doc: &mut Value) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    let Some(root) = doc.as_object_mut() else {
+        return out;
+    };
+    let Some(env) = root.get_mut("env").and_then(Value::as_object_mut) else {
+        return out;
+    };
+    for (k, v) in env.iter() {
+        if let Some(s) = v.as_str() {
+            out.insert(k.clone(), s.to_string());
+        }
+    }
+    env.retain(|k, _| !out.contains_key(k));
+    if env.is_empty() {
+        root.remove("env");
+    }
+    out
+}
+
+/// ALL_CAPS advanced knobs are env vars and belong in `.env`; dotted ones are
+/// real settings.json paths and stay in the JSON.
+fn collect_gemini_env(
+    extra: &std::collections::BTreeMap<String, String>,
+    out: &mut std::collections::BTreeMap<String, String>,
+) {
+    for (k, v) in extra {
+        if k.is_empty() || v.is_empty() || blocked_for_user(CliTarget::GeminiCli, k) {
+            continue;
+        }
+        if is_env_key(k) {
+            out.insert(k.clone(), v.clone());
+        }
+    }
+}
+
+/// `gateway` is the auth type Gemini itself infers when a base URL is present;
+/// we set it explicitly because an existing `selectedType` wins over that
+/// inference and would otherwise keep the CLI on the Google login.
+fn set_gemini_auth_type(doc: &mut Value) -> Result<(), AppError> {
+    let security = object_at(doc, "security")?;
+    let slot = security
+        .entry("auth".to_string())
+        .or_insert_with(|| Value::Object(Default::default()));
+    if !slot.is_object() {
+        *slot = Value::Object(Default::default());
+    }
+    slot.as_object_mut()
+        .expect("just normalized")
+        .insert("selectedType".into(), Value::String("gateway".into()));
+    Ok(())
+}
+
+/// A provider nobody selects routes nothing. Only fills a gap: an existing
+/// choice is the user's and stays put.
+fn ensure_opencode_default_model(doc: &mut Value) -> Result<(), AppError> {
+    let root = doc
+        .as_object_mut()
+        .ok_or_else(|| AppError::Config("opencode.json 顶层不是对象".into()))?;
+    if root.contains_key("model") {
+        return Ok(());
+    }
+    let first = root
+        .get("provider")
+        .and_then(|p| p.get("ccload"))
+        .and_then(|c| c.get("models"))
+        .and_then(Value::as_object)
+        .and_then(|m| m.keys().next().cloned());
+    if let Some(alias) = first {
+        root.insert("model".into(), Value::String(format!("ccload/{alias}")));
+    }
+    Ok(())
 }

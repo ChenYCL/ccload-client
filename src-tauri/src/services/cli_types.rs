@@ -35,7 +35,9 @@ impl CliTarget {
         match self {
             Self::ClaudeCode => &[".claude/settings.json"],
             Self::Codex => &[".codex/auth.json", ".codex/config.toml"],
-            Self::GeminiCli => &[".gemini/settings.json"],
+            // `.env` carries the credential Gemini actually reads, so a restore
+            // that skipped it would leave the takeover half-undone.
+            Self::GeminiCli => &[".gemini/settings.json", ".gemini/.env"],
             Self::GrokBuild => &[".grok/config.toml"],
             Self::OpenCode => &[".config/opencode/opencode.json"],
         }

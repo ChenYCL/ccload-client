@@ -332,7 +332,7 @@ pub(crate) fn blocked_for_user(target: CliTarget, key: &str) -> bool {
         || (target == CliTarget::ClaudeCode && HOST_OWNED_ENV.contains(&key))
 }
 
-fn is_env_key(key: &str) -> bool {
+pub(crate) fn is_env_key(key: &str) -> bool {
     !key.contains('.')
         && key
             .chars()
@@ -493,7 +493,9 @@ fn set_toml_path(
 }
 
 /// Merge typed advanced knobs into a JSON config (Gemini / OpenCode).
-/// ALL_CAPS keys go into `env` for Gemini so they match takeover's env block.
+/// For Gemini, ALL_CAPS keys are env vars — they live in `~/.gemini/.env`
+/// (settings.json has no `env` block), so takeover routes them there itself and
+/// this helper must only take the dotted settings paths.
 pub(crate) fn merge_extra_json(
     doc: &mut serde_json::Value,
     extra: &std::collections::BTreeMap<String, String>,
@@ -574,23 +576,22 @@ fn current_values(root: &ConfigRoot, target: CliTarget) -> std::collections::BTr
             }
         }
         CliTarget::GeminiCli => {
+            // env vars live in `~/.gemini/.env`, settings in settings.json.
+            let dotenv =
+                crate::services::cli_dotenv::read(&root.join(".gemini/.env"));
             if let Some(doc) = json_doc(root, ".gemini/settings.json") {
                 for e in catalog {
                     if let Some(v) = if is_env_key(&e.key) {
-                        doc.get("env").and_then(|env| env.get(&e.key)).and_then(json_as_text)
+                        dotenv.get(&e.key).cloned()
                     } else {
                         get_json_path(&doc, &e.key)
                     } {
                         out.insert(e.key.clone(), v);
                     }
                 }
-                if let Some(env) = doc.get("env").and_then(|e| e.as_object()) {
-                    for (k, v) in env {
-                        if let Some(s) = json_as_text(v) {
-                            out.entry(k.clone()).or_insert(s);
-                        }
-                    }
-                }
+            }
+            for (k, v) in dotenv {
+                out.entry(k).or_insert(v);
             }
         }
         CliTarget::OpenCode => {

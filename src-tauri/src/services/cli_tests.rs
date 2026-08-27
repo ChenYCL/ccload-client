@@ -534,3 +534,193 @@ fn claude_switch_models_on_flag_is_written() {
         serde_json::from_str(&read(&root, ".claude/settings.json")).unwrap();
     assert_eq!(doc.pointer("/switchModelsOnFlag").unwrap(), &serde_json::json!(false));
 }
+
+// --- takeover must land where the CLI actually reads ----------------------
+//
+// Every case below is a bug we shipped: the write succeeded, the file looked
+// right, and the CLI went on using its own OAuth login because nothing read
+// that key. Endpoint-in-the-config is not evidence of takeover.
+
+/// Codex resolves `env_key` with std::env::var and deserializes auth.json into
+/// a fixed struct, so a token parked there is invisible. Verified live against
+/// codex-cli 0.144.6: `ERROR: Missing environment variable: CCLOAD_API_KEY.`
+#[test]
+fn codex_carries_the_token_in_config_not_auth_json() {
+    let (_keep, root, bk) = sandbox();
+    write(&root, ".codex/auth.json", r#"{"CCLOAD_API_KEY":"stale","auth_mode":"chatgpt"}"#);
+    takeover(&root, &bk, CliTarget::Codex);
+
+    let toml = read(&root, ".codex/config.toml");
+    assert!(
+        toml.contains("experimental_bearer_token = \"tok\""),
+        "token must travel in the provider table:\n{toml}"
+    );
+    assert!(
+        !toml.contains("env_key"),
+        "a leftover env_key makes Codex demand an unset variable:\n{toml}"
+    );
+    let auth: serde_json::Value = serde_json::from_str(&read(&root, ".codex/auth.json")).unwrap();
+    assert!(auth.get("CCLOAD_API_KEY").is_none(), "dead secret must be swept");
+    assert_eq!(auth["auth_mode"], "chatgpt", "codex's own keys stay put");
+    assert_eq!(
+        crate::services::cli_config::current_token(&root, CliTarget::Codex).as_deref(),
+        Some("tok")
+    );
+}
+
+/// Takeover must not create auth.json just to clean it.
+#[test]
+fn codex_leaves_a_missing_auth_json_alone() {
+    let (_keep, root, bk) = sandbox();
+    takeover(&root, &bk, CliTarget::Codex);
+    assert!(!root.join(".codex/auth.json").exists());
+}
+
+/// Gemini's settings.json has no `env` block — `loadEnvironment()` only reads a
+/// dotenv file. Verified against gemini-cli 0.50.0.
+#[test]
+fn gemini_env_lands_in_dotenv_and_auth_type_is_switched() {
+    let (_keep, root, bk) = sandbox();
+    write(
+        &root,
+        ".gemini/settings.json",
+        r#"{"security":{"auth":{"selectedType":"oauth-personal"}},"mcpServers":{"x":{"command":"y"}}}"#,
+    );
+    takeover(&root, &bk, CliTarget::GeminiCli);
+
+    let env = read(&root, ".gemini/.env");
+    assert!(env.contains("GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:15722"), "{env}");
+    assert!(env.contains("GEMINI_API_KEY=tok"), "{env}");
+
+    let settings: serde_json::Value =
+        serde_json::from_str(&read(&root, ".gemini/settings.json")).unwrap();
+    assert_eq!(
+        settings.pointer("/security/auth/selectedType").unwrap(),
+        "gateway",
+        "oauth-personal outranks the base-URL sniffing and would keep the Google login"
+    );
+    assert_eq!(settings.pointer("/mcpServers/x/command").unwrap(), "y");
+    assert_eq!(
+        current_endpoint(&root, CliTarget::GeminiCli).as_deref(),
+        Some("http://127.0.0.1:15722")
+    );
+}
+
+/// An older build wrote these into settings.json, where nothing reads them.
+#[test]
+fn gemini_migrates_a_legacy_settings_env_block() {
+    let (_keep, root, bk) = sandbox();
+    write(
+        &root,
+        ".gemini/settings.json",
+        r#"{"env":{"GEMINI_API_KEY":"old","FIGMA_TOKEN":"keep-me"},"ui":{"theme":"dark"}}"#,
+    );
+    takeover(&root, &bk, CliTarget::GeminiCli);
+
+    let env = read(&root, ".gemini/.env");
+    assert!(env.contains("FIGMA_TOKEN=keep-me"), "user's own var must survive:\n{env}");
+    assert!(env.contains("GEMINI_API_KEY=tok"), "and be refreshed, not duplicated:\n{env}");
+    assert!(!env.contains("old"));
+
+    let settings: serde_json::Value =
+        serde_json::from_str(&read(&root, ".gemini/settings.json")).unwrap();
+    assert!(settings.get("env").is_none(), "the dead block must not linger");
+    assert_eq!(settings.pointer("/ui/theme").unwrap(), "dark");
+}
+
+/// Advanced-form env knobs have to follow the credential into `.env`.
+#[test]
+fn gemini_extra_env_splits_between_dotenv_and_settings() {
+    let (_keep, root, bk) = sandbox();
+    let mut extra = std::collections::BTreeMap::new();
+    extra.insert("GEMINI_MODEL".to_string(), "gemini-3-pro".to_string());
+    extra.insert("ui.theme".to_string(), "dark".to_string());
+    apply_takeover(
+        &root,
+        CliTarget::GeminiCli,
+        "http://127.0.0.1:15722",
+        "tok",
+        "g1",
+        &bk,
+        TakeoverOptions { extra_env: Some(extra), ..Default::default() },
+    )
+    .unwrap();
+
+    assert!(read(&root, ".gemini/.env").contains("GEMINI_MODEL=gemini-3-pro"));
+    let settings: serde_json::Value =
+        serde_json::from_str(&read(&root, ".gemini/settings.json")).unwrap();
+    assert_eq!(settings.pointer("/ui/theme").unwrap(), "dark");
+    assert!(settings.get("env").is_none(), "env keys must not go back into the JSON");
+}
+
+/// The takeover used to replace `provider.ccload` wholesale, wiping the catalog
+/// 模型导入 had built and orphaning the top-level `model` that pointed into it.
+#[test]
+fn opencode_takeover_keeps_the_imported_model_catalog() {
+    let (_keep, root, bk) = sandbox();
+    write(
+        &root,
+        ".config/opencode/opencode.json",
+        r#"{"model":"ccload/opus","provider":{"ccload":{"npm":"@ai-sdk/openai-compatible","name":"ccLoad","models":{"opus":{"name":"Opus"},"haiku":{"name":"Haiku"}},"options":{"baseURL":"http://old/v1","apiKey":"old"}}}}"#,
+    );
+    apply_takeover(
+        &root,
+        CliTarget::OpenCode,
+        "http://127.0.0.1:15722",
+        "new-tok",
+        "o1",
+        &bk,
+        TakeoverOptions::default(),
+    )
+    .unwrap();
+
+    let oc: serde_json::Value =
+        serde_json::from_str(&read(&root, ".config/opencode/opencode.json")).unwrap();
+    let models = oc.pointer("/provider/ccload/models").expect("catalog was wiped");
+    assert!(models.get("opus").is_some() && models.get("haiku").is_some());
+    assert_eq!(oc.pointer("/model").unwrap(), "ccload/opus", "an existing choice is the user's");
+    assert_eq!(
+        oc.pointer("/provider/ccload/options/baseURL").unwrap(),
+        "http://127.0.0.1:15722/v1"
+    );
+    assert_eq!(oc.pointer("/provider/ccload/options/apiKey").unwrap(), "new-tok");
+}
+
+/// A provider nobody selects routes nothing — fill the gap when we can.
+#[test]
+fn opencode_defaults_to_ccload_only_when_no_model_is_chosen() {
+    let (_keep, root, bk) = sandbox();
+    write(
+        &root,
+        ".config/opencode/opencode.json",
+        r#"{"provider":{"ccload":{"models":{"auto":{"name":"Auto"}}}}}"#,
+    );
+    takeover(&root, &bk, CliTarget::OpenCode);
+    let oc: serde_json::Value =
+        serde_json::from_str(&read(&root, ".config/opencode/opencode.json")).unwrap();
+    assert_eq!(oc.pointer("/model").unwrap(), "ccload/auto");
+
+    // With no catalog there is nothing to point at; do not invent one.
+    let (_keep2, root2, bk2) = sandbox();
+    takeover(&root2, &bk2, CliTarget::OpenCode);
+    let bare: serde_json::Value =
+        serde_json::from_str(&read(&root2, ".config/opencode/opencode.json")).unwrap();
+    assert!(bare.get("model").is_none());
+}
+
+/// `.env` is created by the takeover, so a restore has to delete it again —
+/// leaving it behind would keep Gemini pointed at the kernel after an undo.
+#[test]
+fn gemini_restore_removes_the_dotenv_the_takeover_created() {
+    let (_keep, root, bk) = sandbox();
+    write(&root, ".gemini/settings.json", r#"{"ui":{"theme":"dark"}}"#);
+    let id = takeover_id(&root, &bk, CliTarget::GeminiCli, "gr1");
+    assert!(root.join(".gemini/.env").exists());
+
+    bk.restore(&root, &id).unwrap();
+    assert!(
+        !root.join(".gemini/.env").exists(),
+        "restore must delete what the takeover created"
+    );
+    assert_eq!(read(&root, ".gemini/settings.json"), r#"{"ui":{"theme":"dark"}}"#);
+}
