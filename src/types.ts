@@ -696,7 +696,7 @@ export type LogsBootstrap = {
 };
 
 /** 统计范围。内核 ParsePaginationParams 支持的取值子集。 */
-export type StatsRange = "today" | "yesterday" | "this_week";
+export type StatsRange = "today" | "yesterday" | "this_week" | "this_month";
 
 export type SettingItem = {
   key: string;

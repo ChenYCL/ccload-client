@@ -54,6 +54,30 @@ export function totalsOf(rows: StatsEntry[]): Totals {
   return t;
 }
 
+/** 四类 token 之和。它们是并列的计量口径，各自单价不同（缓存读通常是输入价的
+ *  十分之一），但「一共处理了多少 token」只有加起来才答得上。 */
+export function totalTokens(t: Totals): number {
+  return t.inputTokens + t.outputTokens + t.cacheReadTokens + t.cacheCreationTokens;
+}
+
+/** 按请求数加权求平均。算术平均会让一个 1 次请求的行和一个 500 次请求的行等权，
+ *  读出来的数字没有意义。取不到样本时返回 undefined —— 不是 0。 */
+function weightedAvg(
+  rows: StatsEntry[],
+  pick: (r: StatsEntry) => number | undefined,
+): number | undefined {
+  let sum = 0;
+  let weight = 0;
+  for (const r of rows) {
+    const v = pick(r);
+    const n = (r.success ?? 0) + (r.error ?? 0);
+    if (!v || n <= 0) continue;
+    sum += v * n;
+    weight += n;
+  }
+  return weight > 0 ? sum / weight : undefined;
+}
+
 export type ModelRow = Totals & {
   model: string;
   /** 这个模型跑在几个渠道上 */
@@ -62,8 +86,7 @@ export type ModelRow = Totals & {
   firstByte?: number;
 };
 
-/** 按模型聚合。首字节时间要按请求数加权，直接取算术平均会让一个 1 次请求的
- *  渠道和一个 500 次请求的渠道等权，读出来的数字没有意义。 */
+/** 按模型聚合。 */
 export function byModel(rows: StatsEntry[]): ModelRow[] {
   const acc = new Map<string, { rows: StatsEntry[]; channels: Set<number | string> }>();
   for (const r of rows) {
@@ -75,24 +98,59 @@ export function byModel(rows: StatsEntry[]): ModelRow[] {
   }
 
   return [...acc.entries()]
-    .map(([model, v]) => {
-      let fbWeight = 0;
-      let fbSum = 0;
-      for (const r of v.rows) {
-        const n = (r.success ?? 0) + (r.error ?? 0);
-        if (r.avg_first_byte_time_seconds && n > 0) {
-          fbSum += r.avg_first_byte_time_seconds * n;
-          fbWeight += n;
-        }
-      }
-      return {
-        model,
-        channels: v.channels.size,
-        firstByte: fbWeight > 0 ? fbSum / fbWeight : undefined,
-        ...totalsOf(v.rows),
-      };
-    })
+    .map(([model, v]) => ({
+      model,
+      channels: v.channels.size,
+      firstByte: weightedAvg(v.rows, (r) => r.avg_first_byte_time_seconds),
+      ...totalsOf(v.rows),
+    }))
     .sort((a, b) => b.requests - a.requests);
+}
+
+export type ChannelRow = Totals & {
+  /** 和 channel_health 的 key 同一口径：channel_id 的字符串形式 */
+  key: string;
+  channel: string;
+  /** 这个渠道上跑过几个模型 */
+  models: number;
+  /** 请求数加权的平均耗时 / 首字节时间，秒；没有样本时 undefined */
+  duration?: number;
+  firstByte?: number;
+};
+
+/**
+ * 按渠道聚合 —— 「这个月的钱花在哪一家上了」。
+ *
+ * 和 byModel 是同一批行的另一个切法：stats 的粒度是「渠道 × 模型」，按谁聚合
+ * 就得到谁的口径。两者的费用总和必然相等，对不上就是聚合写错了。
+ *
+ * 排序按实付费用，费用全为 0（本地/免费渠道）时自动退到请求数 —— 一排等长的
+ * 零费用条排不出先后，那时候用户真正在比的是谁跑得多。
+ */
+export function byChannel(rows: StatsEntry[]): ChannelRow[] {
+  const acc = new Map<string, { rows: StatsEntry[]; name: string; models: Set<string> }>();
+  for (const r of rows) {
+    const key = String(r.channel_id ?? r.channel_name ?? "?");
+    const cur = acc.get(key) ?? {
+      rows: [],
+      name: r.channel_name ?? `渠道 #${r.channel_id ?? "?"}`,
+      models: new Set<string>(),
+    };
+    cur.rows.push(r);
+    cur.models.add(r.model ?? "（未知模型）");
+    acc.set(key, cur);
+  }
+
+  return [...acc.entries()]
+    .map(([key, v]) => ({
+      key,
+      channel: v.name,
+      models: v.models.size,
+      duration: weightedAvg(v.rows, (r) => r.avg_duration_seconds),
+      firstByte: weightedAvg(v.rows, (r) => r.avg_first_byte_time_seconds),
+      ...totalsOf(v.rows),
+    }))
+    .sort((a, b) => b.effectiveCost - a.effectiveCost || b.requests - a.requests);
 }
 
 export type AnomalyModel = {
@@ -175,13 +233,4 @@ export function anomaliesOf(rows: StatsEntry[]): ChannelAnomaly[] {
         b.models.filter((m) => m.rate === 0).length -
           a.models.filter((m) => m.rate === 0).length || b.error - a.error,
     );
-}
-
-/** channel_health 的 key 是 channel_id 的字符串形式，名字只能从 stats 行里捞。 */
-export function channelNames(rows: StatsEntry[]): Map<string, string> {
-  const m = new Map<string, string>();
-  for (const r of rows) {
-    if (r.channel_id != null && r.channel_name) m.set(String(r.channel_id), r.channel_name);
-  }
-  return m;
 }
