@@ -18,10 +18,15 @@ import { SessionManagePage } from "./pages/SessionManagePage";
 import { UnlockPage } from "./pages/UnlockPage";
 import { ExtensionsPage } from "./pages/ExtensionsPage";
 import { GraphPage } from "./pages/GraphPage";
+import { NodeServicesPage } from "./pages/NodeServicesPage";
 import { errText } from "./lib/err";
 import { useT } from "./i18n";
 
-const PAGES: Record<Page, () => JSX.Element> = {
+/// 页面组件签名。多数页面不关心导航，但日志页要能把用户送到会话管理
+/// （点一条日志上的会话名），所以统一给一个可选的 `onNavigate`。
+type PageProps = { onNavigate?: (page: Page) => void };
+
+const PAGES: Record<Page, (props: PageProps) => JSX.Element> = {
   dashboard: DashboardPage,
   logs: LogsPage,
   usage: UsagePage,
@@ -37,6 +42,7 @@ const PAGES: Record<Page, () => JSX.Element> = {
   unlock: UnlockPage,
   extensions: ExtensionsPage,
   graph: GraphPage,
+  "node-services": NodeServicesPage,
 };
 
 /// 切页时右侧不要空着。
@@ -118,7 +124,7 @@ export function App() {
         {/* key 在这里其实不必要：换页就是换组件类型，React 本来就会整棵重建。
             留着是为了把这层意图写在脸上 —— 以后有人给 PAGES 加包装（比如 keep-alive）
             时不会以为换页会保留状态。 */}
-        <View key={page} />
+        <View key={page} onNavigate={setPage} />
         <LoadingVeil page={page} />
       </main>
     </div>

@@ -774,3 +774,138 @@ fn healing_keeps_the_users_own_env_vars() {
     assert!(!env.contains("GEMINI_API_KEY"), "{env}");
     assert!(!env.contains("GOOGLE_GEMINI_BASE_URL"), "{env}");
 }
+
+/// 实测发现磁盘上 Codex 退回了 `auth_mode: chatgpt`、Gemini 的 `.env` 是空的，
+/// 但写入器的单测全绿 —— 说明配置是**被 CLI 自己覆盖回去的**，不是我们没写对。
+/// 所以接管必须幂等：对着一份「已经被冲掉」的配置再写一次要能重新接管，而不是
+/// 因为「看起来配过」就跳过。
+#[test]
+fn codex_takeover_recovers_a_config_the_cli_reverted() {
+    let (_keep, root, bk) = sandbox();
+    takeover(&root, &bk, CliTarget::Codex);
+    let first = read(&root, ".codex/config.toml");
+    assert!(first.contains("[model_providers.ccload]"));
+
+    // 模拟 Codex 把配置冲回官方登录：provider 段没了，auth.json 退回 chatgpt。
+    let reverted: String = first
+        .lines()
+        .take_while(|l| !l.starts_with("[model_providers"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    write(&root, ".codex/config.toml", &reverted);
+    write(
+        &root,
+        ".codex/auth.json",
+        r#"{"auth_mode":"chatgpt","OPENAI_API_KEY":null}"#,
+    );
+
+    takeover(&root, &bk, CliTarget::Codex);
+    let again = read(&root, ".codex/config.toml");
+    assert!(
+        again.contains("[model_providers.ccload]"),
+        "被 CLI 冲掉之后再写一次必须能重新接管，实际：{again}"
+    );
+    assert!(again.contains("wire_api = \"responses\""));
+    assert!(current_endpoint(&root, CliTarget::Codex).is_some());
+}
+
+/// Gemini 的凭据在 `.env` 里。实测那个文件 size=0 —— 空文件不能被当成
+/// 「已经配好了」，重写必须补回去。
+#[test]
+fn gemini_takeover_refills_an_emptied_dotenv() {
+    let (_keep, root, bk) = sandbox();
+    takeover(&root, &bk, CliTarget::GeminiCli);
+    assert!(read(&root, ".gemini/.env").contains("GEMINI_API_KEY"));
+
+    write(&root, ".gemini/.env", "");
+
+    takeover(&root, &bk, CliTarget::GeminiCli);
+    let refilled = read(&root, ".gemini/.env");
+    assert!(
+        refilled.contains("GEMINI_API_KEY") && refilled.contains("GOOGLE_GEMINI_BASE_URL"),
+        "清空后重写必须补回凭据，实际：{refilled:?}"
+    );
+}
+
+/// 接管地址由「开关」决定，不是由「代理跑没跑」决定。
+///
+/// 这两件事很容易混：代理进程一直在跑，但用户可能不想让 CLI 走它。开关关着时
+/// 写进配置的必须是内核地址，否则用户以为关了、实际还在被代理转发。
+#[test]
+fn takeover_endpoint_follows_the_switch_not_the_proxy() {
+    let (_keep, root, bk) = sandbox();
+
+    // 关：写内核地址。
+    apply_takeover(
+        &root,
+        CliTarget::ClaudeCode,
+        "https://kernel:8992",
+        "tok",
+        "s1",
+        &bk,
+        TakeoverOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        current_endpoint(&root, CliTarget::ClaudeCode).as_deref(),
+        Some("https://kernel:8992")
+    );
+
+    // 开：写代理地址。同一份配置被覆盖，不是并存。
+    apply_takeover(
+        &root,
+        CliTarget::ClaudeCode,
+        "http://127.0.0.1:15777",
+        "tok",
+        "s2",
+        &bk,
+        TakeoverOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        current_endpoint(&root, CliTarget::ClaudeCode).as_deref(),
+        Some("http://127.0.0.1:15777")
+    );
+
+    // 再关回去：必须能切回内核，不能卡在代理上。
+    apply_takeover(
+        &root,
+        CliTarget::ClaudeCode,
+        "https://kernel:8992",
+        "tok",
+        "s3",
+        &bk,
+        TakeoverOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        current_endpoint(&root, CliTarget::ClaudeCode).as_deref(),
+        Some("https://kernel:8992")
+    );
+}
+
+/// 切换地址之后，preview 必须报「需要重写」——否则用户点了开关却看不出
+/// 还有一步要做，会以为已经生效了。
+#[test]
+fn switching_the_endpoint_makes_preview_report_not_active() {
+    let (_keep, root, bk) = sandbox();
+    apply_takeover(
+        &root,
+        CliTarget::ClaudeCode,
+        "https://kernel:8992",
+        "tok",
+        "s1",
+        &bk,
+        TakeoverOptions::default(),
+    )
+    .unwrap();
+
+    // 对着内核地址预览：已生效。
+    let p = preview(&root, CliTarget::ClaudeCode, "https://kernel:8992", Some("tok"));
+    assert!(p.already_active);
+
+    // 换成代理地址预览：没生效，要重写。
+    let p = preview(&root, CliTarget::ClaudeCode, "http://127.0.0.1:15777", Some("tok"));
+    assert!(!p.already_active, "地址变了就该报「未生效」");
+    assert!(p.exists, "文件是在的，只是指向不对");
+}

@@ -187,6 +187,9 @@ export function ModelsPage() {
     );
   const [visionPicked, setVisionPicked] = useState<CliTarget[]>([]);
   const [message, setMessage] = useState<string | null>(null);
+  // 只增不删会让 OpenCode 的目录一路涨：上游退役的别名留在选择器里，
+  // 用户选中就是一个 503。默认关着 —— 删配置得是用户明确要的。
+  const [prune, setPrune] = useState(false);
 
   // 上游校验：把**所有**渠道的真实模型清单拉回来取并集，用它判断这几百个别名里
   // 哪些是真能用的。
@@ -270,12 +273,16 @@ export function ModelsPage() {
             tg === "claude-code"
               ? entries
               : entries.map((e) => ({ ...e, tier: null }));
-          const r = await api.modelImport(tg, forTarget);
+          const r = await api.modelImport(tg, forTarget, prune);
           const note =
             r.skipped.length > 0
               ? `（${r.skipped.length} 个模型没选 Tier 槽位，未写入）`
               : "";
-          rs.push({ t: tg, status: "ok", text: r.written.join("、") + note });
+          const pruned =
+            r.removed && r.removed.length > 0
+              ? `（清掉 ${r.removed.length} 个内核已不认的旧别名）`
+              : "";
+          rs.push({ t: tg, status: "ok", text: r.written.join("、") + note + pruned });
         } catch (e) {
           rs.push({ t: tg, status: "failed", text: errText(e) });
         }
@@ -508,6 +515,26 @@ export function ModelsPage() {
                 : `导入到 ${targets.length} 个 CLI`}
             </button>
           </div>
+
+          {/* 只对 OpenCode 有意义 —— 另外两家没有会累积的目录对象。 */}
+          {targets.includes("opencode") && (
+            <label className="mt-3 flex cursor-pointer items-start gap-2 rounded-xl border border-border bg-surface-2/40 px-3 py-2 text-xs">
+              <input
+                type="checkbox"
+                checked={prune}
+                onChange={(e) => setPrune(e.target.checked)}
+                className="mt-0.5"
+              />
+              <span>
+                <span className="font-medium">{t("同时清掉内核已不认的旧别名")}</span>
+                <span className="block text-muted">
+                  {t(
+                    "OpenCode 的目录只增不删：上游退役的模型会一直留在选择器里，选中就是一个 503。勾上后按本次清单收敛，写入前照常留快照。",
+                  )}
+                </span>
+              </span>
+            </label>
+          )}
 
           {claudeNeedsSlot && (
             <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-900">

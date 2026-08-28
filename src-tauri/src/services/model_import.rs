@@ -57,6 +57,9 @@ pub struct ImportResult {
     /// Reported instead of silently dropped, so "导入 45 个" can't quietly
     /// mean "写了 1 个".
     pub skipped: Vec<String>,
+    /// 本次 prune 掉的旧别名 —— 内核已经不认它们了。默认为空。
+    #[serde(default)]
+    pub removed: Vec<String>,
 }
 
 /// The env key for a tier, or `None` when the row isn't bound to any slot.
@@ -111,6 +114,7 @@ pub fn apply_import(
     entries: &[ImportEntry],
     stamp: &str,
     backups: &BackupStore,
+    prune: bool,
 ) -> Result<ImportResult, AppError> {
     let entries: Vec<&ImportEntry> = entries
         .iter()
@@ -184,6 +188,7 @@ pub fn apply_import(
 
     let snapshot = backups.snapshot(root, target, stamp, "model-import")?;
     let mut written = Vec::new();
+    let mut removed: Vec<String> = Vec::new();
     match target {
         CliTarget::ClaudeCode => {
             let bind = claude_bind.expect("precomputed above");
@@ -278,6 +283,27 @@ pub fn apply_import(
                         provider["models"].as_object_mut().unwrap()
                     }
                 };
+                // 只增不删会让目录一路涨：上游退役的别名留在里面，用户选中就是
+                // 一个 503（内核只认渠道里真实存在的名字）。prune 时按本次清单
+                // 收敛 —— 本次没有的就是内核已经不认的。
+                if prune {
+                    let keep: std::collections::HashSet<String> = entries
+                        .iter()
+                        .flat_map(|e| {
+                            std::iter::once(e.alias.clone())
+                                .chain(bare_alias(&e.alias).map(str::to_string))
+                        })
+                        .collect();
+                    let dropped: Vec<String> = catalog
+                        .keys()
+                        .filter(|k| !keep.contains(*k))
+                        .cloned()
+                        .collect();
+                    for k in &dropped {
+                        catalog.remove(k);
+                    }
+                    removed = dropped;
+                }
                 for e in &entries {
                     catalog.insert(e.alias.clone(), entry_for(&e.alias, e));
                     // Also expose the un-namespaced spelling so selecting
@@ -317,6 +343,7 @@ pub fn apply_import(
         written,
         backup_id: snapshot.id,
         skipped,
+        removed,
     })
 }
 
@@ -345,6 +372,7 @@ mod tests {
             }],
             "s1",
             &bk,
+            false,
         )
         .unwrap_err();
         assert!(err.to_string().contains("没有可写"));
@@ -364,6 +392,7 @@ mod tests {
             }],
             "s1",
             &bk,
+            false,
         )
         .unwrap_err();
         assert!(err.to_string().contains("接管"));
@@ -408,6 +437,7 @@ mod tests {
             ],
             "s1",
             &bk,
+            false,
         )
         .unwrap();
         assert_eq!(r.skipped, vec!["gpt-5.6", "grok-4.6"]);
@@ -443,6 +473,7 @@ mod tests {
             &[entry("glm-5.3", Some(131_072), Some("haiku"))],
             "s1",
             &bk,
+            false,
         )
         .unwrap();
         let doc: Value =
@@ -470,6 +501,7 @@ mod tests {
             ],
             "s1",
             &bk,
+            false,
         )
         .unwrap_err();
         assert!(err.to_string().contains("只能绑一个模型"), "{err}");
@@ -492,6 +524,7 @@ mod tests {
             &[entry("kimi-k3", None, None), entry("glm-5.3", None, None)],
             "s1",
             &bk,
+            false,
         )
         .unwrap_err();
         assert!(err.to_string().contains("Tier"), "{err}");
@@ -527,6 +560,7 @@ mod tests {
             ],
             "s1",
             &bk,
+            false,
         )
         .unwrap();
 
@@ -578,6 +612,7 @@ mod tests {
             &[entry("kimi-k3", Some(262_144), None)],
             "s1",
             &bk,
+            false,
         )
         .unwrap();
 
@@ -619,6 +654,7 @@ mod tests {
             }],
             "s1",
             &bk,
+            false,
         )
         .unwrap();
 
@@ -673,6 +709,7 @@ mod tests {
             ],
             "s1",
             &bk,
+            false,
         )
         .unwrap();
 
@@ -690,4 +727,88 @@ mod tests {
             "fable-5"
         );
     }
+
+
+    fn seeded(dir: &tempfile::TempDir) -> (ConfigRoot, BackupStore, std::path::PathBuf) {
+        let (root, bk) = root_in(dir);
+        let path = root.join(".config/opencode/opencode.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // 目录里混着三类：内核还认的、内核已经退役的、用户手工加的。
+        std::fs::write(
+            &path,
+            r#"{"model":"ccload/kimi-k3",
+                "provider":{"ccload":{"options":{"baseURL":"http://x/v1"},
+                  "models":{"kimi-k3":{"name":"kimi-k3"},
+                            "claude-4.6-opus-max":{"name":"retired"},
+                            "auto":{"name":"retired too"}}}}}"#,
+        )
+        .unwrap();
+        (root, bk, path)
+    }
+
+    /// 退役别名留在目录里，用户选中就是一个 503。prune 按本次清单收敛。
+    #[test]
+    fn prune_drops_aliases_the_kernel_no_longer_serves() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, bk, path) = seeded(&dir);
+
+        let out = apply_import(
+            &root,
+            CliTarget::OpenCode,
+            &[entry("kimi-k3", Some(262_144), None)],
+            "s1",
+            &bk,
+            true,
+        )
+        .unwrap();
+
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let models = doc.pointer("/provider/ccload/models").unwrap();
+        assert!(models.get("kimi-k3").is_some(), "本次清单里的要留下");
+        assert!(models.get("claude-4.6-opus-max").is_none(), "退役的要清掉");
+        assert!(models.get("auto").is_none(), "退役的要清掉");
+        let mut removed = out.removed.clone();
+        removed.sort();
+        assert_eq!(removed, vec!["auto", "claude-4.6-opus-max"]);
+    }
+
+    /// prune 是显式开关。不开时行为和以前一模一样 —— 一个都不删。
+    #[test]
+    fn without_prune_nothing_is_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, bk, path) = seeded(&dir);
+
+        let out = apply_import(
+            &root,
+            CliTarget::OpenCode,
+            &[entry("kimi-k3", Some(262_144), None)],
+            "s1",
+            &bk,
+            false,
+        )
+        .unwrap();
+
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let models = doc.pointer("/provider/ccload/models").unwrap();
+        assert!(models.get("claude-4.6-opus-max").is_some());
+        assert!(out.removed.is_empty());
+    }
+
+    /// prune 前先快照 —— 删错了要能回滚。
+    #[test]
+    fn prune_still_snapshots_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, bk, _) = seeded(&dir);
+        let out = apply_import(
+            &root,
+            CliTarget::OpenCode,
+            &[entry("kimi-k3", None, None)],
+            "s1",
+            &bk,
+            true,
+        )
+        .unwrap();
+        assert!(!out.backup_id.is_empty(), "prune 必须留下可回滚的快照");
+    }
+
 }

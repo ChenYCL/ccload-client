@@ -1,6 +1,7 @@
 pub mod admin;
 pub mod channel_usage;
 pub mod cli;
+pub mod cli_proxy;
 pub mod config_io;
 pub mod extensions;
 pub mod fallback;
@@ -9,6 +10,7 @@ pub mod graph;
 pub mod inject;
 pub mod kernel;
 pub mod models;
+pub mod node_services;
 pub mod preset;
 pub mod session;
 pub mod settings;

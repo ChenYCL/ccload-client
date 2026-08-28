@@ -11,6 +11,7 @@ import { EMPTY_FILTERS, LogFilters, type LogFilterState } from "../components/lo
 import { LogTable } from "../components/logs/LogTable";
 import { LogDetail } from "../components/logs/LogDetail";
 import { useLogFeed } from "../components/logs/useLogFeed";
+import { matchSessions } from "../lib/sessionMatch";
 import { fmtInt } from "../components/formatters";
 
 /// 实时日志页。
@@ -38,7 +39,7 @@ const LIMIT_ERRORS_ONLY = 500;
 /// 显式开关，关掉即完全静默；选择要跨会话记住，不然每次进来都要再关一次。
 const LIVE_KEY = "ccload.logs.live";
 
-export function LogsPage() {
+export function LogsPage({ onNavigate }: { onNavigate?: (page: "session-manage") => void }) {
   const t = useT();
   const [filters, setFilters] = useState<LogFilterState>(EMPTY_FILTERS);
   const [selected, setSelected] = useState<LogEntry | null>(null);
@@ -99,6 +100,40 @@ export function LogsPage() {
   const feed = useLogFeed(visible, query + String(filters.errorsOnly));
   const activeItems = active.data?.data ?? [];
   const total = logs.data?.count ?? 0;
+
+  // 会话归因。内核日志里没有 session_id，只有我们自己的代理留了痕迹，所以
+  // 单独拉一份记录再按「时间 + 模型」对上（见 sessionMatch）。代理没起来时
+  // 这里是空数组，会话列自动不显示。
+  const proxyRecords = useQuery({
+    queryKey: ["cli-proxy-records"],
+    queryFn: api.cliProxyRecords,
+    refetchInterval: polling ? LOGS_POLL_MS : false,
+    placeholderData: (prev) => prev,
+  });
+  const sessions = useMemo(
+    () => matchSessions(visible, proxyRecords.data ?? []),
+    [visible, proxyRecords.data],
+  );
+  // 标题要读磁盘上的会话文件，按 id 逐个解析并缓存 —— 同一个会话会占很多行，
+  // 逐行去查会把同一个文件读上几十遍。
+  const sessionIds = useMemo(
+    () => Array.from(new Set(sessions.values())).sort(),
+    [sessions],
+  );
+  const titles = useQuery({
+    queryKey: ["cli-proxy-session-titles", sessionIds],
+    enabled: sessionIds.length > 0,
+    queryFn: async () => {
+      const out = new Map<string, string>();
+      const refs = await Promise.all(
+        sessionIds.map((id) => api.cliProxySession(id).catch(() => null)),
+      );
+      for (const r of refs) {
+        if (r?.title) out.set(r.session_id, r.title);
+      }
+      return out;
+    },
+  });
 
   return (
     <div className="space-y-5">
@@ -203,6 +238,15 @@ export function LogsPage() {
                       flashIds={feed.flashIds}
                       selectedId={selected?.id}
                       onSelect={setSelected}
+                      sessions={sessions}
+                      sessionTitles={titles.data}
+                      onOpenSession={(id) => {
+                        // 会话管理页自己按 id 定位，这里只负责把 id 交出去
+                        // 再切页 —— 用 sessionStorage 而不是 URL，是因为这个
+                        // 应用的路由就是一个 useState，没有可挂参数的地方。
+                        sessionStorage.setItem("ccload:focus-session", id);
+                        onNavigate?.("session-manage");
+                      }}
                     />
                   </div>
 

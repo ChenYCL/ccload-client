@@ -77,6 +77,7 @@ export function CliPage() {
   }, [backups.data]);
 
   const running = kernel.data?.state === "running";
+  const [notice, setNotice] = useState<string | null>(null);
 
   return (
     <div>
@@ -94,6 +95,19 @@ export function CliPage() {
           {showBackups ? t("← 返回接管") : t("快照历史")}
         </button>
       </div>
+      <ProxyRoutingCard
+        on={settings.data?.route_cli_through_proxy ?? false}
+        onDone={(msg) => {
+          qc.invalidateQueries({ queryKey: ["settings"] });
+          qc.invalidateQueries({ queryKey: ["cli-preview-all"] });
+          setNotice(msg);
+        }}
+      />
+      {notice && (
+        <p className="mt-3 rounded-md border border-accent/40 bg-accent/10 px-3 py-2 text-xs">
+          {notice}
+        </p>
+      )}
       {settings.data?.sandbox_cli_writes && (
         <p className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs">
           {t("沙箱已开：写入 ~/.ccload-client/sandbox，真实 CLI 配置不会被改。")}
@@ -1096,5 +1110,63 @@ function FileDiffBlock({ f }: { f: FileDiff }) {
         </p>
       )}
     </div>
+  );
+}
+
+/// 「经本地代理接管」开关。
+///
+/// 为什么不叫「代理模式」：代理进程一直在跑，叫模式会让人以为关掉就停了它。
+/// 这个开关真正改的是**写进 CLI 配置的地址** —— 指代理，还是直连内核。
+///
+/// 切换只改设置，不动磁盘：改地址有后果，得用户自己在下面点「写入」。所以切完
+/// 会明确告诉他还差这一步，而不是假装已经生效。
+function ProxyRoutingCard({
+  on,
+  onDone,
+}: {
+  on: boolean;
+  onDone: (msg: string) => void;
+}) {
+  const t = useT();
+  const proxyUrl = useQuery({ queryKey: ["cli-proxy-url"], queryFn: api.cliProxyUrl });
+  const toggle = useMutation({
+    mutationFn: (next: boolean) => api.cliSetProxyRouting(next),
+    onSuccess: (needsRewrite, next) => {
+      onDone(
+        next
+          ? needsRewrite
+            ? t("已切到本地代理。还要在下面对每家点一次「写入」才生效。")
+            : t("已切到本地代理。")
+          : needsRewrite
+            ? t("已切回直连内核。还要在下面对每家点一次「写入」才生效。")
+            : t("已切回直连内核。"),
+      );
+    },
+    onError: (e) => onDone(errText(e)),
+  });
+
+  return (
+    <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-xl border border-border bg-surface-2/40 px-3.5 py-3">
+      <input
+        type="checkbox"
+        checked={on}
+        disabled={toggle.isPending}
+        onChange={(e) => toggle.mutate(e.target.checked)}
+        className="mt-1"
+      />
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-baseline gap-2">
+          <span className="text-sm font-medium">{t("经本地代理接管")}</span>
+          <span className="font-mono text-xs text-muted">
+            {proxyUrl.data ?? t("代理未运行")}
+          </span>
+        </div>
+        <p className="mt-0.5 text-xs text-muted">
+          {t(
+            "开着时 CLI 指向本地代理，再由它转发到内核 —— 日志才认得出是哪个会话发的，CLI 发的模型名也能在转发前改写（claude-opus-5[1m] 这种内核不认的名字会被剥成能用的）。关掉则直连内核，这两项都拿不到。代理进程本来就一直在跑，这个开关只决定写进 CLI 配置的地址。",
+          )}
+        </p>
+      </div>
+    </label>
   );
 }

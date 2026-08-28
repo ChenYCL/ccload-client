@@ -56,6 +56,24 @@ pub fn run() {
                 if let Err(e) = crate::commands::kernel::ensure_embed_proxy(&state).await {
                     tracing::warn!("embed proxy: {e}");
                 }
+                // 数据面代理也跟着起来：CLI 的接管配置指向的就是它，晚起一刻
+                // 就有请求打到没人监听的端口上。
+                if let Err(e) = crate::commands::cli_proxy::ensure_cli_proxy(&state).await {
+                    tracing::warn!("cli proxy: {e}");
+                }
+                // 用户的 Node 服务跟着一起起来：MCP over http/sse 型的服务
+                // 得先有个活着的端口，CLI 才连得上。
+                crate::commands::node_services::autostart(&state).await;
+                // 代理起来之后把被 CLI 冲掉的接管写回去 —— 顺序不能反：
+                // reconcile 要把 CLI 指向代理的地址，代理没起来时那个地址还
+                // 不存在。只碰有过快照的目标，没接管过的不动。
+                match crate::commands::cli::cli_reconcile(state.clone()).await {
+                    Ok(healed) if !healed.is_empty() => {
+                        tracing::info!("接管已重新写回：{}", healed.join("、"));
+                    }
+                    Err(_) => tracing::warn!("接管重写失败，CLI 配置维持原样"),
+                    _ => {}
+                }
             });
 
             // Close hides the window AND the Dock icon — the managed kernel
@@ -152,12 +170,23 @@ pub fn run() {
             commands::kernel::kernel_stop,
             commands::kernel::kernel_config,
             commands::kernel::embed_proxy_url,
+            commands::cli_proxy::cli_proxy_url,
+            commands::cli_proxy::cli_proxy_records,
+            commands::cli_proxy::cli_proxy_session,
+            commands::node_services::node_service_list,
+            commands::node_services::node_service_save,
+            commands::node_services::node_service_delete,
+            commands::node_services::node_service_start,
+            commands::node_services::node_service_stop,
+            commands::node_services::node_service_status,
             commands::kernel::open_admin_window,
             commands::admin::admin_request,
             commands::admin::admin_ping,
             commands::cli::cli_preview,
             commands::cli::cli_preview_all,
             commands::cli::cli_apply,
+            commands::cli::cli_reconcile,
+            commands::cli::cli_set_proxy_routing,
             commands::cli::cli_backups,
             commands::cli::cli_backup_diff,
             commands::cli::cli_restore,

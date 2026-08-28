@@ -39,9 +39,13 @@ import type {
   KernelConfig,
   KernelStatus,
   McpUsage,
+  NodeService,
+  NodeServiceStatus,
+  ProxyRecord,
   RefreshMode,
   UsageProbeReport,
   RefreshResult,
+  SessionRef,
   SyncOutcome,
   TakeoverOptions,
   TakeoverPreview,
@@ -56,6 +60,24 @@ export const api = {
   kernelStop: () => invoke<KernelStatus>("kernel_stop"),
   kernelConfig: () => invoke<KernelConfig>("kernel_config"),
   embedProxyUrl: () => invoke<string | null>("embed_proxy_url"),
+  /** CLI 该指向哪儿：代理起着就是代理地址，否则是内核地址。 */
+  cliProxyUrl: () => invoke<string | null>("cli_proxy_url"),
+  /** 最近的转发记录，最新的在前。会话归因全靠它。 */
+  cliProxyRecords: () => invoke<ProxyRecord[]>("cli_proxy_records"),
+  /** 把会话 id 解析成标题和磁盘路径。 */
+  cliProxySession: (sessionId: string) =>
+    invoke<SessionRef>("cli_proxy_session", { sessionId }),
+
+  /** 受管的 Node 常驻服务：MCP over http/sse、自定义后端。 */
+  nodeServiceList: () => invoke<NodeService[]>("node_service_list"),
+  nodeServiceSave: (service: NodeService) =>
+    invoke<NodeService[]>("node_service_save", { service }),
+  nodeServiceDelete: (id: string) =>
+    invoke<NodeService[]>("node_service_delete", { id }),
+  nodeServiceStart: (id: string) =>
+    invoke<NodeServiceStatus>("node_service_start", { id }),
+  nodeServiceStop: (id: string) => invoke<void>("node_service_stop", { id }),
+  nodeServiceStatus: () => invoke<NodeServiceStatus[]>("node_service_status"),
   /** Open (or focus) the standalone admin window on a web page. */
   openAdminWindow: (page?: string) =>
     invoke<void>("open_admin_window", { page: page ?? null }),
@@ -82,6 +104,9 @@ export const api = {
     }),
 
   cliPreviewAll: () => invoke<TakeoverPreview[]>("cli_preview_all"),
+  /** 切「CLI 走本地代理」。只改设置，返回是否还需要点「写入」才生效。 */
+  cliSetProxyRouting: (enabled: boolean) =>
+    invoke<boolean>("cli_set_proxy_routing", { enabled }),
   cliApply: (target: CliTarget, options?: TakeoverOptions) =>
     invoke<TakeoverResult>("cli_apply", { target, options: options ?? null }),
   cliBackups: (target?: CliTarget) =>
@@ -159,8 +184,10 @@ export const api = {
    */
   checkClientUpdate: (current: string) => invoke<UpdateInfo>("check_client_update", { current }),
 
-  modelImport: (target: CliTarget, entries: ImportEntry[]) =>
-    invoke<ImportResult>("model_import", { target, entries }),
+  /** `prune` 会把本次清单以外的旧别名从 OpenCode 目录里清掉 —— 那些正是内核
+      已经不认、选中即 503 的条目。默认关闭，只增不删。 */
+  modelImport: (target: CliTarget, entries: ImportEntry[], prune?: boolean) =>
+    invoke<ImportResult>("model_import", { target, entries, prune: prune ?? false }),
   visionMcpSet: (target: CliTarget, enabled: boolean, model?: string) =>
     invoke<string[]>("vision_mcp_set", {
       target,

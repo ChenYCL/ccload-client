@@ -1,6 +1,7 @@
 import { useState } from "react";
 import {
   Activity,
+  Server,
   ArrowUpCircle,
   ChevronLeft,
   ChevronRight,
@@ -60,6 +61,7 @@ const GROUPS: { title: string; items: { id: Page; label: string; icon: typeof Ac
       { id: "inject", label: "系统注入", icon: FileCode },
       { id: "unlock", label: "破禁", icon: Unlock },
       { id: "extensions", label: "扩展管理", icon: Blocks },
+      { id: "node-services", label: "Node 服务", icon: Server },
     ],
   },
   {

@@ -14,11 +14,15 @@ use crate::services::cli_backup::unique_stamp;
 
 /// Write the selected kernel aliases into a CLI's model config. The renderer
 /// builds the entry list from the channel list it already has.
+///
+/// `prune` 收敛 OpenCode 的目录：只增不删会让退役的别名一直留在选择器里，
+/// 用户选中就是一个 503（内核只认渠道里真实存在的名字）。
 #[tauri::command]
 pub async fn model_import(
     state: State<'_, AppState>,
     target: CliTarget,
     entries: Vec<ImportEntry>,
+    prune: Option<bool>,
 ) -> AppResult<ImportResult> {
     let root = state.config_root().await?;
     Ok(apply_import(
@@ -27,6 +31,7 @@ pub async fn model_import(
         &entries,
         &unique_stamp(),
         &state.backups,
+        prune.unwrap_or(false),
     )?)
 }
 

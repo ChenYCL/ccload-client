@@ -18,6 +18,8 @@ export type AppSettings = {
   kernel: KernelConfig;
   sandbox_cli_writes: boolean;
   client_api_token: string | null;
+  /** CLI 的接管地址是否指向本地代理。代理一直在跑，这只管写进配置的地址。 */
+  route_cli_through_proxy?: boolean;
 };
 
 export type CliTarget =
@@ -177,6 +179,8 @@ export type ImportResult = {
   backup_id: string;
   /** 这个 CLI 放不下的别名（Claude Code 里没选 Tier 槽位的行）。 */
   skipped: string[];
+  /** prune 掉的旧别名 —— 内核已经不认它们了，选中就是一个 503。 */
+  removed?: string[];
 };
 
 export type GraphProvider = {
@@ -233,6 +237,7 @@ export type Page =
   | "unlock"
   | "extensions"
   | "graph"
+  | "node-services"
   | "settings";
 
 /* ---------------------------------------------------------------------------
@@ -913,4 +918,61 @@ export type UpdateInfo = {
 export type CheckError = {
   kind: "transport" | "http" | "malformed";
   message: string;
+};
+
+/// 代理转发时旁路记下的一条痕迹。内核日志里没有会话的任何线索（既没有
+/// session_id 也没有上游 request id），这些字段只有 CLI 代理那一层拿得到。
+export type ProxyRecord = {
+  /** unix 秒 */
+  time: number;
+  /** claude-code / codex / grok / opencode / unknown */
+  cli: string;
+  /** CLI 自己的会话 id；Claude Code 的这个值就是 session jsonl 的文件名 */
+  session_id?: string;
+  /** CLI 请求里写的模型名（改写前） */
+  model?: string;
+  /** 实际发给内核的模型名；和 model 不同才说明发生了改写 */
+  sent_model?: string;
+  path: string;
+  status: number;
+};
+
+/// 一个会话 id 解析出来的可展示引用。
+export type SessionRef = {
+  session_id: string;
+  /** 会话 jsonl 的绝对路径；Codex 的会话不在 ~/.claude 下，所以可能为空 */
+  path?: string;
+  /** 标题：优先 Claude Code 自己生成的 ai-title，没有就退回首条用户消息 */
+  title?: string;
+};
+
+/// 一条受管的 Node 常驻服务。存 `~/.ccload-client/node-services.json`。
+///
+/// 用途是「需要一个活着的端口」的场景：MCP over http/sse、自定义后端。
+/// stdio 型 MCP 不用走这里 —— CLI 自己会拉起进程。
+export type NodeService = {
+  id: string;
+  /** 入口脚本绝对路径，跑的是 `node <entry>`。 */
+  entry: string;
+  args?: string[];
+  /** 留空则取 entry 所在目录，否则脚本里的相对 require 找不到文件。 */
+  cwd?: string | null;
+  /** 监听端口。MCP/CLI 配置里写死的就是它，所以由用户定，不随机分配。 */
+  port: number;
+  /** 健康检查路径，默认 `/health`；空字符串表示不检查。 */
+  health_path?: string | null;
+  /** 注入的环境变量。服务另外总会收到 `PORT`。 */
+  env?: Record<string, string>;
+  enabled?: boolean;
+};
+
+export type NodeServiceState = "stopped" | "running" | "unhealthy" | "exited";
+
+export type NodeServiceStatus = {
+  id: string;
+  state: NodeServiceState;
+  port: number;
+  base_url: string;
+  /** 失败原因；running 时为空。 */
+  message?: string | null;
 };

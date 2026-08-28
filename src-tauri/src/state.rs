@@ -15,7 +15,9 @@ use crate::services::admin::AdminClient;
 use crate::services::cli_backup::BackupStore;
 use crate::services::cli_config::ConfigRoot;
 use crate::services::cli_io::write_atomic;
+use crate::services::cli_proxy::CliProxy;
 use crate::services::embed_proxy::EmbedProxy;
+use crate::services::node_services::NodeServices;
 use crate::services::kernel::{Kernel, KernelConfig};
 
 /// Device-level settings. Not synced, not secrets-except-the-kernel-password
@@ -36,6 +38,16 @@ pub struct AppSettings {
     /// The ccLoad API token we inject into CLI configs. Created on first
     /// successful kernel login and reused afterwards.
     pub client_api_token: Option<String>,
+    /// CLI 的接管地址是否指向本地代理。
+    ///
+    /// 关掉不会停掉代理进程 —— 代理一直在跑，这个开关只决定**写进 CLI 配置的
+    /// 地址**是代理还是内核。关着时会话归因和模型名改写都拿不到（内核日志里
+    /// 没有 session_id），但 CLI 仍然能用。
+    ///
+    /// 默认 false：升级上来的用户配置里没有这一项，不该在他毫不知情时被改写
+    /// 成另一个地址。第一次打开由用户在「CLI 接管」页显式点。
+    #[serde(default)]
+    pub route_cli_through_proxy: bool,
 }
 
 impl Default for AppSettings {
@@ -46,6 +58,7 @@ impl Default for AppSettings {
             // is currently serving the session the user is running this from.
             sandbox_cli_writes: true,
             client_api_token: None,
+            route_cli_through_proxy: false,
         }
     }
 }
@@ -56,6 +69,10 @@ pub struct AppState {
     /// Loopback iframe proxy for the embedded admin UI. Started in setup();
     /// retargeted whenever kernel settings change.
     pub embed_proxy: RwLock<Option<Arc<EmbedProxy>>>,
+    /// 数据面代理：CLI 都指向它，它转发到内核。会话标识只能在这一层拿到。
+    pub cli_proxy: RwLock<Option<Arc<CliProxy>>>,
+    /// 用户自己的 Node 常驻服务（MCP over http/sse、自定义后端）。
+    pub node_services: Arc<NodeServices>,
     pub backups: BackupStore,
     pub settings: RwLock<AppSettings>,
     settings_path: PathBuf,
@@ -111,6 +128,8 @@ impl AppState {
             kernel,
             admin,
             embed_proxy: RwLock::new(None),
+            cli_proxy: RwLock::new(None),
+            node_services: NodeServices::new(),
             backups,
             settings: RwLock::new(settings),
             settings_path,

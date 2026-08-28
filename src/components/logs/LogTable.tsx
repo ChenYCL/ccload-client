@@ -23,13 +23,22 @@ export function LogTable({
   flashIds,
   selectedId,
   onSelect,
+  sessions,
+  sessionTitles,
+  onOpenSession,
 }: {
   logs: LogEntry[];
   flashIds: ReadonlySet<number>;
   selectedId?: number;
   onSelect: (log: LogEntry) => void;
+  /** 日志 id -> 会话 id，由 sessionMatch 算出来；匹配不上的行不显示会话。 */
+  sessions?: ReadonlyMap<number, string>;
+  /** 会话 id -> 标题，异步解析出来的；没解析到就退回显示短 id。 */
+  sessionTitles?: ReadonlyMap<string, string>;
+  onOpenSession?: (sessionId: string) => void;
 }) {
   const t = useT();
+  const showSessions = (sessions?.size ?? 0) > 0;
   return (
     // table-fixed：列宽由表头决定，不再随内容抖动。轮询每 2.5s 换一批行，
     // auto 布局会让整张表在每次刷新时重新算列宽，视觉上就是「闪一下」。
@@ -41,6 +50,8 @@ export function LogTable({
           {/* 模型列是唯一会长到失控的一列（别名 + 重定向目标），给它一个上限
               而不是让它吃掉所有剩余宽度 —— 那正是右侧数字列被挤扁的原因。 */}
           <Th className="w-[22rem]">{t("模型")}</Th>
+          {/* 会话列只在代理有记录时出现：没代理就一列空白，白占宽度。 */}
+          {showSessions && <Th className="w-40">{t("会话")}</Th>}
           <Th className="w-32">{t("渠道")}</Th>
           <Th className="w-[4.5rem] text-right">{t("耗时")}</Th>
           <Th className="w-[4.5rem] text-right">{t("首字节")}</Th>
@@ -56,6 +67,10 @@ export function LogTable({
             flash={flashIds.has(log.id)}
             selected={selectedId === log.id}
             onSelect={onSelect}
+            showSession={showSessions}
+            sessionId={sessions?.get(log.id)}
+            sessionTitles={sessionTitles}
+            onOpenSession={onOpenSession}
           />
         ))}
       </tbody>
@@ -76,11 +91,19 @@ function LogRow({
   flash,
   selected,
   onSelect,
+  showSession,
+  sessionId,
+  sessionTitles,
+  onOpenSession,
 }: {
   log: LogEntry;
   flash: boolean;
   selected: boolean;
   onSelect: (log: LogEntry) => void;
+  showSession: boolean;
+  sessionId?: string;
+  sessionTitles?: ReadonlyMap<string, string>;
+  onOpenSession?: (sessionId: string) => void;
 }) {
   const tone = statusTone(log.status_code);
   // 输入 token 里 cache_read 通常是大头，合并展示才有可比性；分项在详情里给。
@@ -118,6 +141,26 @@ function LogRow({
           <span className="ml-1 text-muted">→ {log.actual_model}</span>
         )}
       </td>
+      {showSession && (
+        <td className="truncate px-2 py-1 text-xs">
+          {sessionId ? (
+            <button
+              // 点会话不该同时选中这一行 —— 那会在右侧弹出日志详情，把
+              // 用户想去的会话页盖住。
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenSession?.(sessionId);
+              }}
+              title={sessionId}
+              className="max-w-full truncate rounded px-1 text-accent hover:underline"
+            >
+              {sessionTitles?.get(sessionId) ?? sessionId.slice(0, 8)}
+            </button>
+          ) : (
+            <span className="text-muted/50">—</span>
+          )}
+        </td>
+      )}
       <td className="truncate px-2 py-1 text-xs text-muted" title={log.channel_name}>
         {log.channel_name ?? "—"}
       </td>
