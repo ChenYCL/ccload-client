@@ -98,8 +98,10 @@ export function CliPage() {
       <ProxyRoutingCard
         on={settings.data?.route_cli_through_proxy ?? false}
         onDone={(msg) => {
-          qc.invalidateQueries({ queryKey: ["settings"] });
-          qc.invalidateQueries({ queryKey: ["cli-preview-all"] });
+          // key 必须和这页上面那两个 useQuery 完全一致 —— 写错了不会报错，
+          // 只是缓存不失效：后端已经切了，复选框却还显示旧值。
+          qc.invalidateQueries({ queryKey: ["app-settings"] });
+          qc.invalidateQueries({ queryKey: ["cli-preview"] });
           setNotice(msg);
         }}
       />
