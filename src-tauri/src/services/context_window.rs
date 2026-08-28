@@ -89,8 +89,10 @@ fn family_window(name: &str) -> u64 {
     if n.contains("deepseek") {
         return 128_000;
     }
-    if n.contains("glm-5") {
-        return 200_000;
+    // glm-5.2/5.3 上游标的是 1M，5.0/5.1 仍是 200k 档。整个 glm-5 按 200k 估会
+    // 把 5.3 压掉五分之四的可用窗口 —— 调度图里 flash 档常年挂的就是 5.3。
+    if n.contains("glm-5.2") || n.contains("glm-5.3") {
+        return 1_000_000;
     }
     if n.contains("glm") {
         return 200_000;
@@ -105,10 +107,15 @@ fn family_window(name: &str) -> u64 {
         return 1_000_000;
     }
     if n.contains("gpt-5") {
-        return 400_000;
+        return 1_000_000;
     }
+    // Claude 家族早就分了两档：4.5 及更早是 200k，4.6 起（含 opus-5 / fable-5 /
+    // sonnet-5）是 1M。一刀切 200k 会让 1M 的模型提前四倍触发 compact。
     if n.contains("claude") || n.contains("opus") || n.contains("sonnet") || n.contains("fable") {
-        return 200_000;
+        if n.contains("haiku") || n.contains("-4-5") || n.contains("-4.5") {
+            return 200_000;
+        }
+        return 1_000_000;
     }
     128_000
 }
@@ -209,6 +216,34 @@ mod tests {
         assert_eq!(parse_window("whatever[0.2m]"), 200_000);
     }
 
+    /// 上游 4.6 起给到 1M，4.5 及更早、以及 haiku 仍是 200k。整族按 200k 估会
+    /// 让 1M 的模型提前四倍 compact。
+    #[test]
+    fn claude_family_splits_at_4_6() {
+        assert_eq!(parse_window("claude-opus-4-8"), 1_000_000);
+        assert_eq!(parse_window("claude-opus-5"), 1_000_000);
+        assert_eq!(parse_window("claude-fable-5"), 1_000_000);
+        assert_eq!(parse_window("claude-sonnet-4-6"), 1_000_000);
+        assert_eq!(parse_window("claude-opus-4-5-20251101"), 200_000);
+        assert_eq!(parse_window("claude-haiku-4-5-20251001"), 200_000);
+    }
+
+    /// 渠道别名是人手填的，带空格和括号 —— 这些名字连 `claude` 都匹配不上时
+    /// 会掉进 128k 兜底，UI 上就显示成 128000。
+    #[test]
+    fn human_written_aliases_still_resolve() {
+        assert_eq!(parse_window("Fable 5"), 1_000_000);
+        assert_eq!(parse_window("Opus 4.8 (1M context)"), 1_000_000);
+    }
+
+    #[test]
+    fn glm_53_is_1m_not_the_200k_family_default() {
+        assert_eq!(parse_window("glm-5.3"), 1_000_000);
+        assert_eq!(parse_window("glm-5.3-flash"), 1_000_000);
+        assert_eq!(parse_window("glm-5.1"), 200_000);
+        assert_eq!(parse_window("glm-4.6"), 200_000);
+    }
+
     fn hop(up: &str) -> FallbackHop {
         FallbackHop {
             upstream: up.into(),
@@ -217,12 +252,12 @@ mod tests {
         }
     }
 
-    /// 842k 的会话：opus 200k / grok 500k 都不够，glm 1M 和 deepseek 1M 够。
-    /// 顺序跟链走，原生在前。
+    /// 842k 的会话：sonnet-4.5 200k / grok 500k 都不够，glm-5.3 1M 和 deepseek 1M
+    /// 够。顺序跟链走，原生在前。
     #[test]
     fn pick_skips_hops_that_cannot_hold_the_session() {
         let hops = vec![
-            hop("claude-opus-5"),
+            hop("claude-sonnet-4-5-20250929"),
             hop("glm-5.3[1m]"),
             hop("grok-4.6"),
             hop("deepseek-v4-flash"),
@@ -231,11 +266,11 @@ mod tests {
         assert_eq!(got, vec!["glm-5.3[1m]", "deepseek-v4-flash"]);
     }
 
-    /// 400k：opus 200k 仍不够，glm 1M 够，grok 500k 也够（400k+80k=480k < 500k）。
+    /// 400k：sonnet-4.5 200k 仍不够，glm 1M 够，grok 500k 也够（400k+80k=480k < 500k）。
     #[test]
     fn pick_keeps_later_hops_that_still_fit() {
         let hops = vec![
-            hop("claude-opus-5"),
+            hop("claude-sonnet-4-5-20250929"),
             hop("glm-5.3[1m]"),
             hop("grok-4.6"),
         ];
