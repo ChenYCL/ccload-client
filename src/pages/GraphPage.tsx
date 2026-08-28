@@ -10,6 +10,7 @@ import { useReorder } from "../lib/useReorder";
 import { Select, TextInput } from "../components/ui/Input";
 import { ComboBox } from "../components/ui/ComboBox";
 import { upstreamModelsOf } from "../lib/modelOptions";
+import { defaultContextWindow, formatWindow } from "../lib/modelMeta";
 import type { GraphDoc, GraphProvider, GraphTier } from "../types";
 
 /// 调度图：把「档位别名 → 哪家的哪个模型」编成内核已经认识的渠道配置。
@@ -425,20 +426,23 @@ function ProviderTable({
                   {/* 这一格填的是**上游真实模型名**，所以候选取该渠道的
                       `redirect_model || model`；CLI 接管那边填的是别名，取的是
                       另一份清单。两者的区别见 lib/modelOptions.ts。 */}
-                  <ComboBox
-                    aria-label={t("{p} 在 {tier} 档的模型", { p: p.label, tier: tier.label })}
-                    value={p.models[tier.id] ?? ""}
-                    placeholder={t("上游模型名")}
-                    onChange={(v) => set(i, { models: { ...p.models, [tier.id]: v } })}
-                    options={upstreamModelsOf(
-                      channels.find((c) => c.id === p.channelId),
-                    )}
-                    emptyHint={
-                      p.channelId == null
-                        ? t("先在左边给它绑一个渠道")
-                        : t("这个渠道还没配模型")
-                    }
-                  />
+                  <div className="flex items-center gap-1.5">
+                    <ComboBox
+                      aria-label={t("{p} 在 {tier} 档的模型", { p: p.label, tier: tier.label })}
+                      value={p.models[tier.id] ?? ""}
+                      placeholder={t("上游模型名")}
+                      onChange={(v) => set(i, { models: { ...p.models, [tier.id]: v } })}
+                      options={upstreamModelsOf(
+                        channels.find((c) => c.id === p.channelId),
+                      )}
+                      emptyHint={
+                        p.channelId == null
+                          ? t("先在左边给它绑一个渠道")
+                          : t("这个渠道还没配模型")
+                      }
+                    />
+                    <WindowBadge alias={p.models[tier.id] ?? ""} />
+                  </div>
                 </td>
               ))}
             </tr>
@@ -555,6 +559,15 @@ function ProviderQueue({
               <span className="font-mono text-[10px] text-muted">
                 {all.find((p) => p.id === pid)?.models[tier.id] || t("（未填模型）")}
               </span>
+              <WindowBadge
+                alias={all.find((p) => p.id === pid)?.models[tier.id] ?? ""}
+                warn={
+                  // 后面一跳比前面窄：会话真 fallback 过去会被硬截。
+                  i > 0 &&
+                  hopWindow(all, tier, pid) > 0 &&
+                  hopWindow(all, tier, tier.providers[i - 1]) > hopWindow(all, tier, pid)
+                }
+              />
               <button
                 onClick={() => onChange(tier.providers.filter((x) => x !== pid))}
                 aria-label={`从 ${tier.label} 档移除 ${labelOf(pid)}`}
@@ -678,4 +691,36 @@ function withProviderOrder(
       providers: sortByOrder(tier.providers, order),
     })),
   };
+}
+
+/// 模型名旁的窗口标签（1M / 500k / 200k）。
+///
+/// 为什么标注：调度图一条队列就是一条 fallback 链，链上窗口不一样宽时，会话
+/// 真降级过去会被硬截 —— opus-5（1M）掉到 grok-4.6（500k）就是实际会发生的那种。
+/// 内核不知道上游模型的窗口，这个数只能客户端估（见 modelMeta.ts）。
+function WindowBadge({ alias, warn }: { alias: string; warn?: boolean }) {
+  const t = useT();
+  const w = defaultContextWindow(alias);
+  if (!w) return null;
+  return (
+    <span
+      title={
+        warn
+          ? t("这一跳比前一跳窄 —— 会话 fallback 到这里时超出窗口的部分会被截断")
+          : t("估的上下文窗口，导入表里可逐行覆盖")
+      }
+      className={cn(
+        "shrink-0 rounded px-1 py-px text-[10px] tabular-nums",
+        warn ? "bg-amber-500/15 text-amber-700" : "bg-surface-2 text-muted",
+      )}
+    >
+      {warn ? "⚠ " : ""}
+      {formatWindow(w)}
+    </span>
+  );
+}
+
+/// 某档里某个 provider 当前填的上游模型窗口。没填就是 0。
+function hopWindow(all: GraphProvider[], tier: GraphTier, pid: string): number {
+  return defaultContextWindow(all.find((p) => p.id === pid)?.models[tier.id] ?? "");
 }

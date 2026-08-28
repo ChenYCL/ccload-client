@@ -292,6 +292,78 @@ fn find_header_end(buf: &[u8]) -> Option<usize> {
     buf.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4)
 }
 
+/// 读一个 chunked 请求体并**解出原始字节**。转发头里 `Transfer-Encoding` 已经被
+/// 剥掉，发给上游的是我们用 Content-Length 重新分帧的 plain body —— 所以上游
+/// 看到的一直是同一种形态，模型改写也不会撞上分块边界。
+///
+/// `head` 是头部之后已经读进来的字节，先于任何新读取被消费。终止条件是
+/// 0 长度块；trailers 一律丢弃（模型改写用不上它们）。
+async fn read_chunked_body(
+    client: &mut TcpStream,
+    head: Vec<u8>,
+    tmp: &mut [u8; 16 * 1024],
+) -> std::io::Result<Vec<u8>> {
+    // 把「当前消费位置」留在 chunk 量这一行，用最小实现：手写游标推进。
+    let mut raw = head;
+    let mut pos = 0usize;
+
+    // 取到下一对 \r\n 之间的内容，不够就从 socket 补。
+    macro_rules! read_line {
+        () => {{
+            loop {
+                if let Some(rel) = raw[pos..]
+                    .windows(2)
+                    .position(|w| w == b"\r\n")
+                {
+                    let line = String::from_utf8_lossy(&raw[pos..pos + rel]).to_string();
+                    pos += rel + 2;
+                    break Some(line);
+                }
+                let n = client.read(tmp).await?;
+                if n == 0 {
+                    break None;
+                }
+                raw.extend_from_slice(&tmp[..n]);
+            }
+        }};
+    }
+
+    let mut out: Vec<u8> = Vec::new();
+    while let Some(line) = read_line!() {
+        // 量这一行可能带分号后的扩展（`1a;ext=…`），取分号前的十六进制。
+        let size_part = line.split(';').next().unwrap_or("").trim();
+        let Ok(size) = usize::from_str_radix(size_part, 16) else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("bad chunk size line: {size_part:?}"),
+            ));
+        };
+        if size == 0 {
+            // 0 块之后是可选的 trailer 区，以空行结束。读到空行（或连接断）为止。
+            while let Some(t) = read_line!() {
+                if t.is_empty() {
+                    break;
+                }
+            }
+            break;
+        }
+        // 补齐这一块的数据 + 结尾的 \r\n。
+        while raw.len() < pos + size + 2 {
+            let n = client.read(tmp).await?;
+            if n == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "chunked body truncated mid-chunk",
+                ));
+            }
+            raw.extend_from_slice(&tmp[..n]);
+        }
+        out.extend_from_slice(&raw[pos..pos + size]);
+        pos += size + 2; // 跳过块尾的 \r\n
+    }
+    Ok(out)
+}
+
 async fn write_simple(client: &mut TcpStream, status: u16, msg: &str) -> std::io::Result<()> {
     let body = format!("{{\"error\":{}}}", serde_json::json!(msg));
     let head = format!(
@@ -333,6 +405,7 @@ async fn handle_conn(
     let path = parts.next().unwrap_or("/").to_string();
 
     let mut content_length = 0usize;
+    let mut chunked = false;
     let mut fwd: Vec<(String, String)> = Vec::new();
     for line in lines {
         if line.is_empty() {
@@ -344,7 +417,11 @@ async fn handle_conn(
         let lower = name.trim().to_ascii_lowercase();
         // Host 要按上游重算；Connection/Transfer-Encoding 由我们这层重新决定；
         // content-length 改写后会变，转发时重新给。
-        if lower == "host" || lower == "connection" || lower == "transfer-encoding" {
+        if lower == "host" || lower == "connection" {
+            continue;
+        }
+        if lower == "transfer-encoding" {
+            chunked = value.to_ascii_lowercase().split(',').any(|t| t.trim() == "chunked");
             continue;
         }
         if lower == "content-length" {
@@ -354,8 +431,12 @@ async fn handle_conn(
         fwd.push((name.trim().to_string(), value.trim().to_string()));
     }
 
-    let body_bytes: Vec<u8> = if content_length > 0 {
-        let mut body = buf[header_end..].to_vec();
+    // RFC 9112：chunked 和 Content-Length 同时出现时以 chunked 为准。
+    let leftover = buf[header_end..].to_vec();
+    let body_bytes: Vec<u8> = if chunked {
+        read_chunked_body(&mut client, leftover, &mut tmp).await?
+    } else if content_length > 0 {
+        let mut body = leftover;
         while body.len() < content_length {
             let n = client.read(&mut tmp).await?;
             if n == 0 {
@@ -864,6 +945,84 @@ mod sse {
         assert!(
             last.saturating_sub(first) > std::time::Duration::from_millis(400),
             "首块 {first:?}、末块 {last:?} —— 间隔太小，说明被攒着一次性发了"
+        );
+    }
+}
+
+#[cfg(test)]
+mod chunked_req {
+    use super::*;
+
+    /// 用 chunked 发上来的请求体不能被吞掉。
+    ///
+    /// 代理只按 `Content-Length` 读 body，并且把 `Transfer-Encoding` 从转发头里
+    /// 剥掉了 —— 客户端若用 chunked，两件事叠在一起就是「空 body 静默发出去」，
+    /// 上游收到一个没有 messages 的请求。实测的几家 CLI 目前都发
+    /// Content-Length，但这条不该靠运气。
+    #[tokio::test]
+    async fn a_chunked_request_body_is_not_silently_dropped() {
+        // 假上游：把收到的 body 长度回显出来。
+        let up = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let up_port = up.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut s, _) = up.accept().await.unwrap();
+            let mut buf = vec![0u8; 65536];
+            let n = s.read(&mut buf).await.unwrap();
+            let text = String::from_utf8_lossy(&buf[..n]).to_string();
+            let body = text.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+            let out = format!("{{\"got\":{}}}", body.trim().len());
+            s.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{out}",
+                    out.len()
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+            s.flush().await.unwrap();
+        });
+
+        let front = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let front_port = front.local_addr().unwrap().port();
+        let target = Arc::new(RwLock::new(format!("http://127.0.0.1:{up_port}")));
+        tokio::spawn(async move {
+            let (stream, _) = front.accept().await.unwrap();
+            let _ = handle_conn(
+                stream,
+                target,
+                Arc::new(RwLock::new(ModelRewrites::new())),
+                Arc::new(RwLock::new(Vec::new())),
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            )
+            .await;
+        });
+
+        // 用 chunked 发一个 body，不给 Content-Length。
+        let mut c = TcpStream::connect(("127.0.0.1", front_port)).await.unwrap();
+        let payload = br#"{"model":"m","messages":[{"role":"user","content":"hi"}]}"#;
+        c.write_all(
+            b"POST /v1/messages HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n",
+        )
+        .await
+        .unwrap();
+        c.write_all(format!("{:x}\r\n", payload.len()).as_bytes())
+            .await
+            .unwrap();
+        c.write_all(payload).await.unwrap();
+        c.write_all(b"\r\n0\r\n\r\n").await.unwrap();
+        c.flush().await.unwrap();
+
+        let mut got = Vec::new();
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            c.read_to_end(&mut got),
+        )
+        .await;
+        let got = String::from_utf8_lossy(&got).to_string();
+        assert!(
+            !got.contains("\"got\":0"),
+            "chunked 的 body 被吞成空了，上游收到 0 字节。响应：{got}"
         );
     }
 }
