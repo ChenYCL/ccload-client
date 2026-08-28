@@ -1,6 +1,6 @@
 [package]
 name = "ccload-client"
-version = "0.1.3"
+version = "0.1.4"
 description = "Desktop client for the ccLoad multi-channel LLM gateway"
 authors = ["ccload-client"]
 license = "MIT"
