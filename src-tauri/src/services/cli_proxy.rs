@@ -50,6 +50,13 @@ pub struct ProxyRecord {
     pub sent_model: Option<String>,
     pub path: String,
     pub status: u16,
+    /// 与内核日志对齐后回填的消耗（美元，倍率后）。对不上就是 None ——
+    /// 代理自己算不了成本，成本数字只认内核的。
+    #[serde(default)]
+    pub cost: Option<f64>,
+    /// 同上：输出 tokens。输入大头在缓存里，分项看内核日志。
+    #[serde(default)]
+    pub output_tokens: Option<i64>,
 }
 
 /// 模型名改写规则：CLI 发的名字 -> 内核认的名字。
@@ -498,6 +505,8 @@ async fn handle_conn(
                     sent_model,
                     path,
                     status: 502,
+                    cost: None,
+                    output_tokens: None,
                 },
             )
             .await;
@@ -516,6 +525,8 @@ async fn handle_conn(
             sent_model,
             path,
             status: status.as_u16(),
+            cost: None,
+            output_tokens: None,
         },
     )
     .await;

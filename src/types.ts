@@ -976,3 +976,26 @@ export type NodeServiceStatus = {
   /** 失败原因；running 时为空。 */
   message?: string | null;
 };
+
+/// 按 CLI / 会话聚合的今日消耗。数字来自内核日志，维度来自代理记录。
+export type CliUsage = {
+  cli: string;
+  requests: number;
+  cost: number;
+  output_tokens: number;
+  sessions: number;
+};
+
+export type SessionUsage = {
+  cli: string;
+  session_id: string;
+  requests: number;
+  cost: number;
+};
+
+export type CliUsageReport = {
+  by_cli: CliUsage[];
+  by_session: SessionUsage[];
+  /** 代理有记录但没对上内核日志的请求数 */
+  unmatched: number;
+};

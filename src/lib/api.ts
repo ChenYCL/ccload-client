@@ -41,6 +41,7 @@ import type {
   McpUsage,
   NodeService,
   NodeServiceStatus,
+  CliUsageReport,
   ProxyRecord,
   RefreshMode,
   UsageProbeReport,
@@ -82,6 +83,9 @@ export const api = {
     invoke<NodeServiceStatus>("node_service_start", { id }),
   nodeServiceStop: (id: string) => invoke<void>("node_service_stop", { id }),
   nodeServiceStatus: () => invoke<NodeServiceStatus[]>("node_service_status"),
+
+  /** 今日按 CLI / 会话的消耗聚合（代理记录 × 内核日志配对）。 */
+  cliProxyUsage: () => invoke<CliUsageReport>("cli_proxy_usage"),
   /** Open (or focus) the standalone admin window on a web page. */
   openAdminWindow: (page?: string) =>
     invoke<void>("open_admin_window", { page: page ?? null }),

@@ -15,6 +15,7 @@ import { AsyncBlock, Panel } from "../components/StateBlock";
 import { TrendChart } from "../components/charts/TrendChart";
 import { StatCards } from "../components/dashboard/StatCards";
 import { UsageTotals } from "../components/dashboard/UsageTotals";
+import { CliUsageBreakdown } from "../components/dashboard/CliUsageBreakdown";
 import { AnomalyPanel } from "../components/dashboard/AnomalyPanel";
 import { ModelBreakdown, ModelTable } from "../components/dashboard/ModelBreakdown";
 import { ChannelBreakdown, ChannelTable } from "../components/dashboard/ChannelBreakdown";
@@ -197,6 +198,8 @@ export function DashboardPage() {
               </AsyncBlock>
             </Panel>
           </div>
+
+          <CliUsageBreakdown />
 
           <Panel title={t("渠道健康")} hint="stats.channel_health">
             <AsyncBlock
