@@ -182,6 +182,7 @@ pub fn run() {
             commands::node_services::node_service_start,
             commands::node_services::node_service_stop,
             commands::node_services::node_service_status,
+            commands::node_services::node_service_write_script,
             commands::kernel::open_admin_window,
             commands::admin::admin_request,
             commands::admin::admin_ping,

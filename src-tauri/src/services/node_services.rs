@@ -130,7 +130,14 @@ impl NodeServices {
     }
 
     /// 起一个服务。已经在跑就先停掉再起 —— 幂等，重复点不会留下孤儿进程。
-    pub async fn start(&self, spec: &NodeService) -> Result<ServiceStatus, AppError> {
+    ///
+    /// `platform_env` 是平台注入的约定环境变量（网关地址、token 之类），
+    /// 由调用方按当前设置算出来；用户在服务里填的同名变量优先。
+    pub async fn start(
+        &self,
+        spec: &NodeService,
+        platform_env: impl IntoIterator<Item = (String, String)>,
+    ) -> Result<ServiceStatus, AppError> {
         self.stop(&spec.id).await?;
 
         let entry = PathBuf::from(&spec.entry);
@@ -148,6 +155,13 @@ impl NodeServices {
         }
         // PORT 是约定：Node 服务读它决定监听端口，免得两处各写一遍再对不上。
         cmd.env("PORT", spec.port.to_string());
+        // 平台约定环境变量。托管服务最常见的用法就是「定时干点活 → 问一下
+        // 模型 → 把结果发给谁」；这一类脚本都需要网关地址和凭据。由平台注入
+        // 而不是让每份脚本硬编码：地址随内核模式/代理开关变，token 会轮换，
+        // 硬编码的脚本会在某个看不见的时刻集体失效。同名用户 env 覆盖平台值。
+        for (k, v) in platform_env {
+            cmd.env(k, v);
+        }
         for (k, v) in &spec.env {
             cmd.env(k, v);
         }
@@ -340,7 +354,7 @@ mod tests {
     async fn missing_entry_is_rejected_before_spawning() {
         let svc = NodeServices::new();
         let err = svc
-            .start(&spec("ghost", "/definitely/not/here.js", 4123))
+            .start(&spec("ghost", "/definitely/not/here.js", 4123), [])
             .await
             .unwrap_err();
         assert!(format!("{err:?}").contains("入口脚本不存在"));
@@ -361,7 +375,7 @@ mod tests {
         let svc = NodeServices::new();
         let mut s = spec("boom", entry.to_str().unwrap(), 4124);
         s.health_path = Some("/health".into());
-        let err = svc.start(&s).await.unwrap_err();
+        let err = svc.start(&s, []).await.unwrap_err();
         let text = format!("{err:?}");
         assert!(
             text.contains("启动即退出") || text.contains("没应答"),
@@ -392,7 +406,7 @@ mod tests {
 
         let svc = NodeServices::new();
         let s = spec("real", entry.to_str().unwrap(), 4125);
-        let st = svc.start(&s).await.expect("应当起得来");
+        let st = svc.start(&s, []).await.expect("应当起得来");
         assert_eq!(st.state, ServiceState::Running);
         assert_eq!(st.base_url, "http://127.0.0.1:4125");
         assert_eq!(svc.status("real").await.state, ServiceState::Running);
@@ -444,7 +458,7 @@ http.createServer((q,s)=>{
             env: Default::default(),
             enabled: true,
         };
-        let st = svc.start(&spec).await.expect("SSE 服务应当起得来");
+        let st = svc.start(&spec, []).await.expect("SSE 服务应当起得来");
         assert_eq!(st.state, ServiceState::Running);
 
         // 真去读一段流，确认拿到的是 SSE 而不是一次性 body。
@@ -477,5 +491,57 @@ http.createServer((q,s)=>{
 
         svc.stop("sse").await.unwrap();
         assert_eq!(svc.status("sse").await.state, ServiceState::Stopped);
+    }
+}
+
+#[cfg(test)]
+mod platform_env_tests {
+    use super::*;
+
+    /// 平台 env 必须真的进到子进程，且**用户同名 env 覆盖平台值** ——
+    /// 覆盖顺序反了，用户想指向别的内核时会莫名连回默认地址。
+    #[tokio::test]
+    async fn platform_env_reaches_the_child_and_user_env_wins() {
+        if std::process::Command::new("node").arg("-v").output().is_err() {
+            eprintln!("跳过：本机没有 node");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let entry = dir.path().join("echo_env.js");
+        // 把两个变量回显出来：一个只有平台给，一个两边都给。
+        std::fs::write(
+            &entry,
+            r#"require('http').createServer((q,s)=>{
+              s.writeHead(200,{'content-type':'application/json'});
+              s.end(JSON.stringify({p:process.env.CCLOAD_TEST_PLATFORM||null,
+                                    u:process.env.CCLOAD_TEST_DUAL||null}));
+            }).listen(Number(process.env.PORT));"#,
+        )
+        .unwrap();
+
+        let svc = NodeServices::new();
+        let mut spec = NodeService {
+            id: "envtest".into(),
+            entry: entry.to_str().unwrap().into(),
+            args: vec![],
+            cwd: None,
+            port: 4127,
+            health_path: Some("/health".into()),
+            env: Default::default(),
+            enabled: true,
+        };
+        spec.env.insert("CCLOAD_TEST_DUAL".into(), "from-user".into());
+
+        let platform = vec![
+            ("CCLOAD_TEST_PLATFORM".to_string(), "from-platform".to_string()),
+            ("CCLOAD_TEST_DUAL".to_string(), "from-platform".to_string()),
+        ];
+        svc.start(&spec, platform).await.expect("应当起得来");
+
+        let body: String = reqwest::get("http://127.0.0.1:4127/").await.unwrap().text().await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["p"], "from-platform", "平台独有变量要进到子进程");
+        assert_eq!(v["u"], "from-user", "用户同名 env 必须覆盖平台值");
+        svc.stop("envtest").await.unwrap();
     }
 }

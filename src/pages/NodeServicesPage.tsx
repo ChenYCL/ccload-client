@@ -9,6 +9,7 @@ import type { NodeService, NodeServiceStatus } from "../types";
 import { AsyncBlock, Panel } from "../components/StateBlock";
 import { Modal } from "../components/Modal";
 import { TextInput } from "../components/ui/Input";
+import { TEMPLATES } from "../lib/serviceTemplates";
 
 /// 托管用户自己的 Node 常驻服务。
 ///
@@ -45,6 +46,8 @@ export function NodeServicesPage() {
   const t = useT();
   const qc = useQueryClient();
   const [editing, setEditing] = useState<NodeService | null>(null);
+  const [editingScript, setEditingScript] = useState<string | undefined>(undefined);
+  const [picking, setPicking] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
   const list = useQuery({ queryKey: ["node-services"], queryFn: api.nodeServiceList });
@@ -67,7 +70,15 @@ export function NodeServicesPage() {
   };
 
   const save = useMutation({
-    mutationFn: (s: NodeService) => api.nodeServiceSave(s),
+    mutationFn: async ({ s, script }: { s: NodeService; script: string }) => {
+      // 模板带来的脚本先落盘（已存在则轮新名字，不覆盖旧文件），再把路径填进 entry。
+      let target = s;
+      if (script.trim() && !s.entry.trim()) {
+        const path = await api.nodeServiceWriteScript(s.id, script);
+        target = { ...s, entry: path };
+      }
+      return api.nodeServiceSave(target);
+    },
     onSuccess: () => {
       setEditing(null);
       setMessage(null);
@@ -117,7 +128,7 @@ export function NodeServicesPage() {
             {t("刷新")}
           </button>
           <button
-            onClick={() => setEditing(blank())}
+            onClick={() => setPicking(true)}
             className="flex items-center gap-1 rounded-lg bg-accent px-3.5 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-accent/90"
           >
             <Plus className="h-4 w-4" />
@@ -209,12 +220,29 @@ export function NodeServicesPage() {
         </AsyncBlock>
       </Panel>
 
+      {picking && (
+        <TemplatePicker
+          onClose={() => setPicking(false)}
+          onPick={(tpl) => {
+            if (!tpl) {
+              setEditing(blank());
+              setEditingScript(undefined);
+              return;
+            }
+            const base = blank();
+            setEditing({ ...base, id: tpl.id, port: tpl.port });
+            setEditingScript(tpl.script);
+          }}
+        />
+      )}
+
       {editing && (
         <ServiceEditor
           initial={editing}
           existing={services}
+          initialScript={editingScript}
           onCancel={() => setEditing(null)}
-          onSave={(s) => save.mutate(s)}
+          onSave={(s, script) => save.mutate({ s, script })}
           saving={save.isPending}
         />
       )}
@@ -225,19 +253,23 @@ export function NodeServicesPage() {
 function ServiceEditor({
   initial,
   existing,
+  initialScript,
   onCancel,
   onSave,
   saving,
 }: {
   initial: NodeService;
   existing: NodeService[];
+  /** 从模板进入时预填的脚本内容；空白服务为空。 */
+  initialScript?: string;
   onCancel: () => void;
-  onSave: (s: NodeService) => void;
+  onSave: (s: NodeService, script: string) => void;
   saving: boolean;
 }) {
   const t = useT();
   const isNew = !existing.some((s) => s.id === initial.id);
   const [draft, setDraft] = useState<NodeService>(initial);
+  const [scriptText, setScriptText] = useState(initialScript ?? "");
   // 环境变量按「一行一个 K=V」编辑 —— 比一堆输入框好用，也好粘贴。
   const [envText, setEnvText] = useState(
     Object.entries(initial.env ?? {})
@@ -270,13 +302,16 @@ function ServiceEditor({
       if (eq <= 0) continue;
       env[s.slice(0, eq).trim()] = s.slice(eq + 1).trim();
     }
-    onSave({
-      ...draft,
-      id: draft.id.trim(),
-      entry: draft.entry.trim(),
-      cwd: draft.cwd?.trim() || null,
-      env,
-    });
+    onSave(
+      {
+        ...draft,
+        id: draft.id.trim(),
+        entry: draft.entry.trim(),
+        cwd: draft.cwd?.trim() || null,
+        env,
+      },
+      scriptText,
+    );
   };
 
   return (
@@ -332,6 +367,21 @@ function ServiceEditor({
             placeholder={t("（跟随入口脚本）")}
           />
         </Field>
+
+        {isNew && (
+          <Field
+            label={t("入口脚本内容")}
+            hint={t("从模板进来的骨架可以直接改；保存时会写入下面的入口路径。")}
+          >
+            <textarea
+              value={scriptText}
+              onChange={(e) => setScriptText(e.target.value)}
+              rows={12}
+              spellCheck={false}
+              className="w-full rounded-lg border border-border bg-surface-raised px-2.5 py-1.5 font-mono text-xs"
+            />
+          </Field>
+        )}
 
         <Field label={t("环境变量")} hint={t("一行一个 KEY=VALUE。PORT 会自动带上，不用写。")}>
           <textarea
@@ -390,5 +440,54 @@ function Field({
       {hint && <span className="mt-0.5 block text-xs text-muted">{hint}</span>}
       <div className="mt-1">{children}</div>
     </label>
+  );
+}
+
+/// 模板选择弹窗。
+///
+/// 新建的第一步不是空表单而是模板：三类骨架覆盖托管服务的绝大多数用途，
+/// 选完直接进编辑器，脚本可改、保存时自动落盘并填好 entry。空白服务放在
+/// 列表最后，仍然可选 —— 模板是加速，不是围墙。
+function TemplatePicker({
+  onPick,
+  onClose,
+}: {
+  onPick: (tpl: { id: string; port: number; script: string } | null) => void;
+  onClose: () => void;
+}) {
+  const t = useT();
+  return (
+    <Modal onClose={onClose}>
+      <div className="space-y-3">
+        <h2 className="t-title">{t("从模板新建")}</h2>
+        <div className="space-y-2">
+          {TEMPLATES.map((tpl) => (
+            <button
+              key={tpl.id}
+              onClick={() => {
+                onPick({ id: tpl.id, port: tpl.port, script: tpl.script });
+                onClose();
+              }}
+              className="block w-full rounded-xl border border-border bg-surface-2/40 px-3.5 py-3 text-left hover:bg-surface-2"
+            >
+              <div className="flex items-baseline gap-2">
+                <span className="font-medium">{t(tpl.label)}</span>
+                <span className="font-mono text-xs text-muted">:{tpl.port}</span>
+              </div>
+              <p className="mt-0.5 text-xs text-muted">{t(tpl.description)}</p>
+            </button>
+          ))}
+          <button
+            onClick={() => {
+              onPick(null);
+              onClose();
+            }}
+            className="block w-full rounded-xl border border-dashed border-border px-3.5 py-2.5 text-left text-sm text-muted hover:bg-surface-2"
+          >
+            {t("空白服务（自己写脚本）")}
+          </button>
+        </div>
+      </div>
+    </Modal>
   );
 }

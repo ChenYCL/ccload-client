@@ -28,7 +28,7 @@ const TARGETS: [CliTarget; 5] = [
 /// 跑，这个开关只管「写进 CLI 配置的地址」。开着才拿得到会话归因和模型名改写
 /// （内核日志里没有 session_id）。开着但代理没起来时退回直连内核：功能少一截，
 /// 总好过把 CLI 指到一个没人监听的地址。
-async fn takeover_base(state: &AppState) -> String {
+pub(crate) async fn takeover_base(state: &AppState) -> String {
     let s = state.settings.read().await;
     if s.route_cli_through_proxy {
         drop(s);

@@ -83,6 +83,9 @@ export const api = {
     invoke<NodeServiceStatus>("node_service_start", { id }),
   nodeServiceStop: (id: string) => invoke<void>("node_service_stop", { id }),
   nodeServiceStatus: () => invoke<NodeServiceStatus[]>("node_service_status"),
+  /** 把模板脚本写到默认位置，返回落盘路径（给 entry 用）。 */
+  nodeServiceWriteScript: (suggestedName: string, body: string) =>
+    invoke<string>("node_service_write_script", { suggestedName, body }),
 
   /** 今日按 CLI / 会话的消耗聚合（代理记录 × 内核日志配对）。 */
   cliProxyUsage: () => invoke<CliUsageReport>("cli_proxy_usage"),
