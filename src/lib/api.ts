@@ -64,6 +64,10 @@ export const api = {
   cliProxyUrl: () => invoke<string | null>("cli_proxy_url"),
   /** 最近的转发记录，最新的在前。会话归因全靠它。 */
   cliProxyRecords: () => invoke<ProxyRecord[]>("cli_proxy_records"),
+  /** 缓存窗口是否升到 1h。默认关 —— 交互式会话开着更贵（写入价 2×）。 */
+  cliProxyLongCache: () => invoke<boolean>("cli_proxy_long_cache"),
+  cliProxySetLongCache: (enabled: boolean) =>
+    invoke<boolean>("cli_proxy_set_long_cache", { enabled }),
   /** 把会话 id 解析成标题和磁盘路径。 */
   cliProxySession: (sessionId: string) =>
     invoke<SessionRef>("cli_proxy_session", { sessionId }),

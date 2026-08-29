@@ -146,6 +146,10 @@ impl CliProxy {
 
     /// 打开/关掉 1 小时缓存窗口。见 `upgrade_cache_ttl` 里的实测数据 ——
     /// 交互式会话开着通常更贵，这个开关是给长间隔的定时任务用的。
+    pub fn long_cache_enabled(&self) -> bool {
+        self.long_cache.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     pub fn set_long_cache(&self, on: bool) {
         self.long_cache
             .store(on, std::sync::atomic::Ordering::Relaxed);

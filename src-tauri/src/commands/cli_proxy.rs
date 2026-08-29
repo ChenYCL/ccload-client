@@ -24,6 +24,39 @@ pub async fn ensure_cli_proxy(state: &AppState) -> Result<(), crate::error::AppE
     Ok(())
 }
 
+/// 读写「缓存窗口升到 1h」的开关。
+///
+/// 默认关，而且交互式会话就该关着 —— 实测本机 101,259 次同会话相邻请求里
+/// 98.1% 短于 5 分钟，1h 档写入价 2×（5m 档 1.25×），为 1.6% 的长间隔把全部
+/// 写入涨价 60% 是净亏。这个开关是给「按小时轮询、中间长时间没人说话」的
+/// 定时任务用的。
+#[tauri::command]
+pub async fn cli_proxy_long_cache(state: State<'_, AppState>) -> AppResult<bool> {
+    Ok(state
+        .cli_proxy
+        .read()
+        .await
+        .as_ref()
+        .map(|p| p.long_cache_enabled())
+        .unwrap_or(false))
+}
+
+#[tauri::command]
+pub async fn cli_proxy_set_long_cache(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> AppResult<bool> {
+    let guard = state.cli_proxy.read().await;
+    match guard.as_ref() {
+        Some(p) => {
+            p.set_long_cache(enabled);
+            Ok(p.long_cache_enabled())
+        }
+        // 代理没起来时没有可改的对象；如实回 false，别假装存上了。
+        None => Ok(false),
+    }
+}
+
 /// CLI 该往哪儿指。代理没起来时返回 None —— 此时不该去写任何接管配置，
 /// 不然写进去的是个没人监听的地址。
 #[tauri::command]

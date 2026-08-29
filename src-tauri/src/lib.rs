@@ -173,6 +173,8 @@ pub fn run() {
             commands::cli_proxy::cli_proxy_url,
             commands::cli_proxy::cli_proxy_records,
             commands::cli_proxy::cli_proxy_session,
+            commands::cli_proxy::cli_proxy_long_cache,
+            commands::cli_proxy::cli_proxy_set_long_cache,
             commands::node_services::node_service_list,
             commands::node_services::node_service_save,
             commands::node_services::node_service_delete,

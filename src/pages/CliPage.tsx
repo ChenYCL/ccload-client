@@ -95,6 +95,7 @@ export function CliPage() {
           {showBackups ? t("← 返回接管") : t("快照历史")}
         </button>
       </div>
+      <LongCacheCard />
       <ProxyRoutingCard
         on={settings.data?.route_cli_through_proxy ?? false}
         onDone={(msg) => {
@@ -1166,6 +1167,40 @@ function ProxyRoutingCard({
         <p className="mt-0.5 text-xs text-muted">
           {t(
             "开着时 CLI 指向本地代理，再由它转发到内核 —— 日志才认得出是哪个会话发的，CLI 发的模型名也能在转发前改写（claude-opus-5[1m] 这种内核不认的名字会被剥成能用的）。关掉则直连内核，这两项都拿不到。代理进程本来就一直在跑，这个开关只决定写进 CLI 配置的地址。",
+          )}
+        </p>
+      </div>
+    </label>
+  );
+}
+
+/// 缓存窗口开关（5m ↔ 1h）。
+///
+/// 只有「按小时轮询、两轮之间隔很久」的定时任务才划算：1h 档写入价 2×、
+/// 5m 档 1.25×，而实测 98.1% 的相邻请求短于 5 分钟 —— 交互式会话开着就是
+/// 白付涨价。这里把这笔账直接写在界面上，别让用户当成「越长越好」。
+function LongCacheCard() {
+  const t = useT();
+  const qc = useQueryClient();
+  const on = useQuery({ queryKey: ["cli-proxy-long-cache"], queryFn: api.cliProxyLongCache });
+  const toggle = useMutation({
+    mutationFn: api.cliProxySetLongCache,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["cli-proxy-long-cache"] }),
+  });
+  return (
+    <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-xl border border-border bg-surface-2/40 px-3.5 py-3">
+      <input
+        type="checkbox"
+        checked={on.data ?? false}
+        disabled={toggle.isPending}
+        onChange={(e) => toggle.mutate(e.target.checked)}
+        className="mt-1"
+      />
+      <div className="min-w-0">
+        <span className="text-sm font-medium">{t("Prompt 缓存窗口升到 1 小时")}</span>
+        <p className="mt-0.5 text-xs text-muted">
+          {t(
+            "默认 5 分钟。1h 档的写入价是 2×（5m 档 1.25×），只适合按小时跑、两轮间隔很久的定时任务 —— 交互式会话开着净亏（实测 98.1% 的请求间隔短于 5 分钟）。",
           )}
         </p>
       </div>
