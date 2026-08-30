@@ -1054,3 +1054,50 @@ mod chunked_req {
         );
     }
 }
+
+#[cfg(test)]
+mod key_order_tests {
+    use super::*;
+
+    /// 改写必须保持键序 —— Anthropic 的 prompt cache 是**前缀字节匹配**，
+    /// serde_json 默认用 BTreeMap，to_vec 会按字母序重排键：`{"model":…,
+    /// "messages":…,"max_tokens":…}` 改完变成 `{"max_tokens":…,"messages":…,
+    /// "model":…}`。字段值全对，缓存照样全 miss。preserve_order 开启后，
+    /// 除被改的字段外，字节序必须与输入一致。
+    #[test]
+    fn rewriting_preserves_key_order() {
+        let rules = ModelRewrites::new();
+        // 键序故意按「非字母序」排:model 在前,max_tokens 在中,messages 在后。
+        let body = br#"{"model":"claude-opus-5[1m]","max_tokens":8,"messages":[{"role":"user","content":"hi"}],"system":"s"}"#;
+
+        let (_, out) = rewrite_body(body, &rules, false);
+        let out = out.expect("body 应当被改写(剥后缀)");
+
+        let out_str = String::from_utf8(out).unwrap();
+        // 逐键检查相对顺序:model 仍在最前,max_tokens 仍在 messages 之前,
+        // system 仍在最后。字母序重排的话 max_tokens 会跑到最前面。
+        let pos_model = out_str.find("\"model\"").unwrap();
+        let pos_max = out_str.find("\"max_tokens\"").unwrap();
+        let pos_messages = out_str.find("\"messages\"").unwrap();
+        let pos_system = out_str.find("\"system\"").unwrap();
+        assert!(
+            pos_model < pos_max && pos_max < pos_messages && pos_messages < pos_system,
+            "键序被重排了,缓存前缀会失效。输出:{out_str}"
+        );
+        assert!(out_str.contains("\"model\":\"claude-opus-5\""), "改写本身仍要生效");
+    }
+
+    /// 嵌套对象(顶层 system 是数组包对象)同样保序 —— cache_control 就住在
+    /// 嵌套里。
+    #[test]
+    fn nested_objects_keep_order_too() {
+        let rules = ModelRewrites::new();
+        let body = br#"{"model":"m","system":[{"type":"text","cache_control":{"type":"ephemeral"}}]}"#;
+        let (_, out) = rewrite_body(body, &rules, true);
+        let out_str = String::from_utf8(out.unwrap()).unwrap();
+        // type 在 cache_control 之前(声明序),ttl 追加在 type 之后(插入序)。
+        let pos_type = out_str.find("\"type\":\"ephemeral\"").unwrap();
+        let pos_ttl = out_str.find("\"ttl\":\"1h\"").unwrap();
+        assert!(pos_type < pos_ttl, "ttl 应当追加在原键之后而非重排:{out_str}");
+    }
+}

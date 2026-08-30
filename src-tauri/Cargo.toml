@@ -19,7 +19,11 @@ tauri = { version = "2", features = ["tray-icon", "image-png", "unstable"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# preserve_order:改写请求体（模型名剥后缀、缓存窗口升级）时保留解析时的
+# 键序。没开的话 serde_json 用 BTreeMap，to_vec 会把键按字母序重排 ——
+# Anthropic 的 prompt cache 是前缀字节匹配，键序一变整条前缀就 miss，
+# 改写的那一次请求等于把缓存全部重写一遍（1.25× 写入价照付）。
+serde_json = { version = "1", features = ["preserve_order"] }
 tokio = { version = "1", features = ["process", "time", "io-util", "sync", "rt-multi-thread", "macros"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 futures-util = "0.3"
