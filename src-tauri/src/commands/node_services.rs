@@ -135,5 +135,12 @@ pub async fn node_service_write_script(
         n += 1;
     }
     tokio::fs::write(&final_path, body).await?;
+    // 脚本是可执行代码，且同机多用户的机器上不该让别的用户读改。0600 与
+    // settings.json 同一标准（cli_io::PRIVATE_MODE）。
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&final_path, std::fs::Permissions::from_mode(0o600));
+    }
     Ok(final_path.to_string_lossy().into_owned())
 }

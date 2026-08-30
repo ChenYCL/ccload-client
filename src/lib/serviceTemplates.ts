@@ -79,6 +79,46 @@ const CLIs = {
   grok:     (p) => ['grok',     ['-p', p]],
 };
 
+// 并发上限:每个无头 CLI 会话都在烧钱,事件风暴不该变成账单风暴。
+// 排队而不拒绝 —— webhook 送达方通常有重试,丢任务比慢更糟。
+const MAX_CONCURRENT = Number(process.env.MAX_CONCURRENT) || 3;
+let running = 0;
+const queue = [];
+
+function launch(job) {
+  const [bin, args] = (CLIs[job.cli ?? 'claude'] ?? CLIs.claude)(job.prompt ?? '');
+  let child;
+  try {
+    child = spawn(bin, args, {
+      env: { ...process.env },   // CCLOAD_* 平台变量原样传给 CLI
+      timeout: 10 * 60 * 1000,
+    });
+  } catch (e) {
+    console.error('[webhook] spawn failed:', e.message);
+    finish(job, { code: 127, output: 'spawn failed: ' + e.message });
+    return;
+  }
+  child.on('error', (e) => {          // spawn 后的异步错误(如 CLI 不存在)
+    console.error('[webhook] child error:', e.message);
+    finish(job, { code: 127, output: 'child error: ' + e.message });
+  });
+  let out = '';
+  child.stdout.on('data', (c) => (out += c));
+  child.stderr.on('data', (c) => (out += c));
+  child.on('close', (code) => finish(job, { code, output: out }));
+
+  function finish(job, result) {
+    running--;
+    if (queue.length) launch(queue.shift());
+    const cb = job.callback;
+    if (!cb) return console.log('[webhook] done', result.code, String(result.output).slice(0, 500));
+    fetch(cb, { method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(result) })
+      .catch((e) => console.error('[webhook] callback failed:', e.message));
+  }
+}
+
 http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/health') { res.writeHead(200); return res.end('ok'); }
   if (req.method !== 'POST' || req.url !== '/hook') { res.writeHead(404); return res.end(); }
@@ -86,24 +126,10 @@ http.createServer((req, res) => {
   req.on('data', (c) => (body += c));
   req.on('end', () => {
     let job; try { job = JSON.parse(body); } catch { res.writeHead(400); return res.end('{}'); }
+    if (running >= MAX_CONCURRENT) queue.push(job);
+    else { running++; launch(job); }
     res.writeHead(202, { 'content-type': 'application/json' });
     res.end('{"accepted":true}');
-    const [bin, args] = (CLIs[job.cli ?? 'claude'] ?? CLIs.claude)(job.prompt ?? '');
-    const child = spawn(bin, args, {
-      env: { ...process.env },   // CCLOAD_* 平台变量原样传给 CLI
-      timeout: 10 * 60 * 1000,
-    });
-    let out = '';
-    child.stdout.on('data', (c) => (out += c));
-    child.stderr.on('data', (c) => (out += c));
-    child.on('close', async (code) => {
-      if (!job.callback) return console.log('[webhook] done', code, out.slice(0, 500));
-      try {
-        await fetch(job.callback, { method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ code, output: out.slice(0, 20_000) }) });
-      } catch (e) { console.error('[webhook] callback failed:', e.message); }
-    });
   });
 }).listen(Number(process.env.PORT));
 `;
@@ -121,7 +147,18 @@ function everyMs(expr) {
   return Number(expr) || 3600e3;                        // 也接受毫秒数
 }
 
+let inFlight = false;
 async function analyze() {
+  if (inFlight) return console.log('[cron] skip: 上一轮还没跑完');   // 防堆叠
+  inFlight = true;
+  try {
+    await runOnce();
+  } finally {
+    inFlight = false;
+  }
+}
+
+async function runOnce() {
   // 1) 拉数据:换成你的数据源(截图、行情、日志文件…)
   // 2) 问模型:走 ccload,token 由平台注入
   const r = await fetch(new URL('/v1/chat/completions', process.env.CCLOAD_BASE_URL), {

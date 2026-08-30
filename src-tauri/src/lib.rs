@@ -139,6 +139,10 @@ pub fn run() {
                         let app = app.clone();
                         tauri::async_runtime::spawn(async move {
                             if let Some(state) = app.try_state::<AppState>() {
+                                // 托管的 Node 服务必须一起收：它们持有固定端口，
+                                // 留成孤儿的话下次启动端口被占、起不来，而用户
+                                // 看到的还是「未运行」，无从下手。
+                                state.node_services.stop_all().await;
                                 let _ = state.kernel.stop().await;
                             }
                             app.exit(0);

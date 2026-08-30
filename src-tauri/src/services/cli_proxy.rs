@@ -35,6 +35,11 @@ pub const PROXY_PORT: u16 = 15777;
 /// 逐条转发记录里保留多少条。日志页只回看最近的请求，再多就是白占内存。
 const MAX_RECORDS: usize = 2000;
 
+/// 请求体上限。CLI 的对话请求（含整段上下文）实测最大几百 MB 量级；
+/// 上限挡的是异常与恶意 —— 声明 10GB 的 Content-Length 不该把进程内存
+/// 吃穿。超过就 413，客户端自己会重试或报错，比 OOM 强。
+const MAX_BODY: usize = 512 * 1024 * 1024;
+
 /// 一次转发留下的会话痕迹。内核日志给不了这些，全靠代理这一层。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyRecord {
@@ -442,10 +447,18 @@ async fn handle_conn(
         fwd.push((name.trim().to_string(), value.trim().to_string()));
     }
 
+    if content_length > MAX_BODY {
+        return write_simple(&mut client, 413, "request body too large").await;
+    }
+
     // RFC 9112：chunked 和 Content-Length 同时出现时以 chunked 为准。
     let leftover = buf[header_end..].to_vec();
     let body_bytes: Vec<u8> = if chunked {
-        read_chunked_body(&mut client, leftover, &mut tmp).await?
+        let body = read_chunked_body(&mut client, leftover, &mut tmp).await?;
+        if body.len() > MAX_BODY {
+            return write_simple(&mut client, 413, "request body too large").await;
+        }
+        body
     } else if content_length > 0 {
         let mut body = leftover;
         while body.len() < content_length {
