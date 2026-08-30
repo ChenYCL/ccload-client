@@ -61,11 +61,23 @@ http.createServer((req, res) => {
 /// webhook → 无头 CLI 的事件触发器。收到 POST /hook 就 spawn claude/codex,
 /// LLM 流量走 CCLOAD_BASE_URL(平台注入),结果回 POST 给 body 里的 callback。
 const WEBHOOK_JS = `// Webhook 触发器 —— 收到事件,起无头 CLI 会话处理,结果发回调地址。
-// 触发:POST http://127.0.0.1:<PORT>/hook  body: {"prompt":"...","cli":"claude","callback":"https://..."}
+// 触发:POST http://127.0.0.1:<PORT>/hook
+//   body: {"prompt":"...","cli":"claude|codex|opencode|grok","callback":"https://..."}
 // 模型流量自动走 ccload(env: CCLOAD_BASE_URL / CCLOAD_API_TOKEN 由平台注入)。
+// 注意:这些 CLI 的接管配置里带着 ccload 的凭据 —— 只在跑你自己的任务时用。
 const http = require('http');
 const { spawn } = require('child_process');
-const CLIs = { claude: 'claude', codex: 'codex' };   // 可扩展
+// 四家 CLI 的无头调用形式(实测):
+//   claude   -p <prompt>                      走 ANTHROPIC_BASE_URL
+//   codex    exec --skip-git-repo-check <p>   走 model_providers.ccload
+//   opencode run <prompt>                     走 provider.ccload
+//   grok     -p <prompt>                      走 [model.ccload]
+const CLIs = {
+  claude:   (p) => ['claude',   ['-p', p]],
+  codex:    (p) => ['codex',    ['exec', '--skip-git-repo-check', p]],
+  opencode: (p) => ['opencode', ['run', p]],
+  grok:     (p) => ['grok',     ['-p', p]],
+};
 
 http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/health') { res.writeHead(200); return res.end('ok'); }
@@ -76,8 +88,7 @@ http.createServer((req, res) => {
     let job; try { job = JSON.parse(body); } catch { res.writeHead(400); return res.end('{}'); }
     res.writeHead(202, { 'content-type': 'application/json' });
     res.end('{"accepted":true}');
-    const bin = CLIs[job.cli ?? 'claude'] ?? 'claude';
-    const args = bin === 'codex' ? ['exec', '--skip-git-repo-check', job.prompt] : ['-p', job.prompt];
+    const [bin, args] = (CLIs[job.cli ?? 'claude'] ?? CLIs.claude)(job.prompt ?? '');
     const child = spawn(bin, args, {
       env: { ...process.env },   // CCLOAD_* 平台变量原样传给 CLI
       timeout: 10 * 60 * 1000,

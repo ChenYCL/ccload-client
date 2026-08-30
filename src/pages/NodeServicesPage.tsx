@@ -137,6 +137,20 @@ export function NodeServicesPage() {
         </div>
       </header>
 
+      <div className="rounded-xl border border-border bg-surface-2/40 px-3.5 py-3 text-xs">
+        <div className="font-medium">{t("每个服务会自动收到这些环境变量")}</div>
+        <ul className="mt-1 space-y-0.5 font-mono text-muted">
+          <li>CCLOAD_BASE_URL —— {t("CLI 该走的入口（代理开着指代理，否则指内核）")}</li>
+          <li>CCLOAD_API_TOKEN —— {t("配套凭据；换内核/轮换后自动跟随，不用改脚本")}</li>
+          <li>CCLOAD_CLIENT_BIN —— {t("本客户端二进制路径（想直接调生图 MCP 时用）")}</li>
+        </ul>
+        <p className="mt-1.5 text-amber-700">
+          {t(
+            "凭据只注入到运行中的服务进程：托管的脚本（以及它再启动的东西）都能读到。只托管你自己写的或信得过的脚本；服务配置文件里不存凭据。",
+          )}
+        </p>
+      </div>
+
       {message && (
         <div className="card whitespace-pre-wrap bg-surface-raised px-4 py-3 text-sm text-rose-700">
           {message}
@@ -383,7 +397,12 @@ function ServiceEditor({
           </Field>
         )}
 
-        <Field label={t("环境变量")} hint={t("一行一个 KEY=VALUE。PORT 会自动带上，不用写。")}>
+        <Field
+          label={t("环境变量")}
+          hint={t(
+            "一行一个 KEY=VALUE。PORT、CCLOAD_BASE_URL、CCLOAD_API_TOKEN 由平台自动带上；同名变量写在这里可覆盖平台值。",
+          )}
+        >
           <textarea
             value={envText}
             onChange={(e) => setEnvText(e.target.value)}
