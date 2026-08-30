@@ -1034,4 +1034,34 @@ registerDict("en", {
     "What you ticked above only reaches the file when you press Write / Update on one of these rows",
   "{server} 还没装到任何 CLI —— 只写说明不装服务器，等于教模型去调一个不存在的工具。先到「模型导入」页最下面的「{panel}」装一下。":
     "{server} is not installed on any CLI — writing the guidance without the server teaches the model to call a tool that isn't there. Install it from “{panel}” at the bottom of the Model import page first.",
+
+
+// ---- CLI 代理 / Node 服务 / 用量面板(2026-08 批次) ----
+  "经本地代理接管": "Route CLI through local proxy",
+  "已切到本地代理。还要在下面对每家点一次「写入」才生效。":
+    "Switched to the local proxy. Click Write on each CLI below to apply.",
+  "已切到本地代理。": "Switched to the local proxy.",
+  "已切回直连内核。还要在下面对每家点一次「写入」才生效。":
+    "Switched back to direct kernel. Click Write on each CLI below to apply.",
+  "已切回直连内核。": "Switched back to direct kernel.",
+  "代理未运行": "Proxy not running",
+  "Prompt 缓存窗口升到 1 小时": "Raise prompt-cache TTL to 1 hour",
+  "Node 服务": "Node services",
+  "新建服务": "New service",
+  "从模板新建": "New from template",
+  "空白服务（自己写脚本）": "Blank service (write your own script)",
+  "MCP Hub": "MCP Hub",
+  "Webhook → CLI": "Webhook → CLI",
+  "定时分析": "Scheduled analysis",
+  "已退出": "Exited",
+  "未运行": "Not running",
+  "健康检查未通过": "Health check failing",
+  "已配置的服务": "Configured services",
+  "还没有服务": "No services yet",
+  "入口脚本内容": "Entry script contents",
+  "环境变量": "Environment variables",
+  "CLI 消耗": "CLI spend",
+  "未配对 {n}": "Unmatched {n}",
+  "还没有经代理的请求": "No requests through the proxy yet",
+  "会话（最贵前 10）": "Sessions (top 10 by cost)",
 });

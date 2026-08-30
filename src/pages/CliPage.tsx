@@ -1183,9 +1183,19 @@ function LongCacheCard() {
   const t = useT();
   const qc = useQueryClient();
   const on = useQuery({ queryKey: ["cli-proxy-long-cache"], queryFn: api.cliProxyLongCache });
+  const [warn, setWarn] = useState<string | null>(null);
   const toggle = useMutation({
     mutationFn: api.cliProxySetLongCache,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["cli-proxy-long-cache"] }),
+    onSuccess: (actual) => {
+      qc.invalidateQueries({ queryKey: ["cli-proxy-long-cache"] });
+      // 代理没起来时后端如实返回 false —— 不能让复选框悄悄弹回去,用户会
+      // 以为点了没反应。说清原因。
+      setWarn(
+        actual
+          ? null
+          : "本地代理没在运行,设置没有生效。代理起来后再试(重启客户端或检查 15777 端口)。",
+      );
+    },
   });
   return (
     <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-xl border border-border bg-surface-2/40 px-3.5 py-3">
@@ -1203,6 +1213,7 @@ function LongCacheCard() {
             "默认 5 分钟。1h 档的写入价是 2×（5m 档 1.25×），只适合按小时跑、两轮间隔很久的定时任务 —— 交互式会话开着净亏（实测 98.1% 的请求间隔短于 5 分钟）。",
           )}
         </p>
+        {warn && <p className="mt-1 text-xs text-amber-700">{t(warn)}</p>}
       </div>
     </label>
   );

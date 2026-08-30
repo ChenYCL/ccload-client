@@ -214,7 +214,10 @@ export function NodeServicesPage() {
                       </button>
                     )}
                     <button
-                      onClick={() => setEditing(s)}
+                      onClick={() => {
+                        setEditingScript(undefined);
+                        setEditing(s);
+                      }}
                       className="rounded-lg border border-border bg-surface-raised px-2.5 py-1 text-xs hover:bg-surface-2"
                     >
                       {t("编辑")}

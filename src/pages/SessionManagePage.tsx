@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Loader2, RefreshCw, Trash2 } from "lucide-react";
 import { api } from "../lib/api";
@@ -34,6 +34,10 @@ export function SessionManagePage() {
   const [confirming, setConfirming] = useState(false);
 
   const [query, setQuery] = useState("");
+  // 日志页点会话名跳过来时,在 sessionStorage 里留了要定位的会话 id。
+  // 这里消费它:把查询词设成 uuid 保证它在列表里,再高亮几秒让人看见落在哪。
+  const [focusId, setFocusId] = useState<string | null>(null);
+  const focusRowRef = useRef<HTMLLIElement | null>(null);
   const [project, setProject] = useState("");
   const [sort, setSort] = useState<SessionSort>("oldest");
   const [olderThan, setOlderThan] = useState(30);
@@ -50,6 +54,21 @@ export function SessionManagePage() {
     () => filterSessions(all, { query, project, sort, olderThanDays: olderThan }),
     [all, query, project, sort, olderThan],
   );
+
+  useEffect(() => {
+    const id = sessionStorage.getItem("ccload:focus-session");
+    if (!id) return;
+    sessionStorage.removeItem("ccload:focus-session");
+    setQuery(id);
+    setFocusId(id);
+    const timer = setTimeout(() => setFocusId(null), 5000);
+    return () => clearTimeout(timer);
+  }, []);
+
+  // 定位到的行滚进可视区。
+  useEffect(() => {
+    if (focusId) focusRowRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [focusId, rows.length]);
 
   const selectable = rows.filter((s) => !s.live);
   const selectedRows = selectable.filter((s) => selected.has(s.id));
@@ -226,7 +245,14 @@ export function SessionManagePage() {
 
       <ul className="mt-4 divide-y divide-border/60 rounded-xl border border-border">
         {rows.map((s) => (
-          <li key={s.id} className="flex flex-wrap items-center gap-3 px-3 py-2.5">
+          <li
+            key={s.id}
+            ref={s.id === focusId ? focusRowRef : undefined}
+            className={cn(
+              "flex flex-wrap items-center gap-3 px-3 py-2.5 transition-colors",
+              s.id === focusId && "bg-accent/10",
+            )}
+          >
             <input
               type="checkbox"
               checked={selected.has(s.id)}
