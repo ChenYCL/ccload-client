@@ -53,6 +53,15 @@ pub fn run() {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let state = handle.state::<AppState>();
+                // 远端内核没有进程可管，但也得有人探一次 /health，否则状态停在
+                // Stopped、内核后台页一直显示「未运行」—— 哪怕远端活得好好的。
+                // 只探 Remote：Managed 模式保持「用户点启动才起进程」的现状。
+                // 远端真挂了也不致命，记一行日志即可。
+                if state.settings.read().await.kernel.mode == crate::services::kernel::KernelMode::Remote {
+                    if let Err(e) = state.kernel.start(&state.settings.read().await.kernel, None).await {
+                        tracing::warn!("kernel probe at launch: {e}");
+                    }
+                }
                 if let Err(e) = crate::commands::kernel::ensure_embed_proxy(&state).await {
                     tracing::warn!("embed proxy: {e}");
                 }
@@ -188,6 +197,9 @@ pub fn run() {
             commands::node_services::node_service_status,
             commands::node_services::node_service_write_script,
             commands::kernel::open_admin_window,
+            commands::kernel::admin_dock_show,
+            commands::kernel::admin_dock_bounds,
+            commands::kernel::admin_dock_hide,
             commands::admin::admin_request,
             commands::admin::admin_ping,
             commands::cli::cli_preview,

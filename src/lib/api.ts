@@ -93,6 +93,20 @@ export const api = {
   openAdminWindow: (page?: string) =>
     invoke<void>("open_admin_window", { page: page ?? null }),
 
+  /**
+   * 把内核管理页面停进主窗口内容区的占位元素处（docked 子 webview）。
+   * `rect` 是占位元素相对**窗口内容区**的逻辑坐标。
+   */
+  adminDockShow: (
+    file: string,
+    rect: { x: number; y: number; width: number; height: number },
+  ) => invoke<void>("admin_dock_show", { file, ...rect }),
+  /** 布局变化后的坐标修正。面板不存在时是静默 no-op。 */
+  adminDockBounds: (rect: { x: number; y: number; width: number; height: number }) =>
+    invoke<void>("admin_dock_bounds", rect),
+  /** 离开页面 / 收起时藏起来（不销毁 —— 保留会话与页面状态）。 */
+  adminDockHide: () => invoke<void>("admin_dock_hide"),
+
   settingsGet: () => invoke<AppSettings>("settings_get"),
   settingsSetKernel: (kernel: KernelConfig) =>
     invoke<AppSettings>("settings_set_kernel", { kernel }),

@@ -104,24 +104,13 @@ pub async fn open_admin_window(
 ) -> AppResult<()> {
     let base = state.settings.read().await.kernel.base_url();
     let file = page.unwrap_or_else(|| "channels.html".to_string());
-    let url = format!("{base}/web/{file}");
-    // `base` 来自设置页里那个自由文本框，不是壳体生成的。解析一次，顺便挡掉
-    // 非 http(s) 的 scheme —— 下面导航要用的也正是这个解析结果。
-    let parsed = tauri::Url::parse(&url)
-        .map_err(|e| crate::error::AppError::Config(format!("内核地址不是合法 URL：{e}")))?;
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return Err(crate::error::AppError::Config(format!(
-            "内核地址的协议必须是 http 或 https，当前是 {}",
-            parsed.scheme()
-        ))
-        .into());
-    }
+    let parsed = admin_page_url(&base, &file)?;
 
     let terr = |e: tauri::Error| crate::error::AppError::Config(e.to_string());
     if let Some(w) = app.get_webview_window("admin") {
         // Same target page? Keep it (preserves login/session state);
         // otherwise navigate, then raise the window.
-        if w.url().map(|u| u.to_string() != url).unwrap_or(true) {
+        if w.url().map(|u| u != parsed).unwrap_or(true) {
             // 用 navigate 而不是 eval("location.replace('…')")：那条路会把用户
             // 输入的地址插进一段单引号 JS 字面量里，地址里有个 `'` 就能在这个
             // **已登录的管理窗口**里执行任意脚本，而管理会话的 token 能直接调
@@ -137,14 +126,8 @@ pub async fn open_admin_window(
     // 只在真要新建窗口时才登 —— 复用那条路上窗口里已经有会话了，白登一次没意义。
     let session = admin_web_session(&state).await;
 
-    tauri::WebviewWindowBuilder::new(
-        &app,
-        "admin",
-        tauri::WebviewUrl::External(url.parse().map_err(|e| {
-            crate::error::AppError::Config(format!("bad admin url: {e}"))
-        })?),
-    )
-    .title("ccLoad 管理后台")
+    tauri::WebviewWindowBuilder::new(&app, "admin", tauri::WebviewUrl::External(parsed))
+        .title("ccLoad 管理后台")
     .inner_size(1180.0, 800.0)
     .min_inner_size(880.0, 560.0)
     .initialization_script(admin_session_script(session.as_ref()))
@@ -177,6 +160,125 @@ async fn admin_web_session(state: &AppState) -> Option<crate::services::admin::W
         }
     }
 }
+
+// ---- 内嵌（docked）管理面板 ------------------------------------------------
+//
+// 独立窗口之外的第二条显示路径：把内核页面作为一个子 webview 停进主窗口的
+// 内容区（`window.add_child`，需要 Cargo.toml 里的 `unstable` feature）。
+// 子 webview 是独立的 web view 而不是 frame，`X-Frame-Options: DENY` 只挡
+// framing，管不到它 —— 所以这条路连 embed_proxy 都不用借，直连内核 origin，
+// 和独立窗口走的是同一条已被验证的路。
+
+/// 内嵌面板用的子 webview 标签。一个主窗口同时只挂一个：切页就是让这同一个
+/// webview `navigate` 过去，会话、滚动位置之外的登录态都留在里面。
+pub const DOCKED_ADMIN_LABEL: &str = "admin-docked";
+
+/// 校验并拼出 `{base}/web/{file}`。独立窗口和内嵌面板共用 —— 非法 scheme 的
+/// 检查在这里做一次，别处再拼 URL 就是拿现成的。
+fn admin_page_url(
+    base_url: &str,
+    file: &str,
+) -> Result<tauri::Url, crate::error::AppError> {
+    let url = tauri::Url::parse(&format!("{base_url}/web/{file}"))
+        .map_err(|e| crate::error::AppError::Config(format!("内核地址不是合法 URL：{e}")))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(crate::error::AppError::Config(format!(
+            "内核地址的协议必须是 http 或 https，当前是 {}",
+            url.scheme()
+        )));
+    }
+    Ok(url)
+}
+
+/// 在主窗口内容区的预留位置挂出（或更新）内核管理页面。
+///
+/// `x`/`y`/`width`/`height` 是**逻辑坐标**，由前端用 getBoundingClientRect
+/// 算出来 —— 占位元素在文档里的位置，就是子 webview 该待的位置。坐标跨进程
+/// 传一次有延迟，布局变化时前端会重算重发；秒级误差肉眼不可见，不用追帧。
+#[tauri::command]
+pub async fn admin_dock_show(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    file: String,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> AppResult<()> {
+    let base = state.settings.read().await.kernel.base_url();
+    let url = admin_page_url(&base, &file)?;
+
+    // add_child 定义在 Window 上（unstable feature 的 cfg 也挂在它的 impl 上）。
+    // 主窗口本身是 WebviewWindow，Manager::get_window 拿到的才是 Window 本体。
+    let Some(main_window) = app.get_window("main") else {
+        return Err(crate::error::AppError::Config("main window not found".into()).into());
+    };
+
+    let bounds = tauri::Rect {
+        position: tauri::LogicalPosition::new(x, y).into(),
+        size: tauri::LogicalSize::new(width, height).into(),
+    };
+
+    if let Some(webview) = app.get_webview(DOCKED_ADMIN_LABEL) {
+        // 同页就只挪位置；不同页先导航。顺序反过来会在挪完之后闪一下旧页。
+        if webview.url().map(|u| u != url).unwrap_or(true) {
+            webview.navigate(url).map_err(|e| crate::error::AppError::Config(e.to_string()))?;
+        }
+        webview
+            .set_bounds(bounds)
+            .map_err(|e| crate::error::AppError::Config(e.to_string()))?;
+        webview
+            .show()
+            .map_err(|e| crate::error::AppError::Config(e.to_string()))?;
+        return Ok(());
+    }
+
+    // 只在真要新建时才登 —— 和独立窗口同一个理由：里面已经有会话的话，白登一次。
+    let session = admin_web_session(&state).await;
+    let webview = tauri::WebviewBuilder::new(DOCKED_ADMIN_LABEL, tauri::WebviewUrl::External(url))
+        .initialization_script(admin_session_script(session.as_ref()));
+    // add_child 必须在主线程上跑（官方示例就是异步 command 里直接调）；
+    // Windows 上同步 command 里调会撞 Webview2 的死锁，这里是 async command，正好避开。
+    main_window
+        .add_child(webview, tauri::LogicalPosition::new(x, y), tauri::LogicalSize::new(width, height))
+        .map_err(|e| crate::error::AppError::Config(e.to_string()))?;
+    Ok(())
+}
+
+/// 内嵌面板的坐标修正（窗口 resize / 侧栏折叠 / 滚动后的重新落位）。
+/// 只挪不导航 —— 面板已经在了，这里只是跟上布局。
+#[tauri::command]
+pub async fn admin_dock_bounds(
+    app: AppHandle,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> AppResult<()> {
+    let Some(webview) = app.get_webview(DOCKED_ADMIN_LABEL) else {
+        return Ok(()); // 面板还没挂出来，前端正常流里会先走 show；静默即可。
+    };
+    webview
+        .set_bounds(tauri::Rect {
+            position: tauri::LogicalPosition::new(x, y).into(),
+            size: tauri::LogicalSize::new(width, height).into(),
+        })
+        .map_err(|e| crate::error::AppError::Config(e.to_string()))?;
+    Ok(())
+}
+
+/// 收起 / 离开页面时藏起来。销毁留给应用退出 —— 反复建拆子 webview 在 macOS
+/// 上正是当年「白屏后冻结」传说里最可疑的一环，不碰它。
+#[tauri::command]
+pub async fn admin_dock_hide(app: AppHandle) -> AppResult<()> {
+    if let Some(webview) = app.get_webview(DOCKED_ADMIN_LABEL) {
+        webview
+            .hide()
+            .map_err(|e| crate::error::AppError::Config(e.to_string()))?;
+    }
+    Ok(())
+}
+
 
 /// 把会话写进管理窗口的 localStorage，键名与内核 Web UI 的 `storeWebSession`
 /// 一致（`vendor/ccLoad/web/assets/js/web-auth.js`）。
@@ -307,6 +409,25 @@ pub async fn kernel_config(state: State<'_, AppState>) -> AppResult<KernelConfig
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// URL 是唯一由用户输入（远端地址）拼出来的部分。scheme 不是 http(s) 时
+    /// 必须在这里被拒 —— 子 webview / 独立窗口都会拿这个结果去导航，放过去
+    /// 就等于让一个远程地址成为已登录管理会话的宿主。
+    #[test]
+    fn admin_page_url_rejects_non_http_schemes() {
+        assert!(admin_page_url("http://127.0.0.1:15722", "channels.html").is_ok());
+        let remote = admin_page_url("https://user-ccload.example.com", "logs.html").unwrap();
+        assert_eq!(
+            remote.as_str(),
+            "https://user-ccload.example.com/web/logs.html"
+        );
+        for evil in ["file:///etc", "javascript:alert(1)", "ftp://x"] {
+            assert!(
+                admin_page_url(evil, "channels.html").is_err(),
+                "{evil} must be rejected"
+            );
+        }
+    }
 
     /// Only a real 401 means "the kernel rejects this token". Everything else
     /// leaves it presumed good.
