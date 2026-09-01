@@ -243,6 +243,16 @@ function CliCard({
               {t("地址已指向内核，但令牌与当前内核不匹配 —— 调用会 401，请重新写入。")}
             </div>
           )}
+          {!isClaude && (
+            <div className="mt-3 max-w-md">
+              <DefaultModelPicker
+                target={p.target}
+                current={p.current_model}
+                options={options}
+                onOptionsChange={onOptionsChange}
+              />
+            </div>
+          )}
           {result && (
             <div
               role="status"
@@ -405,7 +415,7 @@ function KnownKeysEditor({
   // Tier keys render as dedicated inputs above; skip them here.
   const q = filter.trim().toLowerCase();
   const rows = keys.data.filter((k) => {
-    if (TIER_KEYS.includes(k.key)) return false;
+    if (hiddenFormKeys(target).includes(k.key)) return false;
     if (!q) return true;
     return (
       k.key.toLowerCase().includes(q) ||
@@ -416,7 +426,7 @@ function KnownKeysEditor({
   return (
     <div>
       <div className="mb-2 text-xs text-muted">
-        {catalogHint(target, keys.data.filter((k) => !TIER_KEYS.includes(k.key)).length)}
+        {catalogHint(target, keys.data.filter((k) => !hiddenFormKeys(target).includes(k.key)).length)}
       </div>
       {keys.data.length > 6 && (
         <TextInput
@@ -563,6 +573,93 @@ const TIER_KEYS = [
   "ANTHROPIC_DEFAULT_FABLE_MODEL",
 ];
 
+/// Dedicated ComboBox above the generic list — skip these or they show twice.
+function hiddenFormKeys(target: CliTarget): string[] {
+  switch (target) {
+    case "claude-code":
+      return [...TIER_KEYS];
+    case "codex":
+      return ["model"];
+    case "gemini-cli":
+      return ["model.name", "GEMINI_MODEL"];
+    case "opencode":
+      return ["model"];
+    default:
+      return [];
+  }
+}
+
+/// One combo at the top of 高级配置, like Claude's tier grid: pick the kernel
+/// alias this CLI should send. Full catalogs still live on 模型导入.
+function DefaultModelPicker({
+  target,
+  current,
+  options,
+  onOptionsChange,
+}: {
+  target: CliTarget;
+  current?: string | null;
+  options: TakeoverOptions;
+  onOptionsChange: (o: TakeoverOptions) => void;
+}) {
+  const t = useT();
+  if (target === "claude-code") return null;
+
+  const spec: {
+    label: string;
+    hint: string;
+    value: string | undefined;
+    set: (v: string) => void;
+  } | null = (() => {
+    switch (target) {
+      case "codex":
+        return {
+          label: t("模型"),
+          hint: t("写入 config.toml 的 model。其它模型用 codex --profile，或去「模型导入」加 profile。"),
+          value: options.codex_model,
+          set: (v) => onOptionsChange({ ...options, codex_model: v }),
+        };
+      case "gemini-cli":
+        return {
+          label: t("模型"),
+          hint: t("Gemini CLI 只有当前这一个槽位（model.name）。没有可追加的目录。"),
+          value: options.gemini_model,
+          set: (v) => onOptionsChange({ ...options, gemini_model: v }),
+        };
+      case "grok-build":
+        return {
+          label: t("模型"),
+          hint: t("写入后新会话走这个内核别名。要让 /model 里也能切 opus-5 / glm-5.3-flash，再到「模型导入」勾上 Grok Build。"),
+          value: options.grok_model,
+          set: (v) => onOptionsChange({ ...options, grok_model: v }),
+        };
+      case "opencode":
+        return {
+          label: t("模型"),
+          hint: t("写成 ccload/别名。其它模型去「模型导入」合并进 provider.ccload.models。"),
+          value: options.opencode_model,
+          set: (v) => onOptionsChange({ ...options, opencode_model: v }),
+        };
+      default:
+        return null;
+    }
+  })();
+  if (!spec) return null;
+
+  return (
+    <div className="mb-4">
+      <ModelField
+        label={spec.label}
+        target={target}
+        current={current}
+        value={spec.value}
+        onChange={spec.set}
+      />
+      <p className="mt-1 text-[10px] leading-relaxed text-muted">{spec.hint}</p>
+    </div>
+  );
+}
+
 /// A tier input that echoes what the machine already has. `value` is the
 /// pending edit (undefined = untouched); the current on-disk value shows
 /// through when untouched, so the field is a view of reality rather than an
@@ -694,12 +791,15 @@ function FallbackFields({
 function ModelField({
   label,
   envKey,
+  current: currentProp,
   target,
   value,
   onChange,
 }: {
   label: string;
-  envKey: string;
+  envKey?: string;
+  /** On-disk value from takeover preview, when the key is not in cliEnvKeys. */
+  current?: string | null;
   target: CliTarget;
   value: string | undefined;
   onChange: (v: string) => void;
@@ -708,13 +808,17 @@ function ModelField({
   const keys = useQuery({
     queryKey: ["cli-env-keys", target],
     queryFn: () => api.cliEnvKeys(target),
+    enabled: currentProp === undefined && !!envKey,
   });
   const channels = useQuery({
     queryKey: ["channels"],
     queryFn: () => api.admin<ChannelModels[]>("GET", "channels"),
   });
   const aliases = kernelAliases(channels.data?.data);
-  const current = keys.data?.find((k) => k.key === envKey)?.current ?? null;
+  const fromKeys = envKey
+    ? (keys.data?.find((k) => k.key === envKey)?.current ?? null)
+    : null;
+  const current = currentProp !== undefined ? currentProp ?? null : fromKeys;
   const shown = value ?? current ?? "";
   const dirty = value !== undefined && value !== (current ?? "");
 

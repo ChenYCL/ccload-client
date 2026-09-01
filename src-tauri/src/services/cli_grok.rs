@@ -70,6 +70,17 @@ pub fn apply(
     endpoint: &str,
     api_token: &str,
 ) -> Result<Vec<String>, AppError> {
+    apply_with_model(root, endpoint, api_token, None)
+}
+
+/// `model` is the kernel alias the ccload profile should send. `None` keeps
+/// inheriting whatever the user last picked in Grok's `/model`.
+pub fn apply_with_model(
+    root: &ConfigRoot,
+    endpoint: &str,
+    api_token: &str,
+    model: Option<&str>,
+) -> Result<Vec<String>, AppError> {
     let path = root.join(".grok/config.toml");
     let raw = if path.exists() {
         std::fs::read_to_string(&path)?
@@ -83,7 +94,10 @@ pub fn apply(
     let profile = existing_profile(&doc).unwrap_or(PROFILE).to_string();
     // Both read before the writers below clobber `default` and the profile's
     // base_url.
-    let inherited = inherited_model(&doc, &profile);
+    let picked = model.map(str::trim).filter(|s| !s.is_empty());
+    let inherited = picked
+        .map(|s| s.to_string())
+        .or_else(|| inherited_model(&doc, &profile));
     let previous = profile_endpoint(&doc, &profile);
     ensure_models_default(&mut doc, &profile);
     let routed = upsert_model_table(
@@ -94,7 +108,15 @@ pub fn apply(
         api_token,
     )?;
     if routed != profile {
-        override_builtin(&mut doc, &routed, endpoint, api_token)?;
+        if is_grok_builtin(&routed) {
+            override_builtin(&mut doc, &routed, endpoint, api_token)?;
+        } else {
+            // A non-grok alias (opus-5, glm-5.3-flash[1M], …) has no built-in
+            // catalog to inherit. Write a full custom table so `/model` and
+            // `/effort` both work without a separate import.
+            let w = crate::services::context_window::parse_window(&routed) as i64;
+            write_catalog_entry(&mut doc, &routed, endpoint, api_token, Some(w))?;
+        }
     }
     if let Some(previous) = previous {
         resync_previous_overrides(&mut doc, &previous, endpoint, api_token)?;
@@ -102,6 +124,39 @@ pub fn apply(
 
     write_atomic(&path, &doc.to_string())?;
     Ok(vec![path.display().to_string()])
+}
+
+/// The id Grok will send, not the profile name. `models.default = "ccload"`
+/// plus `[model.ccload].model = "glm-5.3-flash[1M]"` should report the latter.
+pub fn current_model(root: &ConfigRoot) -> Option<String> {
+    let raw = std::fs::read_to_string(root.join(".grok/config.toml")).ok()?;
+    let doc: toml_edit::DocumentMut = raw.parse().ok()?;
+    let default = doc
+        .get("models")?
+        .get("default")?
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    if let Some(m) = doc
+        .get("model")
+        .and_then(|t| t.get(default))
+        .and_then(|t| t.get("model"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return Some(m.to_string());
+    }
+    Some(default.to_string())
+}
+
+fn is_grok_builtin(alias: &str) -> bool {
+    let n = match alias.rsplit_once('/') {
+        Some((_, rest)) if !rest.is_empty() => rest,
+        _ => alias,
+    };
+    let n = n.to_ascii_lowercase();
+    n == "grok" || n.starts_with("grok-")
 }
 
 fn trimmed(url: &str) -> &str {

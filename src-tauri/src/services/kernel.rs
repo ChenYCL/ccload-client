@@ -17,7 +17,7 @@ use std::time::Duration;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use tokio::process::{Child, Command};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::error::AppError;
 
@@ -44,6 +44,13 @@ pub struct KernelConfig {
     pub admin_password: String,
     /// Where the kernel keeps its SQLite file (managed mode only).
     pub data_dir: Option<PathBuf>,
+    /// How to reach a *remote* kernel when the office network cannot.
+    /// `http://` / `https://` / `socks5://127.0.0.1:1080` (`ssh -D` / Termius).
+    /// Empty = direct (and we still ignore the system `HTTP_PROXY` — that
+    /// path timed out against remote kernels and looked like a rejected token).
+    /// Managed/loopback ignores this.
+    #[serde(default)]
+    pub outbound_proxy: Option<String>,
 }
 
 /// Whether two configs point at a different kernel *instance* (mode, port
@@ -63,6 +70,7 @@ impl Default for KernelConfig {
             remote_url: None,
             admin_password: generate_password(),
             data_dir: None,
+            outbound_proxy: None,
         }
     }
 }
@@ -89,6 +97,66 @@ impl KernelConfig {
     }
 }
 
+/// Options for [`http_client_for_kernel`]. CLI proxy wants no response
+/// timeout (SSE can run minutes); admin/health want a 30s cap.
+pub struct HttpClientOpts {
+    pub timeout: Option<Duration>,
+    pub connect_timeout: Duration,
+    /// When no explicit `outbound_proxy` is set: follow `HTTP_PROXY` or not.
+    /// Admin/health must not — a system proxy once timed out against a remote
+    /// kernel and looked like a rejected token. The CLI proxy historically
+    /// did follow it.
+    pub follow_system_proxy: bool,
+}
+
+fn direct_loopback_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .expect("build reqwest client")
+}
+
+/// `socks5://127.0.0.1:1080` / `http://127.0.0.1:7890`. Empty is `Ok(None)`.
+pub fn parse_outbound_proxy(raw: &str) -> Result<Option<reqwest::Proxy>, AppError> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return Ok(None);
+    }
+    let scheme = s.split("://").next().unwrap_or("").to_ascii_lowercase();
+    if !matches!(scheme.as_str(), "http" | "https" | "socks5" | "socks5h") {
+        return Err(AppError::Config(
+            "出口代理只认 http://、https://、socks5://（Termius / ssh -D 开出来的本地 SOCKS）".into(),
+        ));
+    }
+    reqwest::Proxy::all(s).map(Some).map_err(|e| {
+        AppError::Config(format!("出口代理地址无效：{e}"))
+    })
+}
+
+/// HTTP client used to talk to the kernel (admin, health, CLI/embed proxies).
+pub fn http_client_for_kernel(
+    cfg: &KernelConfig,
+    opts: HttpClientOpts,
+) -> Result<reqwest::Client, AppError> {
+    let mut b = reqwest::Client::builder().connect_timeout(opts.connect_timeout);
+    if let Some(t) = opts.timeout {
+        b = b.timeout(t);
+    }
+    b = b.pool_idle_timeout(Duration::from_secs(90));
+    if cfg.mode == KernelMode::Managed {
+        b = b.no_proxy();
+    } else if let Some(p) = parse_outbound_proxy(cfg.outbound_proxy.as_deref().unwrap_or(""))? {
+        // Explicit proxy + ignore the system one so Clash/office HTTP_PROXY
+        // cannot steal the connection and 502 it.
+        b = b.no_proxy().proxy(p);
+    } else if !opts.follow_system_proxy {
+        b = b.no_proxy();
+    }
+    b.build()
+        .map_err(|e| AppError::Config(format!("build http client: {e}")))
+}
+
 fn generate_password() -> String {
     const CHARS: &[u8] = b"abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
     let mut rng = rand::thread_rng();
@@ -109,28 +177,35 @@ pub enum KernelStatus {
 pub struct Kernel {
     child: Mutex<Option<Child>>,
     status: Mutex<KernelStatus>,
-    http: reqwest::Client,
+    http: RwLock<reqwest::Client>,
 }
 
 impl Kernel {
     pub fn new() -> Arc<Self> {
-        // no_proxy: the kernel is on loopback, and a system HTTP_PROXY (common
-        // on this class of machine) would otherwise swallow admin calls.
-        let http = reqwest::Client::builder()
-            .no_proxy()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .expect("build reqwest client");
-
         Arc::new(Self {
             child: Mutex::new(None),
             status: Mutex::new(KernelStatus::Stopped),
-            http,
+            http: RwLock::new(direct_loopback_client()),
         })
     }
 
-    pub fn http(&self) -> &reqwest::Client {
-        &self.http
+    pub async fn http(&self) -> reqwest::Client {
+        self.http.read().await.clone()
+    }
+
+    /// Rebuild the admin/health client after connection settings change.
+    pub async fn rebuild_http(&self, cfg: &KernelConfig) -> Result<(), AppError> {
+        *self.http.write().await = http_client_for_kernel(
+            cfg,
+            HttpClientOpts {
+                timeout: Some(Duration::from_secs(30)),
+                connect_timeout: Duration::from_secs(5),
+                // Admin calls to a managed kernel are loopback; never follow
+                // HTTP_PROXY. Remote uses the explicit outbound proxy only.
+                follow_system_proxy: false,
+            },
+        )?;
+        Ok(())
     }
 
     pub async fn status(&self) -> KernelStatus {
@@ -148,6 +223,7 @@ impl Kernel {
         if let KernelStatus::Running { .. } = self.status().await {
             return Ok(());
         }
+        self.rebuild_http(cfg).await?;
         self.set_status(KernelStatus::Starting).await;
 
         if cfg.mode == KernelMode::Managed {
@@ -225,7 +301,7 @@ impl Kernel {
                 }
             }
 
-            if let Ok(resp) = self.http.get(&health).send().await {
+            if let Ok(resp) = self.http().await.get(&health).send().await {
                 if resp.status().is_success() {
                     return Ok(self.probe_version(cfg).await);
                 }
@@ -244,7 +320,7 @@ impl Kernel {
     /// Best-effort version read; an unknown version must not block startup.
     async fn probe_version(&self, cfg: &KernelConfig) -> String {
         let url = format!("{}/public/version", cfg.base_url());
-        let Ok(resp) = self.http.get(&url).send().await else {
+        let Ok(resp) = self.http().await.get(&url).send().await else {
             return "unknown".into();
         };
         let Ok(body) = resp.json::<serde_json::Value>().await else {
@@ -279,6 +355,7 @@ mod tests {
             remote_url: remote.map(str::to_string),
             admin_password: "x".into(),
             data_dir: None,
+            outbound_proxy: None,
         }
     }
 
@@ -312,5 +389,20 @@ mod tests {
         let mut e = d.clone();
         e.remote_url = Some("https://other.example".into());
         assert!(kernel_identity_changed(&d, &e));
+
+        // Outbound proxy is a path to the same instance, not a new one.
+        let mut f = d.clone();
+        f.outbound_proxy = Some("socks5://127.0.0.1:1080".into());
+        assert!(!kernel_identity_changed(&d, &f));
+    }
+
+    #[test]
+    fn outbound_proxy_rejects_unknown_schemes() {
+        assert!(parse_outbound_proxy("").unwrap().is_none());
+        assert!(parse_outbound_proxy("  ").unwrap().is_none());
+        assert!(parse_outbound_proxy("socks5://127.0.0.1:1080").unwrap().is_some());
+        assert!(parse_outbound_proxy("http://127.0.0.1:7890").unwrap().is_some());
+        let err = parse_outbound_proxy("ftp://127.0.0.1:21").unwrap_err();
+        assert!(err.to_string().contains("socks5"), "{err}");
     }
 }

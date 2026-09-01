@@ -286,7 +286,8 @@ fn extra_env_writes_official_knobs_for_every_cli() {
         "m1",
         &bk,
         TakeoverOptions {
-            extra_env: Some(pair("model.name", "gemini-3")),
+            gemini_model: Some("gemini-3".into()),
+            extra_env: Some(pair("general.vimMode", "true")),
             ..Default::default()
         },
     )
@@ -294,6 +295,7 @@ fn extra_env_writes_official_knobs_for_every_cli() {
     let gemini: serde_json::Value =
         serde_json::from_str(&read(&root, ".gemini/settings.json")).unwrap();
     assert_eq!(gemini.pointer("/model/name").unwrap(), "gemini-3");
+    assert!(read(&root, ".gemini/.env").contains("GEMINI_MODEL=gemini-3"));
 
     apply_takeover(
         &root,
@@ -303,6 +305,7 @@ fn extra_env_writes_official_knobs_for_every_cli() {
         "o1",
         &bk,
         TakeoverOptions {
+            opencode_model: Some("kimi-k3".into()),
             extra_env: Some(pair("small_model", "ccload/haiku")),
             ..Default::default()
         },
@@ -311,7 +314,11 @@ fn extra_env_writes_official_knobs_for_every_cli() {
     let oc: serde_json::Value =
         serde_json::from_str(&read(&root, ".config/opencode/opencode.json")).unwrap();
     assert_eq!(oc.pointer("/small_model").unwrap(), "ccload/haiku");
-    assert!(oc.pointer("/provider/ccload").is_some());
+    assert_eq!(oc.pointer("/model").unwrap(), "ccload/kimi-k3");
+    assert_eq!(
+        oc.pointer("/provider/ccload/models/kimi-k3/name").unwrap(),
+        "kimi-k3"
+    );
 }
 
 /// An emptied field in the advanced form means "leave it unset". Writing `""`
@@ -369,13 +376,11 @@ fn claude_extra_env_skips_empty_values_and_host_owned_keys() {
     );
 }
 
-/// `model` is dedicated to Codex's own TakeoverOptions slot. Grok has no such
-/// slot, so its `model` key is the user's to set.
+/// extra_env `model` used to smash the `[model.*]` table into a string.
+/// The dedicated combo writes the routed id instead.
 #[test]
-fn grok_extra_env_keeps_a_custom_model_key() {
+fn grok_model_combo_routes_the_ccload_profile() {
     let (_keep, root, bk) = sandbox();
-    let mut extra = std::collections::BTreeMap::new();
-    extra.insert("model".to_string(), "grok-4-fast".to_string());
     apply_takeover(
         &root,
         CliTarget::GrokBuild,
@@ -384,14 +389,26 @@ fn grok_extra_env_keeps_a_custom_model_key() {
         "g2",
         &bk,
         TakeoverOptions {
-            extra_env: Some(extra),
+            grok_model: Some("glm-5.3-flash[1M]".into()),
             ..Default::default()
         },
     )
     .unwrap();
     let raw = read(&root, ".grok/config.toml");
     let doc: toml_edit::DocumentMut = raw.parse().unwrap();
-    assert_eq!(doc["model"].as_str(), Some("grok-4-fast"), "{raw}");
+    assert_eq!(doc["models"]["default"].as_str(), Some("ccload"));
+    assert_eq!(
+        doc["model"]["ccload"]["model"].as_str(),
+        Some("glm-5.3-flash[1M]")
+    );
+    assert_eq!(
+        doc["model"]["glm-5.3-flash[1M]"]["api_backend"].as_str(),
+        Some("chat_completions")
+    );
+    assert_eq!(
+        doc["model"]["glm-5.3-flash[1M]"]["supports_reasoning_effort"].as_bool(),
+        Some(true)
+    );
 }
 
 fn takeover_id(root: &ConfigRoot, bk: &BackupStore, target: CliTarget, id: &str) -> String {

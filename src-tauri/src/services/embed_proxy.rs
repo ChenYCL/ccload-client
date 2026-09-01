@@ -25,6 +25,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
 
 use crate::error::AppError;
+use crate::services::kernel::{http_client_for_kernel, HttpClientOpts, KernelConfig};
 
 /// Headers removed from kernel responses before they reach the iframe.
 /// Everything else (Set-Cookie, Content-Type, cache headers) passes through.
@@ -36,6 +37,7 @@ type SharedTarget = Arc<RwLock<String>>;
 
 pub struct EmbedProxy {
     target: SharedTarget,
+    http: Arc<RwLock<reqwest::Client>>,
     /// Random per-launch path prefix; the iframe uses `/embed-<token>/...`.
     token: String,
     handle: tokio::task::JoinHandle<()>,
@@ -44,7 +46,7 @@ pub struct EmbedProxy {
 
 impl EmbedProxy {
     /// Bind a loopback listener and start serving.
-    pub async fn start(target_base_url: &str) -> Result<Arc<Self>, AppError> {
+    pub async fn start(cfg: &KernelConfig) -> Result<Arc<Self>, AppError> {
         let token = random_token();
 
         let mut listener = None;
@@ -60,8 +62,10 @@ impl EmbedProxy {
         let (listener, port) =
             listener.ok_or_else(|| AppError::Config("no free port for embed proxy".into()))?;
 
-        let target: SharedTarget = Arc::new(RwLock::new(target_base_url.to_string()));
+        let target: SharedTarget = Arc::new(RwLock::new(cfg.base_url()));
+        let http = Arc::new(RwLock::new(embed_http_client(cfg)?));
         let target_for_task = Arc::clone(&target);
+        let http_for_task = Arc::clone(&http);
         let token_arc = Arc::new(token.clone());
         let handle = tokio::spawn(async move {
             loop {
@@ -69,15 +73,17 @@ impl EmbedProxy {
                     break;
                 };
                 let target = Arc::clone(&target_for_task);
+                let http = Arc::clone(&http_for_task);
                 let token = Arc::clone(&token_arc);
                 tokio::spawn(async move {
-                    let _ = handle_conn(stream, target, token).await;
+                    let _ = handle_conn(stream, target, token, http).await;
                 });
             }
         });
 
         Ok(Arc::new(Self {
             target,
+            http,
             token,
             handle,
             port,
@@ -85,8 +91,10 @@ impl EmbedProxy {
     }
 
     /// Point the proxy at a different kernel origin (settings changed).
-    pub async fn retarget(&self, base_url: &str) {
-        *self.target.write().await = base_url.to_string();
+    pub async fn retarget(&self, cfg: &KernelConfig) -> Result<(), AppError> {
+        *self.target.write().await = cfg.base_url();
+        *self.http.write().await = embed_http_client(cfg)?;
+        Ok(())
     }
 
     /// Base URL for the iframe: `http://127.0.0.1:<port>/embed-<token>`.
@@ -130,6 +138,7 @@ async fn handle_conn(
     mut client: TcpStream,
     target: SharedTarget,
     token: Arc<String>,
+    http: Arc<RwLock<reqwest::Client>>,
 ) -> std::io::Result<()> {
     // Read until end of headers, then any Content-Length body.
     let mut buf: Vec<u8> = Vec::with_capacity(8 * 1024);
@@ -245,7 +254,8 @@ async fn handle_conn(
     let Ok(method_parsed) = method.parse::<reqwest::Method>() else {
         return write_simple(&mut client, 400, "bad method").await;
     };
-    let mut req = kernel_http().request(method_parsed, &url);
+    let http = http.read().await.clone();
+    let mut req = http.request(method_parsed, &url);
     for (name, value) in &fwd_headers {
         if let Ok(hv) = reqwest::header::HeaderValue::from_str(value) {
             req = req.header(name, hv);
@@ -314,12 +324,15 @@ fn find_header_end(buf: &[u8]) -> Option<usize> {
     buf.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4)
 }
 
-fn kernel_http() -> reqwest::Client {
-    // 5s connect timeout; body streaming is unbounded.
-    reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(5))
-        .build()
-        .expect("static client")
+fn embed_http_client(cfg: &KernelConfig) -> Result<reqwest::Client, AppError> {
+    http_client_for_kernel(
+        cfg,
+        HttpClientOpts {
+            timeout: None,
+            connect_timeout: std::time::Duration::from_secs(5),
+            follow_system_proxy: false,
+        },
+    )
 }
 
 async fn write_simple(client: &mut TcpStream, code: u16, text: &str) -> std::io::Result<()> {
@@ -358,6 +371,16 @@ fn http_reason(code: u16) -> &'static str {
 mod tests {
     use super::*;
 
+    fn test_http() -> Arc<RwLock<reqwest::Client>> {
+        Arc::new(RwLock::new(
+            reqwest::Client::builder()
+                .no_proxy()
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .build()
+                .unwrap(),
+        ))
+    }
+
     #[tokio::test]
     async fn strips_frame_headers_and_forwards_body() {
         // In-process fake kernel: one request, one response with the hostile
@@ -393,7 +416,7 @@ mod tests {
         let proxy_task = tokio::spawn(async move {
             let (sock, _) = proxy_listener.accept().await.unwrap();
             let token = Arc::clone(&token);
-            handle_conn(sock, target, token).await.unwrap();
+            handle_conn(sock, target, token, test_http()).await.unwrap();
         });
 
         let mut c = TcpStream::connect(("127.0.0.1", proxy_port)).await.unwrap();
@@ -463,7 +486,7 @@ mod tests {
         let proxy_port = proxy_listener.local_addr().unwrap().port();
         let task = tokio::spawn(async move {
             let (sock, _) = proxy_listener.accept().await.unwrap();
-            handle_conn(sock, target, token).await.unwrap();
+            handle_conn(sock, target, token, test_http()).await.unwrap();
         });
 
         let req = format!(
@@ -492,7 +515,7 @@ mod tests {
         let token = Arc::new("right".to_string());
         let task = tokio::spawn(async move {
             let (sock, _) = proxy_listener.accept().await.unwrap();
-            handle_conn(sock, target, token).await.unwrap();
+            handle_conn(sock, target, token, test_http()).await.unwrap();
         });
         let mut c = TcpStream::connect(("127.0.0.1", proxy_port)).await.unwrap();
         c.write_all(b"GET /embed-wrong/x HTTP/1.1\r\nHost: x\r\n\r\n")
@@ -547,7 +570,7 @@ mod tests {
                 let target = Arc::clone(&target);
                 let token = Arc::clone(&token);
                 tokio::spawn(async move {
-                    let _ = handle_conn(sock, target, token).await;
+                    let _ = handle_conn(sock, target, token, test_http()).await;
                 });
             }
         });
@@ -593,7 +616,7 @@ mod tests {
         let token = Arc::new("right".to_string());
         let task = tokio::spawn(async move {
             let (sock, _) = proxy_listener.accept().await.unwrap();
-            handle_conn(sock, target, token).await.unwrap();
+            handle_conn(sock, target, token, test_http()).await.unwrap();
         });
         let mut c = TcpStream::connect(("127.0.0.1", proxy_port)).await.unwrap();
         c.write_all(
@@ -620,7 +643,7 @@ mod tests {
         let token = Arc::new("tok".to_string());
         let task = tokio::spawn(async move {
             let (sock, _) = proxy_listener.accept().await.unwrap();
-            handle_conn(sock, target, token).await.unwrap();
+            handle_conn(sock, target, token, test_http()).await.unwrap();
         });
         let mut c = TcpStream::connect(("127.0.0.1", proxy_port)).await.unwrap();
         c.write_all(

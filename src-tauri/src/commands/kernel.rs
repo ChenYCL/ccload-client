@@ -67,13 +67,13 @@ pub async fn kernel_start(app: AppHandle, state: State<'_, AppState>) -> AppResu
 
 /// Start the embed proxy once, or retarget it if settings changed.
 pub async fn ensure_embed_proxy(state: &AppState) -> Result<(), crate::error::AppError> {
-    let base = state.settings.read().await.kernel.base_url();
+    let cfg = state.settings.read().await.kernel.clone();
     let guard = state.embed_proxy.read().await;
     if let Some(proxy) = guard.as_ref() {
-        proxy.retarget(&base).await;
+        proxy.retarget(&cfg).await?;
     } else {
         drop(guard);
-        let proxy = crate::services::embed_proxy::EmbedProxy::start(&base).await?;
+        let proxy = crate::services::embed_proxy::EmbedProxy::start(&cfg).await?;
         *state.embed_proxy.write().await = Some(proxy);
     }
     Ok(())
@@ -376,6 +376,7 @@ async fn api_token_works(state: &AppState, base_url: &str, token: &str) -> bool 
     let resp = state
         .kernel
         .http()
+        .await
         .get(format!("{base_url}/v1/models"))
         .bearer_auth(token)
         .send()

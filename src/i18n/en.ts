@@ -119,6 +119,14 @@ registerDict("en", {
   时间: "Time",
   状态: "Status",
   模型: "Model",
+  "写入 config.toml 的 model。其它模型用 codex --profile，或去「模型导入」加 profile。":
+    "Writes config.toml `model`. Other models: `codex --profile`, or add profiles on Model import.",
+  "Gemini CLI 只有当前这一个槽位（model.name）。没有可追加的目录。":
+    "Gemini CLI has only this one slot (model.name). There is no catalog to append to.",
+  "写入后新会话走这个内核别名。要让 /model 里也能切 opus-5 / glm-5.3-flash，再到「模型导入」勾上 Grok Build。":
+    "New sessions send this kernel alias. To also switch via /model to opus-5 / glm-5.3-flash, import them on Model import with Grok Build ticked.",
+  "写成 ccload/别名。其它模型去「模型导入」合并进 provider.ccload.models。":
+    "Written as ccload/<alias>. Other models: merge them into provider.ccload.models on Model import.",
   渠道: "Channel",
   耗时: "Duration",
   首字节: "TTFB",
@@ -241,6 +249,9 @@ registerDict("en", {
   "CLI 写入": "CLI writes",
   端口: "Port",
   远端地址: "Remote URL",
+  出口代理: "Outbound proxy",
+  "公司网连不上远端 VPS 时用。Termius / ssh -D 1080 开出 SOCKS 后填 socks5://127.0.0.1:1080。本机内核不走这个代理。":
+    "Use this when the office network cannot reach the remote VPS. Open a SOCKS with Termius / `ssh -D 1080`, then fill socks5://127.0.0.1:1080. The local kernel does not use this proxy.",
   管理密码: "Admin password",
   复制: "Copy",
   已复制: "Copied",

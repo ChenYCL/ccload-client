@@ -245,6 +245,20 @@ function ConnectionForm({ current }: { current: KernelConfig }) {
         </Field>
       )}
 
+      {draft.mode === "remote" && (
+        <Field
+          label={t("出口代理")}
+          hint={t("公司网连不上远端 VPS 时用。Termius / ssh -D 1080 开出 SOCKS 后填 socks5://127.0.0.1:1080。本机内核不走这个代理。")}
+        >
+          <TextInput
+            mono
+            value={draft.outbound_proxy ?? ""}
+            placeholder="socks5://127.0.0.1:1080"
+            onChange={(e) => set({ outbound_proxy: e.target.value || null })}
+          />
+        </Field>
+      )}
+
       <Field label={t("管理密码")} hint={t("远端模式填该实例的 CCLOAD_PASS")}>
         <div className="flex items-center gap-2">
           <TextInput

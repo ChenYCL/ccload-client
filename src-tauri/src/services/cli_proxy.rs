@@ -27,6 +27,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
 
 use crate::error::AppError;
+use crate::services::kernel::{http_client_for_kernel, HttpClientOpts, KernelConfig};
 
 /// 固定端口。CLI 配置里写死的就是它，换端口等于所有接管配置失效，所以不
 /// 像 embed_proxy 那样在一个区间里试探 —— 端口被占就是硬错误，得让用户看见。
@@ -104,11 +105,12 @@ pub struct CliProxy {
     /// 见 `upgrade_cache_ttl` —— 默认 false，实测多数场景开着更贵。
     long_cache: Arc<std::sync::atomic::AtomicBool>,
     records: Arc<RwLock<Vec<ProxyRecord>>>,
+    http: Arc<RwLock<reqwest::Client>>,
     handle: tokio::task::JoinHandle<()>,
 }
 
 impl CliProxy {
-    pub async fn start(target_base_url: &str) -> Result<Arc<Self>, AppError> {
+    pub async fn start(cfg: &KernelConfig) -> Result<Arc<Self>, AppError> {
         let listener = TcpListener::bind(("127.0.0.1", PROXY_PORT))
             .await
             .map_err(|e| {
@@ -118,26 +120,33 @@ impl CliProxy {
                 ))
             })?;
 
-        let target = Arc::new(RwLock::new(target_base_url.trim_end_matches('/').to_string()));
+        let target = Arc::new(RwLock::new(cfg.base_url()));
         let rewrites: Arc<RwLock<ModelRewrites>> = Arc::new(RwLock::new(HashMap::new()));
         let long_cache = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let records: Arc<RwLock<Vec<ProxyRecord>>> = Arc::new(RwLock::new(Vec::new()));
+        let http = Arc::new(RwLock::new(cli_proxy_client(cfg)?));
 
-        let (t, w, r, lc) = (
+        let (t, w, r, lc, h) = (
             Arc::clone(&target),
             Arc::clone(&rewrites),
             Arc::clone(&records),
             Arc::clone(&long_cache),
+            Arc::clone(&http),
         );
         let handle = tokio::spawn(async move {
             loop {
                 let Ok((stream, _)) = listener.accept().await else {
                     break;
                 };
-                let (t, w, r, lc) =
-                    (Arc::clone(&t), Arc::clone(&w), Arc::clone(&r), Arc::clone(&lc));
+                let (t, w, r, lc, h) = (
+                    Arc::clone(&t),
+                    Arc::clone(&w),
+                    Arc::clone(&r),
+                    Arc::clone(&lc),
+                    Arc::clone(&h),
+                );
                 tokio::spawn(async move {
-                    let _ = handle_conn(stream, t, w, r, lc).await;
+                    let _ = handle_conn(stream, t, w, r, lc, h).await;
                 });
             }
         });
@@ -147,13 +156,16 @@ impl CliProxy {
             rewrites,
             long_cache,
             records,
+            http,
             handle,
         }))
     }
 
     /// 内核地址变了（切换本地/远端、改端口）时重新指向，不用重启监听。
-    pub async fn retarget(&self, base_url: &str) {
-        *self.target.write().await = base_url.trim_end_matches('/').to_string();
+    pub async fn retarget(&self, cfg: &KernelConfig) -> Result<(), AppError> {
+        *self.target.write().await = cfg.base_url();
+        *self.http.write().await = cli_proxy_client(cfg)?;
+        Ok(())
     }
 
     /// 打开/关掉 1 小时缓存窗口。见 `upgrade_cache_ttl` 里的实测数据 ——
@@ -289,19 +301,27 @@ fn resolve_rewrite(model: &str, rules: &ModelRewrites) -> Option<String> {
     None
 }
 
-/// 转发用的 HTTP 客户端。**进程内只建一次**：CLI 会连续打几十上百个请求，
-/// 每次新建 client 等于每次重开连接池，白付 TLS 握手。连接超时 5s，但响应体
-/// 不设上限 —— 一次长回答流上几分钟是常态，超时会把它拦腰截断。
-fn proxy_http() -> &'static reqwest::Client {
-    use std::sync::OnceLock;
-    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT.get_or_init(|| {
+/// 连接超时 5s，响应体不设上限 —— 一次长回答流上几分钟是常态。
+#[cfg(test)]
+fn test_proxy_http() -> Arc<RwLock<reqwest::Client>> {
+    Arc::new(RwLock::new(
         reqwest::Client::builder()
+            .no_proxy()
             .connect_timeout(std::time::Duration::from_secs(5))
-            .pool_idle_timeout(std::time::Duration::from_secs(90))
             .build()
-            .expect("static client")
-    })
+            .unwrap(),
+    ))
+}
+
+fn cli_proxy_client(cfg: &KernelConfig) -> Result<reqwest::Client, AppError> {
+    http_client_for_kernel(
+        cfg,
+        HttpClientOpts {
+            timeout: None,
+            connect_timeout: std::time::Duration::from_secs(5),
+            follow_system_proxy: true,
+        },
+    )
 }
 
 fn find_header_end(buf: &[u8]) -> Option<usize> {
@@ -396,6 +416,7 @@ async fn handle_conn(
     rewrites: Arc<RwLock<ModelRewrites>>,
     records: Arc<RwLock<Vec<ProxyRecord>>>,
     long_cache: Arc<std::sync::atomic::AtomicBool>,
+    http: Arc<RwLock<reqwest::Client>>,
 ) -> std::io::Result<()> {
     let mut buf: Vec<u8> = Vec::with_capacity(16 * 1024);
     let mut tmp = [0u8; 16 * 1024];
@@ -494,7 +515,8 @@ async fn handle_conn(
     let Ok(method_parsed) = method.parse::<reqwest::Method>() else {
         return write_simple(&mut client, 400, "bad method").await;
     };
-    let mut req = proxy_http().request(method_parsed, &url);
+    let http = http.read().await.clone();
+    let mut req = http.request(method_parsed, &url);
     for (name, value) in &fwd {
         if let Ok(hv) = reqwest::header::HeaderValue::from_str(value) {
             req = req.header(name, hv);
@@ -523,7 +545,12 @@ async fn handle_conn(
                 },
             )
             .await;
-            return write_simple(&mut client, 502, &format!("kernel unreachable: {e}")).await;
+            return write_simple(
+                &mut client,
+                502,
+                &format!("kernel unreachable ({url}): {e}"),
+            )
+            .await;
         }
     };
 
@@ -802,7 +829,7 @@ mod e2e {
         );
         tokio::spawn(async move {
             let (stream, _) = front.accept().await.unwrap();
-            handle_conn(stream, t, w, r, Arc::new(std::sync::atomic::AtomicBool::new(false)))
+            handle_conn(stream, t, w, r, Arc::new(std::sync::atomic::AtomicBool::new(false)), test_proxy_http())
                 .await
                 .unwrap();
         });
@@ -853,9 +880,10 @@ mod live {
         )
         .unwrap();
         let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        let base = v["kernel"]["remote_url"].as_str().unwrap().to_string();
-        let proxy = CliProxy::start(&base).await.unwrap();
-        eprintln!("proxy up at {} -> {base}", proxy.base_url());
+        let cfg: crate::services::kernel::KernelConfig =
+            serde_json::from_value(v["kernel"].clone()).unwrap();
+        let proxy = CliProxy::start(&cfg).await.unwrap();
+        eprintln!("proxy up at {} -> {}", proxy.base_url(), cfg.base_url());
         tokio::time::sleep(std::time::Duration::from_secs(120)).await;
         for r in proxy.records().await {
             eprintln!("{r:?}");
@@ -928,6 +956,7 @@ mod sse {
                 Arc::new(RwLock::new(ModelRewrites::new())),
                 Arc::new(RwLock::new(Vec::new())),
                 Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                test_proxy_http(),
             )
             .await
             .unwrap();
@@ -1022,6 +1051,7 @@ mod chunked_req {
                 Arc::new(RwLock::new(ModelRewrites::new())),
                 Arc::new(RwLock::new(Vec::new())),
                 Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                test_proxy_http(),
             )
             .await;
         });

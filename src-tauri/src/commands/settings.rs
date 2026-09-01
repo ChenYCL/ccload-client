@@ -29,6 +29,19 @@ pub async fn settings_set_kernel(
             .remote_url
             .map(|u| u.trim().trim_end_matches('/').to_string())
             .filter(|u| !u.is_empty());
+        kernel.outbound_proxy = kernel
+            .outbound_proxy
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        if kernel.mode == KernelMode::Remote {
+            crate::services::kernel::parse_outbound_proxy(
+                kernel.outbound_proxy.as_deref().unwrap_or(""),
+            )?;
+        } else {
+            kernel.outbound_proxy = None;
+        }
         if kernel.mode == KernelMode::Remote && kernel.remote_url.as_deref().unwrap_or("").is_empty()
         {
             return Err(crate::error::AppError::Config(
@@ -48,6 +61,10 @@ pub async fn settings_set_kernel(
     }
     state.persist().await?;
     state.admin.invalidate().await;
+    let cfg = state.settings.read().await.kernel.clone();
+    state.kernel.rebuild_http(&cfg).await?;
+    let _ = crate::commands::cli_proxy::ensure_cli_proxy(&state).await;
+    let _ = crate::commands::kernel::ensure_embed_proxy(&state).await;
     Ok(state.settings.read().await.clone())
 }
 

@@ -12,6 +12,8 @@ export type KernelConfig = {
   remote_url: string | null;
   admin_password: string;
   data_dir: string | null;
+  /** HTTP/HTTPS/SOCKS5 URL used to reach a remote kernel. Empty = direct. */
+  outbound_proxy?: string | null;
 };
 
 export type AppSettings = {
@@ -39,6 +41,8 @@ export type TakeoverPreview = {
   already_active: boolean;
   /** Endpoint points at the kernel but the stored token is from another one. */
   token_stale: boolean;
+  /** Model this CLI will send on the next launch, if we can read one. */
+  current_model?: string | null;
 };
 
 export type TakeoverResult = {
@@ -129,6 +133,9 @@ export type TakeoverOptions = {
   codex_model?: string;
   codex_reasoning_effort?: string;
   codex_context_window?: number;
+  grok_model?: string;
+  gemini_model?: string;
+  opencode_model?: string;
 };
 
 export type ConfigFormat = "json" | "toml";

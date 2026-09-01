@@ -118,6 +118,47 @@ pub fn preview(
         token_stale: endpoint_ok && !token_ok,
         current_endpoint: current,
         next_endpoint: next,
+        current_model: current_model(root, target),
+    }
+}
+
+/// The model this CLI will send, for the takeover card's combo box.
+fn current_model(root: &ConfigRoot, target: CliTarget) -> Option<String> {
+    match target {
+        CliTarget::ClaudeCode => read_json(&root.join(".claude/settings.json"))
+            .ok()?
+            .pointer("/env/ANTHROPIC_MODEL")?
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+        CliTarget::Codex => toml_string_at(&root.join(".codex/config.toml"), &["model"])
+            .filter(|s| !s.trim().is_empty()),
+        CliTarget::GeminiCli => {
+            let from_settings = read_json(&root.join(".gemini/settings.json"))
+                .ok()
+                .and_then(|d| {
+                    d.pointer("/model/name")
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                });
+            from_settings.or_else(|| {
+                cli_dotenv::get(&root.join(GEMINI_ENV), "GEMINI_MODEL")
+                    .filter(|s| !s.trim().is_empty())
+            })
+        }
+        CliTarget::GrokBuild => cli_grok::current_model(root),
+        CliTarget::OpenCode => read_json(&root.join(".config/opencode/opencode.json"))
+            .ok()?
+            .get("model")
+            .and_then(Value::as_str)
+            .map(|s| {
+                s.strip_prefix("ccload/")
+                    .unwrap_or(s)
+                    .trim()
+                    .to_string()
+            })
+            .filter(|s| !s.is_empty()),
     }
 }
 
@@ -219,6 +260,11 @@ pub fn apply_takeover(
                 collect_gemini_env(extra, &mut vars);
                 merge_extra_json(&mut doc, extra, CliTarget::GeminiCli, false)?;
             }
+            if let Some(m) = opts.gemini_model.as_ref().filter(|s| !s.is_empty()) {
+                vars.insert("GEMINI_MODEL".into(), m.clone());
+                let model = object_at(&mut doc, "model")?;
+                model.insert("name".into(), Value::String(m.clone()));
+            }
             let env_path = root.join(GEMINI_ENV);
             cli_dotenv::merge(&env_path, &vars)?;
             written.push(env_path.display().to_string());
@@ -251,7 +297,21 @@ pub fn apply_takeover(
                 options.insert("baseURL".into(), Value::String(endpoint));
                 options.insert("apiKey".into(), Value::String(api_token.into()));
             }
-            ensure_opencode_default_model(&mut doc)?;
+            if let Some(m) = opts.opencode_model.as_ref().filter(|s| !s.is_empty()) {
+                let alias = m.strip_prefix("ccload/").unwrap_or(m).trim();
+                if !alias.is_empty() {
+                    ensure_opencode_catalog_stub(&mut doc, alias)?;
+                    let root_obj = doc.as_object_mut().ok_or_else(|| {
+                        AppError::Config("opencode.json 顶层不是对象".into())
+                    })?;
+                    root_obj.insert(
+                        "model".into(),
+                        Value::String(format!("ccload/{alias}")),
+                    );
+                }
+            } else {
+                ensure_opencode_default_model(&mut doc)?;
+            }
             if let Some(extra) = &opts.extra_env {
                 merge_extra_json(&mut doc, extra, CliTarget::OpenCode, false)?;
             }
@@ -260,7 +320,12 @@ pub fn apply_takeover(
         }
         CliTarget::Codex => written.extend(write_codex(root, &endpoint, api_token, &opts)?),
         CliTarget::GrokBuild => {
-            written.extend(cli_grok::apply(root, &endpoint, api_token)?);
+            written.extend(cli_grok::apply_with_model(
+                root,
+                &endpoint,
+                api_token,
+                opts.grok_model.as_deref(),
+            )?);
             if let Some(extra) = &opts.extra_env {
                 let path = root.join(".grok/config.toml");
                 let raw = if path.exists() {
@@ -439,6 +504,27 @@ fn set_gemini_auth_type(doc: &mut Value) -> Result<(), AppError> {
     slot.as_object_mut()
         .expect("just normalized")
         .insert("selectedType".into(), Value::String("gemini-api-key".into()));
+    Ok(())
+}
+
+/// OpenCode only lists models that exist under `provider.ccload.models`.
+/// Picking a kernel alias on takeover must also stub the catalog entry, or
+/// `/models` would offer a `ccload/<alias>` that 503s when selected.
+fn ensure_opencode_catalog_stub(doc: &mut Value, alias: &str) -> Result<(), AppError> {
+    let provider = doc
+        .pointer_mut("/provider/ccload")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| AppError::Config("opencode.json 里没有 provider.ccload".into()))?;
+    let models = match provider.get_mut("models").and_then(Value::as_object_mut) {
+        Some(m) => m,
+        None => {
+            provider.insert("models".into(), Value::Object(Default::default()));
+            provider.get_mut("models").and_then(Value::as_object_mut).unwrap()
+        }
+    };
+    models.entry(alias.to_string()).or_insert_with(|| {
+        serde_json::json!({ "name": alias })
+    });
     Ok(())
 }
 

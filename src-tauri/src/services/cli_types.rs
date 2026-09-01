@@ -76,6 +76,11 @@ pub struct TakeoverPreview {
     /// Endpoint matches but the stored credential does not — the config looks
     /// taken over yet every call 401s. The UI surfaces this as a re-write hint.
     pub token_stale: bool,
+    /// The model this CLI will send on the next launch, if we can read one.
+    /// Grok's `models.default` is the profile name (`ccload`); this is the
+    /// routed id (`grok-4.6` / `glm-5.3-flash[1M]`), which is what the user
+    /// actually wants to change.
+    pub current_model: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

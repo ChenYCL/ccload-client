@@ -151,6 +151,15 @@ pub struct TakeoverOptions {
     pub codex_model: Option<String>,
     pub codex_reasoning_effort: Option<String>,
     pub codex_context_window: Option<i64>,
+    /// Grok Build: the kernel alias `[model.ccload]` should send. Empty = keep
+    /// inheriting whatever the user last picked in `/model`.
+    pub grok_model: Option<String>,
+    /// Gemini CLI: `model.name` + `GEMINI_MODEL`. It has no catalog, only this
+    /// one slot.
+    pub gemini_model: Option<String>,
+    /// OpenCode: top-level `model` (`ccload/<alias>`). Empty = don't touch the
+    /// user's current pick.
+    pub opencode_model: Option<String>,
 }
 
 /// Claude Code 有**两种**换模型的机制，配错格子的人都在同一个坑里：
@@ -244,11 +253,18 @@ const CODEX_DEDICATED: &[&str] = &[
     "model_context_window",
 ];
 
-/// Nothing else has dedicated slots — Grok's `model` is just a key the user
-/// may set, and swallowing it would lose the value instead of protecting one.
+/// A top-level `model = "…"` string would replace the `[model.*]` table and
+/// take over would look like it never wrote an endpoint.
+const GROK_DEDICATED: &[&str] = &["model"];
+const GEMINI_DEDICATED: &[&str] = &["model.name", "GEMINI_MODEL"];
+const OPENCODE_DEDICATED: &[&str] = &["model"];
+
 fn dedicated_keys(target: CliTarget) -> &'static [&'static str] {
     match target {
         CliTarget::Codex => CODEX_DEDICATED,
+        CliTarget::GrokBuild => GROK_DEDICATED,
+        CliTarget::GeminiCli => GEMINI_DEDICATED,
+        CliTarget::OpenCode => OPENCODE_DEDICATED,
         _ => &[],
     }
 }
@@ -503,7 +519,11 @@ pub(crate) fn merge_extra_json(
     all_caps_to_env: bool,
 ) -> Result<(), AppError> {
     for (k, v) in extra {
-        if k.is_empty() || v.is_empty() || blocked_for_user(target, k) {
+        if k.is_empty()
+            || v.is_empty()
+            || blocked_for_user(target, k)
+            || dedicated_keys(target).contains(&k.as_str())
+        {
             continue;
         }
         if all_caps_to_env && is_env_key(k) {
@@ -873,9 +893,11 @@ mod tests {
         extra.insert("GEMINI_MODEL".into(), "gemini-3".into());
         extra.insert("GEMINI_API_KEY".into(), "should-skip".into());
         merge_extra_json(&mut doc, &extra, CliTarget::GeminiCli, true).unwrap();
-        assert_eq!(doc.pointer("/model/name").unwrap(), "gemini-3");
+        // model.name / GEMINI_MODEL are the dedicated combo; extra_env must
+        // not write them a second time (or fight the ComboBox).
+        assert!(doc.pointer("/model/name").is_none());
         assert_eq!(doc.pointer("/general/vimMode").unwrap(), true);
-        assert_eq!(doc.pointer("/env/GEMINI_MODEL").unwrap(), "gemini-3");
+        assert!(doc.pointer("/env/GEMINI_MODEL").is_none());
         assert!(doc.pointer("/env/GEMINI_API_KEY").is_none());
     }
 
@@ -895,11 +917,11 @@ mod tests {
         assert!(doc.get("models").is_none());
     }
 
-    /// `model` has a dedicated TakeoverOptions slot for Codex only. Grok has no
-    /// such slot, so dropping its `model` key loses the user's value instead of
-    /// protecting anything.
+    /// Dedicated slots live on TakeoverOptions. extra_env must not write them
+    /// a second time — Grok's top-level `model = "…"` would replace the
+    /// `[model.*]` table and take over would look like it never wrote an endpoint.
     #[test]
-    fn dedicated_keys_are_skipped_for_codex_only() {
+    fn dedicated_model_keys_are_skipped_in_extra_env() {
         let mut extra = std::collections::BTreeMap::new();
         extra.insert("model".into(), "grok-4-fast".into());
         extra.insert("model_reasoning_effort".into(), "high".into());
@@ -911,7 +933,7 @@ mod tests {
 
         let mut grok = toml_edit::DocumentMut::new();
         merge_extra_toml(&mut grok, &extra, CliTarget::GrokBuild).unwrap();
-        assert_eq!(grok["model"].as_str(), Some("grok-4-fast"));
+        assert!(grok.get("model").is_none(), "grok model is the dedicated combo");
         assert_eq!(grok["model_reasoning_effort"].as_str(), Some("high"));
     }
 

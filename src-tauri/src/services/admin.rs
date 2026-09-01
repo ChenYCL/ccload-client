@@ -103,6 +103,7 @@ impl AdminClient {
         let resp = self
             .kernel
             .http()
+            .await
             .post(format!("{base_url}/login"))
             .json(&json!({ "mode": "admin", "password": password }))
             .send()
@@ -208,6 +209,7 @@ impl AdminClient {
         let mut req = self
             .kernel
             .http()
+            .await
             .request(verb, &url)
             .bearer_auth(token);
         if let Some(b) = body {

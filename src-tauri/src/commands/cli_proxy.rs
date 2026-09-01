@@ -12,13 +12,13 @@ use crate::state::AppState;
 
 /// 起代理，或在内核地址变了之后重新指向。
 pub async fn ensure_cli_proxy(state: &AppState) -> Result<(), crate::error::AppError> {
-    let base = state.settings.read().await.kernel.base_url();
+    let cfg = state.settings.read().await.kernel.clone();
     let guard = state.cli_proxy.read().await;
     if let Some(proxy) = guard.as_ref() {
-        proxy.retarget(&base).await;
+        proxy.retarget(&cfg).await?;
     } else {
         drop(guard);
-        let proxy = CliProxy::start(&base).await?;
+        let proxy = CliProxy::start(&cfg).await?;
         *state.cli_proxy.write().await = Some(proxy);
     }
     Ok(())
