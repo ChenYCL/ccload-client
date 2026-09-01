@@ -19,13 +19,14 @@ import { errText } from "../lib/err";
 ///   * Claude Code → 只写用户显式指定的 tier 槽位（没有目录文件可写）
 ///   * Codex       → [profiles.<别名>]，顶层 model 不碰
 ///   * OpenCode    → 合并进 provider.ccload.models，顶层 model 只在缺失时补
+///   * Grok Build  → [model.<别名>]（上下文 + thinking 档），models.default 不碰
 /// Also installs the vision MCP (this binary's `vision-mcp` subcommand) so a
 /// text-only model gets image descriptions from a multimodal one, and the image
 /// MCP (`image-mcp`) so every CLI can generate and edit images.
 //
-// 模型目录只有这三家有可写的位置（Gemini / Grok 的配置里没有模型清单这一节）；
+// Gemini CLI 只有 model.name 一个槽位，没有可追加的目录，所以不在这里。
 // 两个自带 MCP 则是 5 家都能装 —— 它们走的是通用 MCP 写入器。
-const IMPORT_TARGETS: CliTarget[] = ["claude-code", "codex", "opencode"];
+const IMPORT_TARGETS: CliTarget[] = ["claude-code", "codex", "opencode", "grok-build"];
 const VISION_TARGETS: CliTarget[] = ALL_TARGETS;
 const IMAGE_TARGETS: CliTarget[] = ALL_TARGETS;
 
@@ -430,7 +431,7 @@ export function ModelsPage() {
         <div>
           <h1 className="t-display">{t("模型导入")}</h1>
           <p className="mt-1 text-sm text-muted">
-            {t("从内核渠道聚合所有可用模型别名，")}<strong>{t("追加")}</strong>{t("进各 CLI 的模型目录： Codex 每个别名一个")} <code>{t("[profiles.别名]")}</code>（<code>codex --profile</code> {t("选用）、 OpenCode 合并进")} <code>provider.ccload.models</code>{t("。两者都不会动你当前正在用的模型。Claude Code 没有目录文件，只有 5 个槽位，所以要在 Tier 列显式指定 —— 没指定的行不写。")}
+            {t("从内核渠道聚合所有可用模型别名，")}<strong>{t("追加")}</strong>{t("进各 CLI 的模型目录： Grok Build 每个别名一条")} <code>{t("[model.别名]")}</code>{t("（含上下文和 thinking 档，之后 /model 可切到 opus-5 / glm-5.3-flash 这类）、 Codex 每个别名一个")} <code>{t("[profiles.别名]")}</code>（<code>codex --profile</code> {t("选用）、 OpenCode 合并进")} <code>provider.ccload.models</code>{t("。都不会动你当前正在用的模型。Claude Code 没有目录文件，只有 5 个槽位，所以要在 Tier 列显式指定 —— 没指定的行不写。")}
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -516,8 +517,8 @@ export function ModelsPage() {
             </button>
           </div>
 
-          {/* 只对 OpenCode 有意义 —— 另外两家没有会累积的目录对象。 */}
-          {targets.includes("opencode") && (
+          {/* 只对会累积目录的目标有意义。Codex 的 profile、Claude 的槽位都不会越积越多。 */}
+          {(targets.includes("opencode") || targets.includes("grok-build")) && (
             <label className="mt-3 flex cursor-pointer items-start gap-2 rounded-xl border border-border bg-surface-2/40 px-3 py-2 text-xs">
               <input
                 type="checkbox"
@@ -529,7 +530,7 @@ export function ModelsPage() {
                 <span className="font-medium">{t("同时清掉内核已不认的旧别名")}</span>
                 <span className="block text-muted">
                   {t(
-                    "OpenCode 的目录只增不删：上游退役的模型会一直留在选择器里，选中就是一个 503。勾上后按本次清单收敛，写入前照常留快照。",
+                    "OpenCode 的目录和 Grok Build 的 [model.*] 只增不删：上游退役的模型会一直留在选择器里。勾上后按本次清单收敛，写入前照常留快照。正在用的模型和接管留下的 ccload 配置不会被删。",
                   )}
                 </span>
               </span>

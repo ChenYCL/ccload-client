@@ -18,9 +18,12 @@
 //! Grok merges a `[model.<builtin>]` table over its defaults, so setting just
 //! `base_url` + `api_key` there reroutes that model without redefining it.
 
+use std::collections::HashSet;
+
 use crate::error::AppError;
 use crate::services::cli_io::write_atomic;
 use crate::services::cli_types::ConfigRoot;
+use crate::services::model_caps::{grok_api_backend, write_grok_effort_menu};
 
 const PROFILE: &str = "ccload";
 /// Only a fallback: used when there is no `[models] default` to inherit (fresh
@@ -221,6 +224,11 @@ fn upsert_model_table(
     selected.insert("base_url", toml_edit::value(endpoint));
     selected.insert("api_key", toml_edit::value(api_token));
     selected.insert("api_backend", toml_edit::value(DEFAULT_BACKEND));
+    // Custom profile ids (ccload) do not inherit Grok's built-in catalog, so
+    // `/effort` is dropped unless the table itself declares the menu. Follow
+    // the routed model: grok-4.6 has xhigh, grok-4.5 does not, and a re-apply
+    // after `/model grok-4.5` must not keep advertising a level 4.5 rejects.
+    write_grok_effort_menu(selected, &routed);
     Ok(routed)
 }
 
@@ -247,6 +255,102 @@ fn override_builtin(
     entry.insert("base_url", toml_edit::value(endpoint));
     entry.insert("api_key", toml_edit::value(api_token));
     Ok(())
+}
+
+/// One kernel alias as a selectable `[model.<alias>]` table.
+///
+/// Takeover only reroutes the active built-in + the `ccload` profile. Import
+/// is how `glm-5.3-flash[1M]` / `claude-opus-5` show up in Grok's `/model`
+/// picker: a full custom table (id, window, effort menu, backend), pointing
+/// at the same ccLoad endpoint. `models.default` is not touched.
+pub fn write_catalog_entry(
+    doc: &mut toml_edit::DocumentMut,
+    alias: &str,
+    endpoint: &str,
+    api_token: &str,
+    context_window: Option<i64>,
+) -> Result<(), AppError> {
+    if alias.trim().is_empty() {
+        return Ok(());
+    }
+    if doc.get("model").is_some_and(|m| m.is_str()) {
+        return Err(AppError::Config(
+            "~/.grok/config.toml 顶层的 model 是字符串，不是模型表。Grok 的自定义模型写在 [model.别名] 下；请先在高级配置里去掉顶层 model 键再导入"
+                .into(),
+        ));
+    }
+    let models = doc["model"].or_insert(toml_edit::table());
+    let table = models
+        .as_table_like_mut()
+        .ok_or_else(|| AppError::Config("[model] is not a table".into()))?;
+    let created = table.get(alias).is_none();
+    if created {
+        table.insert(alias, toml_edit::table());
+    }
+    let entry = table
+        .get_mut(alias)
+        .and_then(|i| i.as_table_like_mut())
+        .ok_or_else(|| AppError::Config(format!("[model.{alias}] is not a table")))?;
+    entry.insert("name", toml_edit::value(alias));
+    entry.insert("model", toml_edit::value(alias));
+    entry.insert("base_url", toml_edit::value(endpoint));
+    if !api_token.is_empty() {
+        entry.insert("api_key", toml_edit::value(api_token));
+    }
+    if created || entry.get("api_backend").is_none() {
+        entry.insert("api_backend", toml_edit::value(grok_api_backend(alias)));
+    }
+    if let Some(w) = context_window.filter(|n| *n > 0) {
+        entry.insert("context_window", toml_edit::value(w));
+    }
+    // Official grok models compact at 80% of the window. Custom tables default
+    // to Grok's 200k if we omit context_window, and to the session 85% if we
+    // omit this — both wrong for a 1M glm/claude alias.
+    if created || entry.get("auto_compact_threshold_percent").is_none() {
+        entry.insert("auto_compact_threshold_percent", toml_edit::value(80));
+    }
+    write_grok_effort_menu(entry, alias);
+    Ok(())
+}
+
+/// Drop `[model.*]` tables that still point at our endpoint but are not in
+/// this import. Never touches the active default or the `ccload` profile —
+/// those are takeover's, and pruning them would send the current session
+/// back to official xAI.
+pub fn prune_catalog(
+    doc: &mut toml_edit::DocumentMut,
+    keep: &HashSet<String>,
+    endpoint: &str,
+) -> Vec<String> {
+    let default = doc
+        .get("models")
+        .and_then(|m| m.get("default"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let Some(table) = doc.get_mut("model").and_then(|m| m.as_table_like_mut()) else {
+        return Vec::new();
+    };
+    let dropped: Vec<String> = table
+        .iter()
+        .filter(|(k, v)| {
+            if *k == PROFILE || *k == default {
+                return false;
+            }
+            if keep.contains(*k) {
+                return false;
+            }
+            v.as_table_like()
+                .and_then(|t| t.get("base_url"))
+                .and_then(|v| v.as_str())
+                .is_some_and(|url| trimmed(url) == trimmed(endpoint))
+        })
+        .map(|(k, _)| k.to_string())
+        .collect();
+    for k in &dropped {
+        table.remove(k);
+    }
+    dropped
 }
 
 #[cfg(test)]
@@ -374,6 +478,32 @@ mod tests {
         grok_switched_the_default_away("grok-4.6", "grok-4.5");
     }
 
+    #[test]
+    fn reapply_after_a_switch_to_grok_45_drops_xhigh_from_the_profile_menu() {
+        let (_keep, root) = tmp_root();
+        let path = seed(&root, "[models]\ndefault = \"grok-4.6\"\n");
+        apply(&root, "https://proxy.test/v1", "tok").unwrap();
+
+        let mut doc: toml_edit::DocumentMut =
+            std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        doc["models"]["default"] = toml_edit::value("grok-4.5");
+        std::fs::write(&path, doc.to_string()).unwrap();
+
+        apply(&root, "https://proxy.test/v1", "tok").unwrap();
+        let doc: toml_edit::DocumentMut = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert_eq!(doc["model"]["ccload"]["model"].as_str(), Some("grok-4.5"));
+        assert_eq!(doc["model"]["ccload"]["reasoning_effort"].as_str(), Some("high"));
+        let efforts = doc["model"]["ccload"]["reasoning_efforts"].as_array().unwrap();
+        assert!(
+            !efforts.iter().any(|v| v
+                .as_inline_table()
+                .and_then(|t| t.get("id"))
+                .and_then(|x| x.as_str())
+                == Some("xhigh")),
+            "grok-4.5 must not advertise xhigh: {efforts}"
+        );
+    }
+
     /// Overrides left behind by earlier model switches must follow a rotated
     /// token, or every model but the current one starts 401ing.
     #[test]
@@ -459,5 +589,80 @@ mod tests {
             doc["model"]["grok-4.5"]["base_url"].as_str(),
             Some("https://proxy.test/v1")
         );
+    }
+
+    /// Custom `ccload` does not inherit the built-in catalog, so without
+    /// `supports_reasoning_effort` the TUI drops `/effort` on the floor.
+    #[test]
+    fn ccload_profile_declares_the_routed_models_effort_menu() {
+        let (_keep, root) = tmp_root();
+        let path = seed(&root, "[models]\ndefault = \"grok-4.6\"\n");
+        apply(&root, "https://proxy.test/v1", "tok").unwrap();
+        let doc: toml_edit::DocumentMut = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        let p = &doc["model"]["ccload"];
+        assert_eq!(p["supports_reasoning_effort"].as_bool(), Some(true));
+        assert_eq!(p["reasoning_effort"].as_str(), Some("xhigh"));
+        let efforts = p["reasoning_efforts"].as_array().expect("menu");
+        assert!(
+            efforts.iter().any(|v| v
+                .as_inline_table()
+                .and_then(|t| t.get("id"))
+                .and_then(|x| x.as_str())
+                == Some("xhigh")),
+            "{efforts}"
+        );
+        // Built-in override keeps inheriting Grok's own menu.
+        assert!(doc["model"]["grok-4.6"].get("supports_reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn catalog_entry_for_a_non_grok_alias_uses_chat_completions_and_its_window() {
+        let mut doc = toml_edit::DocumentMut::new();
+        write_catalog_entry(
+            &mut doc,
+            "glm-5.3-flash[1M]",
+            "https://proxy.test/v1",
+            "tok",
+            Some(1_000_000),
+        )
+        .unwrap();
+        let e = &doc["model"]["glm-5.3-flash[1M]"];
+        assert_eq!(e["model"].as_str(), Some("glm-5.3-flash[1M]"));
+        assert_eq!(e["api_backend"].as_str(), Some("chat_completions"));
+        assert_eq!(e["context_window"].as_integer(), Some(1_000_000));
+        assert_eq!(e["supports_reasoning_effort"].as_bool(), Some(true));
+        assert_eq!(e["auto_compact_threshold_percent"].as_integer(), Some(80));
+    }
+
+    #[test]
+    fn catalog_entry_does_not_move_the_active_default() {
+        let mut doc = "[models]\ndefault = \"ccload\"\n"
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap();
+        write_catalog_entry(&mut doc, "claude-opus-5", "https://proxy.test/v1", "tok", Some(1_000_000))
+            .unwrap();
+        assert_eq!(doc["models"]["default"].as_str(), Some("ccload"));
+    }
+
+    #[test]
+    fn prune_drops_stale_aliases_but_keeps_the_profile_and_the_active_default() {
+        let mut doc = r#"
+[models]
+default = "ccload"
+[model.ccload]
+base_url = "https://proxy.test/v1"
+[model.retired]
+base_url = "https://proxy.test/v1"
+[model.mine]
+base_url = "https://elsewhere.test/v1"
+"#
+        .parse::<toml_edit::DocumentMut>()
+        .unwrap();
+        let keep = HashSet::from(["glm-5.3-flash[1M]".into()]);
+        let dropped = prune_catalog(&mut doc, &keep, "https://proxy.test/v1");
+        assert_eq!(dropped, vec!["retired"]);
+        assert!(doc["model"].get("ccload").is_some());
+        assert!(doc["model"].get("mine").is_some());
+        assert!(doc["model"].get("retired").is_none());
     }
 }

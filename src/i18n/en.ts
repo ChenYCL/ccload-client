@@ -582,6 +582,8 @@ registerDict("en", {
   "✓ 已写入": "✓ Wrote",
   "。两者都不会动你当前正在用的模型。Claude Code 没有目录文件，只有 5 个槽位，所以要在 Tier 列显式指定 —— 没指定的行不写。":
     ". Neither touches the model you are currently using. Claude Code has no catalog file, only 5 slots, so you must pick one explicitly in the Tier column — rows without one are not written.",
+  "。都不会动你当前正在用的模型。Claude Code 没有目录文件，只有 5 个槽位，所以要在 Tier 列显式指定 —— 没指定的行不写。":
+    ". None of this changes the model you are currently using. Claude Code has no catalog file, only 5 slots, so you must pick one explicitly in the Tier column — rows without one are not written.",
   "。这会改动你正在用的配置：": ". This changes the config you are actively using:",
   "一并应用内核连接设置（不勾则只导入模型链）":
     "Also apply the kernel connection settings (unticked imports model chains only)",
@@ -747,6 +749,13 @@ registerDict("en", {
     ", so every switch lands on a model that does not exist. The only fix is to pin",
   "这几个 CLI 用的看图模型不一致（": "These CLIs are using different vision models (",
   "进各 CLI 的模型目录： Codex 每个别名一个": "them into each CLI's model catalog: one",
+  "进各 CLI 的模型目录： Grok Build 每个别名一条":
+    "them into each CLI's model catalog: Grok Build gets one",
+  "[model.别名]": "[model.<alias>]",
+  "（含上下文和 thinking 档，之后 /model 可切到 opus-5 / glm-5.3-flash 这类）、 Codex 每个别名一个":
+    " (with context window and thinking levels, so /model can switch to opus-5 / glm-5.3-flash and the like), Codex gets one",
+  "OpenCode 的目录和 Grok Build 的 [model.*] 只增不删：上游退役的模型会一直留在选择器里。勾上后按本次清单收敛，写入前照常留快照。正在用的模型和接管留下的 ccload 配置不会被删。":
+    "OpenCode's catalog and Grok Build's [model.*] tables only grow: retired upstream aliases stay in the picker. Tick this to converge on this import; a snapshot is taken first. The model you are on and the ccload profile from takeover are not removed.",
   "远端内核版本（": "The remote kernel version (",
   "选用）、 OpenCode 合并进":
     "per alias for Codex (selected with codex --profile), merged into",

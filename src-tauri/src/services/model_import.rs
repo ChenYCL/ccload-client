@@ -6,14 +6,18 @@
 //! respective official docs:
 //!   * Claude Code — no catalog file at all. The only model surface is the
 //!     five tier slots (ANTHROPIC_MODEL + ANTHROPIC_DEFAULT_{FABLE,SONNET,
-//!     OPUS,HAIKU}_MODEL). Those are *selections*, not a catalog.
-//!   * Codex — `[profiles.<name>]` tables, each with its own `model` and
-//!     `model_context_window`. Picked with `codex --profile <name>`.
+//!     OPUS,HAIKU}_MODEL) plus one `ANTHROPIC_CUSTOM_MODEL_OPTION`. Those
+//!     are *selections*, not a catalog. Custom / gateway ids also need
+//!     `*_SUPPORTED_CAPABILITIES=effort,thinking` or `/effort` is dropped.
+//!   * Codex — `[profiles.<name>]` tables, each with its own `model`,
+//!     `model_context_window`, and `model_reasoning_effort`.
 //!   * OpenCode — `provider.<id>.models` object with per-model
-//!     `limit.context` / `limit.output`.
-//!   * Gemini CLI / Grok Build — the kernel maps at proxy level; there is no
-//!     per-model config surface worth importing into. Rejected explicitly
-//!     so the UI can hide them instead of failing at apply time.
+//!     `limit.context` / `reasoning` / `variants`.
+//!   * Grok Build — `[model.<alias>]` tables (docs: custom models). A
+//!     custom id that doesn't declare `supports_reasoning_effort` makes
+//!     `/effort` a no-op. Context window drives auto-compaction.
+//!   * Gemini CLI — one `model.name` slot, no catalog. Rejected explicitly
+//!     so the UI can hide it instead of failing at apply time.
 //!
 //! # 追加，不改写
 //!
@@ -33,9 +37,12 @@ use serde_json::Value;
 
 use crate::error::AppError;
 use crate::services::cli_backup::BackupStore;
-use crate::services::cli_config::current_endpoint;
+use crate::services::cli_config::{current_endpoint, current_token};
+use crate::services::cli_grok;
 use crate::services::cli_io::{object_at, read_json, write_atomic, write_pretty_json};
 use crate::services::cli_types::{CliTarget, ConfigRoot};
+use crate::services::context_window::COMPACT_HEADROOM;
+use crate::services::model_caps::{claude_capabilities, reasoning_menu};
 
 /// One row of the import table.
 #[derive(Debug, Clone, Deserialize)]
@@ -82,6 +89,17 @@ fn claude_tier_key(tier: &str) -> Result<Option<&'static str>, AppError> {
 /// windows leave the whole `limit` block out so OpenCode keeps its defaults.
 const DEFAULT_OUTPUT_TOKENS: i64 = 32_000;
 
+/// Claude Code's auto-compact window is a global integer in `[100000, 1000000]`.
+/// Leave enough headroom for the compact request itself; skip the key when
+/// the window is too small to satisfy the official floor.
+fn claude_auto_compact_window(context: i64) -> Option<i64> {
+    if context <= 0 {
+        return None;
+    }
+    let w = (context as u64).saturating_sub(COMPACT_HEADROOM);
+    (w >= 100_000).then_some(w.min(1_000_000) as i64)
+}
+
 /// The alias with any `vendor/` prefix removed (`amazon/nova-2-lite-v1` →
 /// `nova-2-lite-v1`), or None when there is no prefix to strip.
 ///
@@ -98,9 +116,16 @@ fn bare_alias(alias: &str) -> Option<&str> {
 /// 在快照之前把 config.toml 解析出来：解析失败时什么都还没写，不该留下
 /// 一份空快照占 5 份额度。
 fn parse_codex(root: &ConfigRoot) -> Result<toml_edit::DocumentMut, AppError> {
-    let path = root.join(".codex/config.toml");
+    parse_toml(&root.join(".codex/config.toml"))
+}
+
+fn parse_grok(root: &ConfigRoot) -> Result<toml_edit::DocumentMut, AppError> {
+    parse_toml(&root.join(".grok/config.toml"))
+}
+
+fn parse_toml(path: &std::path::Path) -> Result<toml_edit::DocumentMut, AppError> {
     let raw = if path.exists() {
-        std::fs::read_to_string(&path)?
+        std::fs::read_to_string(path)?
     } else {
         String::new()
     };
@@ -123,14 +148,11 @@ pub fn apply_import(
     if entries.is_empty() {
         return Err(AppError::Config("没有可导入的模型".into()));
     }
-    match target {
-        CliTarget::GeminiCli | CliTarget::GrokBuild => {
-            return Err(AppError::Config(format!(
-                "{} 没有可写的模型目录配置，内核在代理层完成映射",
-                target.label()
-            )));
-        }
-        _ => {}
+    if matches!(target, CliTarget::GeminiCli) {
+        return Err(AppError::Config(
+            "Gemini CLI 只有当前模型一个槽位（model.name），没有可追加的目录。请在 CLI 接管页的高级配置里改"
+                .into(),
+        ));
     }
     // Import only makes sense once the CLI points at the kernel; otherwise the
     // aliases would be sent to whatever upstream the CLI currently uses.
@@ -181,6 +203,10 @@ pub fn apply_import(
         CliTarget::Codex => Some(parse_codex(root)?),
         _ => None,
     };
+    let grok_doc = match target {
+        CliTarget::GrokBuild => Some(parse_grok(root)?),
+        _ => None,
+    };
     let opencode_doc = match target {
         CliTarget::OpenCode => Some(read_json(&root.join(".config/opencode/opencode.json"))?),
         _ => None,
@@ -198,7 +224,28 @@ pub fn apply_import(
                 let env = object_at(&mut doc, "env")?;
                 for (key, e) in &bind {
                     env.insert((*key).into(), Value::String(e.alias.clone()));
+                    // ANTHROPIC_MODEL 没有 *_SUPPORTED_CAPABILITIES 这个键，
+                    // 主模型靠 CLAUDE_CODE_ALWAYS_ENABLE_EFFORT 发 effort。
+                    if *key != "ANTHROPIC_MODEL" {
+                        if let Some(caps) = claude_capabilities(&e.alias) {
+                            env.insert(
+                                format!("{key}_SUPPORTED_CAPABILITIES"),
+                                Value::String(caps.into()),
+                            );
+                        }
+                    }
                 }
+                // 走 ccLoad 时模型 id 不是 Anthropic 官方那几个，Claude Code
+                // 不认就不会发 effort，表现就是 `/effort` 没反应。这两个是
+                // 官方给网关别名准备的开关，写成 1 是幂等的。
+                env.insert(
+                    "CLAUDE_CODE_ALWAYS_ENABLE_EFFORT".into(),
+                    Value::String("1".into()),
+                );
+                env.insert(
+                    "CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT".into(),
+                    Value::String("1".into()),
+                );
                 // 上下文上限在 Claude Code 里是**全局**一个开关，不是 per-model。
                 // 只有用户明确把某个模型绑到 default 槽位、且那一行填了窗口，才
                 // 跟着改；否则保留用户原值。
@@ -212,6 +259,29 @@ pub fn apply_import(
                         "CLAUDE_CODE_MAX_CONTEXT_TOKENS".into(),
                         Value::String(w.to_string()),
                     );
+                    if let Some(compact) = claude_auto_compact_window(w) {
+                        env.insert(
+                            "CLAUDE_CODE_AUTO_COMPACT_WINDOW".into(),
+                            Value::String(compact.to_string()),
+                        );
+                    }
+                }
+                // 第 6 个槽：一个没绑 tier 的别名，留给 /model 选择器。已有值
+                // 是用户的，不覆盖。
+                if !env.contains_key("ANTHROPIC_CUSTOM_MODEL_OPTION") {
+                    if let Some(extra) = skipped.first() {
+                        env.insert(
+                            "ANTHROPIC_CUSTOM_MODEL_OPTION".into(),
+                            Value::String(extra.clone()),
+                        );
+                        if let Some(caps) = claude_capabilities(extra) {
+                            env.insert(
+                                "ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES".into(),
+                                Value::String(caps.into()),
+                            );
+                        }
+                        skipped.remove(0);
+                    }
                 }
             }
             write_pretty_json(&path, &doc)?;
@@ -248,6 +318,9 @@ pub fn apply_import(
                 if let Some(w) = e.context_window.filter(|n| *n > 0) {
                     tbl["model_context_window"] = toml_edit::value(w);
                 }
+                if let Some(menu) = reasoning_menu(&e.alias) {
+                    tbl["model_reasoning_effort"] = toml_edit::value(menu.default);
+                }
             }
             write_atomic(&root.join(".codex/config.toml"), &doc.to_string())?;
             written.push(root.join(".codex/config.toml").display().to_string());
@@ -263,14 +336,37 @@ pub fn apply_import(
                     .ok_or_else(|| {
                         AppError::Config("opencode.json 里没有 provider.ccload，请先接管".into())
                     })?;
-                let entry_for = |alias: &str, e: &ImportEntry| {
-                    let mut m = serde_json::Map::new();
+                let entry_for = |alias: &str, e: &ImportEntry, existing: Option<&Value>| {
+                    let mut m = existing
+                        .and_then(Value::as_object)
+                        .cloned()
+                        .unwrap_or_default();
                     m.insert("name".into(), Value::String(alias.to_string()));
                     if let Some(w) = e.context_window.filter(|n| *n > 0) {
                         m.insert(
                             "limit".into(),
                             serde_json::json!({ "context": w, "output": DEFAULT_OUTPUT_TOKENS }),
                         );
+                    }
+                    if let Some(menu) = reasoning_menu(alias) {
+                        m.insert("reasoning".into(), Value::Bool(true));
+                        let options = m
+                            .entry("options".to_string())
+                            .or_insert_with(|| Value::Object(Default::default()));
+                        if let Some(obj) = options.as_object_mut() {
+                            obj.insert(
+                                "reasoningEffort".into(),
+                                Value::String(menu.default.into()),
+                            );
+                        }
+                        let mut variants = serde_json::Map::new();
+                        for lvl in menu.levels {
+                            variants.insert(
+                                lvl.id.to_string(),
+                                serde_json::json!({ "reasoningEffort": lvl.value }),
+                            );
+                        }
+                        m.insert("variants".into(), Value::Object(variants));
                     }
                     Value::Object(m)
                 };
@@ -305,13 +401,14 @@ pub fn apply_import(
                     removed = dropped;
                 }
                 for e in &entries {
-                    catalog.insert(e.alias.clone(), entry_for(&e.alias, e));
+                    let prev = catalog.get(&e.alias).cloned();
+                    catalog.insert(e.alias.clone(), entry_for(&e.alias, e, prev.as_ref()));
                     // Also expose the un-namespaced spelling so selecting
                     // `nova-2-lite-v1` resolves as well as `amazon/nova-2-lite-v1`.
                     if let Some(bare) = bare_alias(&e.alias) {
-                        catalog
-                            .entry(bare.to_string())
-                            .or_insert_with(|| entry_for(bare, e));
+                        if !catalog.contains_key(bare) {
+                            catalog.insert(bare.to_string(), entry_for(bare, e, None));
+                        }
                     }
                 }
             }
@@ -335,8 +432,30 @@ pub fn apply_import(
             write_pretty_json(&path, &doc)?;
             written.push(path.display().to_string());
         }
+        CliTarget::GrokBuild => {
+            let mut doc = grok_doc.expect("parsed above");
+            let endpoint = current_endpoint(root, target).expect("takeover checked above");
+            let token = current_token(root, target).unwrap_or_default();
+            for e in &entries {
+                cli_grok::write_catalog_entry(
+                    &mut doc,
+                    &e.alias,
+                    &endpoint,
+                    &token,
+                    e.context_window,
+                )?;
+            }
+            if prune {
+                let keep: std::collections::HashSet<String> =
+                    entries.iter().map(|e| e.alias.clone()).collect();
+                removed = cli_grok::prune_catalog(&mut doc, &keep, &endpoint);
+            }
+            let path = root.join(".grok/config.toml");
+            write_atomic(&path, &doc.to_string())?;
+            written.push(path.display().to_string());
+        }
         // Unreachable: filtered above, and the compiler wants the match total.
-        CliTarget::GeminiCli | CliTarget::GrokBuild => unreachable!(),
+        CliTarget::GeminiCli => unreachable!(),
     }
 
     Ok(ImportResult {
@@ -375,7 +494,7 @@ mod tests {
             false,
         )
         .unwrap_err();
-        assert!(err.to_string().contains("没有可写"));
+        assert!(err.to_string().contains("model.name"), "{err}");
     }
 
     #[test]
@@ -440,7 +559,8 @@ mod tests {
             false,
         )
         .unwrap();
-        assert_eq!(r.skipped, vec!["gpt-5.6", "grok-4.6"]);
+        // 没绑 slot 的第一行进 CUSTOM_MODEL_OPTION，其余才算 skipped。
+        assert_eq!(r.skipped, vec!["grok-4.6"]);
 
         let doc: Value =
             serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
@@ -448,6 +568,19 @@ mod tests {
         assert_eq!(
             doc.pointer("/env/ANTHROPIC_DEFAULT_HAIKU_MODEL").unwrap(),
             "glm-5.3"
+        );
+        assert_eq!(
+            doc.pointer("/env/ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES")
+                .unwrap(),
+            "effort,thinking"
+        );
+        assert_eq!(
+            doc.pointer("/env/ANTHROPIC_CUSTOM_MODEL_OPTION").unwrap(),
+            "gpt-5.6"
+        );
+        assert_eq!(
+            doc.pointer("/env/CLAUDE_CODE_ALWAYS_ENABLE_EFFORT").unwrap(),
+            "1"
         );
         // 用户原来绑好的 opus 槽位没人认领，必须原样留着。
         assert_eq!(
@@ -458,6 +591,10 @@ mod tests {
         assert_eq!(
             doc.pointer("/env/CLAUDE_CODE_MAX_CONTEXT_TOKENS").unwrap(),
             "262144"
+        );
+        assert_eq!(
+            doc.pointer("/env/CLAUDE_CODE_AUTO_COMPACT_WINDOW").unwrap(),
+            "182144"
         );
     }
 
@@ -588,6 +725,10 @@ mod tests {
         assert!(doc["profiles"]["glm-5.3"]
             .get("model_context_window")
             .is_none());
+        assert_eq!(
+            doc["profiles"]["kimi-k3"]["model_reasoning_effort"].as_str(),
+            Some("high")
+        );
     }
 
     /// 导入只往目录里加。用户手工加的模型、以及他当前选中的默认模型，
@@ -720,6 +861,16 @@ mod tests {
                 .unwrap(),
             262_144
         );
+        assert_eq!(
+            doc.pointer("/provider/ccload/models/kimi-k3/reasoning")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            doc.pointer("/provider/ccload/models/kimi-k3/options/reasoningEffort")
+                .unwrap(),
+            "high"
+        );
         // No context window → no limit block, only the name.
         assert!(doc.pointer("/provider/ccload/models/fable-5/limit").is_none());
         assert_eq!(
@@ -809,6 +960,103 @@ mod tests {
         )
         .unwrap();
         assert!(!out.backup_id.is_empty(), "prune 必须留下可回滚的快照");
+    }
+
+    fn grok_root(dir: &tempfile::TempDir) -> (ConfigRoot, BackupStore, std::path::PathBuf) {
+        let (root, bk) = root_in(dir);
+        let path = root.join(".grok/config.toml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "[models]\ndefault = \"ccload\"\n\n\
+             [model.ccload]\nmodel = \"grok-4.6\"\n\
+             base_url = \"http://x/v1\"\napi_key = \"tok\"\n",
+        )
+        .unwrap();
+        (root, bk, path)
+    }
+
+    /// Grok 的可追加面是 `[model.<别名>]`。顶层 default（用户当前在用的）不能被碰。
+    #[test]
+    fn grok_import_writes_custom_tables_and_keeps_the_active_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, bk, path) = grok_root(&dir);
+
+        apply_import(
+            &root,
+            CliTarget::GrokBuild,
+            &[
+                entry("glm-5.3-flash[1M]", Some(1_000_000), None),
+                entry("claude-opus-5", Some(1_000_000), None),
+                entry("grok-4.5", Some(500_000), None),
+            ],
+            "s1",
+            &bk,
+            false,
+        )
+        .unwrap();
+
+        let doc = std::fs::read_to_string(&path)
+            .unwrap()
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap();
+        assert_eq!(doc["models"]["default"].as_str(), Some("ccload"));
+        let glm = &doc["model"]["glm-5.3-flash[1M]"];
+        assert_eq!(glm["model"].as_str(), Some("glm-5.3-flash[1M]"));
+        assert_eq!(glm["api_backend"].as_str(), Some("chat_completions"));
+        assert_eq!(glm["context_window"].as_integer(), Some(1_000_000));
+        assert_eq!(glm["supports_reasoning_effort"].as_bool(), Some(true));
+        assert_eq!(glm["base_url"].as_str(), Some("http://x/v1"));
+        let opus = &doc["model"]["claude-opus-5"];
+        assert_eq!(opus["api_backend"].as_str(), Some("chat_completions"));
+        assert!(opus["reasoning_efforts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v
+                .as_inline_table()
+                .and_then(|t| t.get("id"))
+                .and_then(|x| x.as_str())
+                == Some("xhigh")));
+        let g45 = &doc["model"]["grok-4.5"];
+        assert_eq!(g45["api_backend"].as_str(), Some("responses"));
+        assert!(
+            !g45["reasoning_efforts"].as_array().unwrap().iter().any(|v| {
+                v.as_inline_table()
+                    .and_then(|t| t.get("id"))
+                    .and_then(|x| x.as_str())
+                    == Some("xhigh")
+            }),
+            "official grok-4.5 menu has no xhigh"
+        );
+    }
+
+    #[test]
+    fn grok_import_prune_drops_retired_aliases_not_the_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, bk, path) = grok_root(&dir);
+        let mut raw = std::fs::read_to_string(&path).unwrap();
+        raw.push_str("\n[model.retired]\nbase_url = \"http://x/v1\"\n");
+        std::fs::write(&path, raw).unwrap();
+
+        let out = apply_import(
+            &root,
+            CliTarget::GrokBuild,
+            &[entry("glm-5.3-flash[1M]", Some(1_000_000), None)],
+            "s1",
+            &bk,
+            true,
+        )
+        .unwrap();
+
+        let doc = std::fs::read_to_string(&path)
+            .unwrap()
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap();
+        assert!(doc["model"].get("retired").is_none());
+        assert!(doc["model"].get("ccload").is_some());
+        assert!(doc["model"].get("glm-5.3-flash[1M]").is_some());
+        assert_eq!(out.removed, vec!["retired"]);
     }
 
 }
