@@ -294,6 +294,38 @@ fn save(path: &Path, entries: &[Value]) -> Result<String, AppError> {
 /// （argv[0] 是 `~/.local/bin/claude` 符号链接，不含 `share/claude/versions`；
 /// 不带 `--resume` 时命令行里也没有 uuid），于是瘦身/压缩/删除的「活会话跳过」
 /// 从来没生效过。
+/// 这个 pid 还活着吗。
+///
+/// Unix 上用信号 0 探（不真发信号，只做权限和存在性检查）。Windows 上没有
+/// `libc::kill`，退回 `tasklist` —— 会话残留文件在那边最多让一条已经死掉的
+/// 会话暂时删不掉，不值得为它引一个 winapi 依赖。
+#[cfg(unix)]
+fn pid_alive(pid: i64) -> bool {
+    unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
+#[cfg(not(unix))]
+fn pid_alive(pid: i64) -> bool {
+    // 数组字面量的元素类型必须一致，别把 `&str` 和 `&String` 混在一个 args 里。
+    let filter = format!("PID eq {pid}");
+    let Ok(out) = std::process::Command::new("tasklist")
+        .arg("/FI")
+        .arg(&filter)
+        .arg("/NH")
+        .arg("/FO")
+        .arg("CSV")
+        .output()
+    else {
+        // 查不了就当它活着：宁可少删一条，也不要把用户正开着的会话改掉。
+        return true;
+    };
+    // 没有匹配时 tasklist 打印一句 INFO，不含引号包起来的行。只认
+    // 以 `"进程名","<pid>"` 开头的 CSV 行，避免匹配到内存占用那一列的数字。
+    let text = String::from_utf8_lossy(&out.stdout);
+    let needle = format!("\",\"{pid}\",");
+    text.lines().any(|l| l.contains(&needle))
+}
+
 fn live_session_ids() -> HashSet<String> {
     let mut out = HashSet::new();
 
@@ -320,7 +352,7 @@ fn live_session_ids() -> HashSet<String> {
             let Some(id) = doc.get("sessionId").and_then(|v| v.as_str()) else {
                 continue;
             };
-            if pid <= 0 || unsafe { libc::kill(pid as i32, 0) } != 0 {
+            if pid <= 0 || !pid_alive(pid) {
                 continue; // 进程不在了：条目是残留
             }
             out.insert(id.to_string());

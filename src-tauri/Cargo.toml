@@ -26,9 +26,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 tokio = { version = "1", features = ["process", "time", "io-util", "sync", "rt-multi-thread", "macros"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "socks"] }
-# stop_node_service 用它给整个进程组发信号：tokio 的 Child::kill 只杀 pid，
-# node 服务拉起的 headless CLI（一次跑上十分钟的 claude -p）会被留在原地继续烧 token。
-libc = "0.2"
 futures-util = "0.3"
 thiserror = "2"
 toml_edit = "0.22"
@@ -57,3 +54,9 @@ tempfile = "3"
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+
+# 只在 Unix 上要：给进程组发信号（tokio 的 Child::kill 只杀 pid，node 服务
+# 拉起的 headless CLI 会被留在原地烧 token），以及用信号 0 探 pid 活没活。
+# Windows 上没有这些 API，那两处各有自己的分支，别让它白拉一个依赖。
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
