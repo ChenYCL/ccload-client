@@ -5,7 +5,7 @@
 
 use tauri::State;
 
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::services::node_services::{
     load_services, save_services, NodeService, ServiceStatus,
 };
@@ -23,6 +23,43 @@ pub async fn node_service_save(
     service: NodeService,
 ) -> AppResult<Vec<NodeService>> {
     let mut list = load_services(state.config_dir());
+    // 校验放在后端而不是只放在表单里：命令是公开的，陈旧的界面或直接 invoke
+    // 都能绕过前端那几个判断。端口撞了不会当场报错，而是等到启动时健康检查
+    // 超时 —— 那个错误信息指不到真正的原因上。
+    if service.id.trim().is_empty() {
+        return Err(AppError::Config("服务名不能为空".into()).into());
+    }
+    if service.port < 1024 {
+        return Err(AppError::Config(format!(
+            "端口 {} 不可用：1024 以下是特权端口",
+            service.port
+        ))
+        .into());
+    }
+    if let Some(other) = list
+        .iter()
+        .find(|s| s.id != service.id && s.port == service.port)
+    {
+        return Err(AppError::Config(format!(
+            "端口 {} 已经被「{}」占了",
+            service.port, other.id
+        ))
+        .into());
+    }
+    // 壳体自己占着的端口：CLI 数据面代理，以及当前内核（托管模式下是本机端口）。
+    let kernel_port = state.settings.read().await.kernel.port;
+    for (taken, who) in [
+        (crate::services::cli_proxy::PROXY_PORT, "CLI 本地代理"),
+        (kernel_port, "内核"),
+    ] {
+        if service.port == taken {
+            return Err(AppError::Config(format!(
+                "端口 {} 是{}在用的，换一个",
+                service.port, who
+            ))
+            .into());
+        }
+    }
     match list.iter_mut().find(|s| s.id == service.id) {
         Some(slot) => *slot = service,
         None => list.push(service),

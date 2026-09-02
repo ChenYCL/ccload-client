@@ -298,11 +298,16 @@ function ServiceEditor({
   const portTaken = existing.some(
     (s) => s.id !== initial.id && s.port === draft.port,
   );
+  // 脚本内容和入口路径**二选一**即可：填了脚本就由后端落盘并回填 entry。
+  // 以前这里无条件要求 entry 非空，而自动落盘那条路的前提正是 entry 为空 ——
+  // 于是「选模板 → 保存」这条路从来走不通：用户被迫先编一个路径出来，
+  // 脚本反而被静默丢掉，启动时报「入口脚本不存在」。
+  const hasScript = scriptText.trim().length > 0;
   const problem = !draft.id.trim()
     ? t("名字不能为空")
     : idTaken
       ? t("这个名字已经用过了")
-      : !draft.entry.trim()
+      : !draft.entry.trim() && !hasScript
         ? t("入口脚本路径不能为空")
         : draft.port < 1
           ? t("端口不合法")
