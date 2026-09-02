@@ -53,16 +53,24 @@ impl Drop for TmpFile {
 /// Authorization 头。所以这里必须显式把权限贴回去：目标存在就沿用它的，
 /// 不存在就按 0600 建。
 pub fn write_atomic(path: &Path, contents: &str) -> Result<(), AppError> {
-    let parent = path
+    // 先把符号链接解开，对**真身**做换 inode。
+    //
+    // 用 dotfile 管理器（chezmoi / stow / 手工 ln -s）的人，`~/.claude/settings.json`
+    // 常常是一条指向 git 仓库里那份的链接。直接 rename 到 `path` 会把**链接本身**
+    // 替换成普通文件：用户的仓库从此再也收不到改动，而他以为一切还被管理着 ——
+    // 这种「安静地脱管」比报错难发现得多。链接断了（指向不存在的路径）时
+    // canonicalize 会失败，那就按原路径处理，等价于新建。
+    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let parent = target
         .parent()
-        .ok_or_else(|| AppError::Config(format!("{} has no parent dir", path.display())))?;
+        .ok_or_else(|| AppError::Config(format!("{} has no parent dir", target.display())))?;
     std::fs::create_dir_all(parent)?;
-    let tmp = TmpFile(unique_tmp(path, parent));
+    let tmp = TmpFile(unique_tmp(&target, parent));
     std::fs::write(&tmp.0, contents)?;
     // 权限贴不回去就别把文件换过去：宁可这次写入失败，也不要让一个带凭据的
     // 文件以比原来宽松的权限落地。失败时的清理由 TmpFile 的 Drop 负责。
-    carry_permissions(path, &tmp.0)?;
-    std::fs::rename(&tmp.0, path)?;
+    carry_permissions(&target, &tmp.0)?;
+    std::fs::rename(&tmp.0, &target)?;
     Ok(())
 }
 
@@ -258,5 +266,33 @@ mod tests {
         let mode = std::fs::metadata(&dest).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o640, "snapshot's mode wins, not the one we had written");
         assert!(leftover_tmps(dest.parent().unwrap()).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod symlink_tests {
+    use super::*;
+
+    /// 用 dotfile 管理器（chezmoi / stow / 自己 ln -s）的人，`~/.claude/settings.json`
+    /// 常常是一条指向 git 仓库里那份的符号链接。`rename` 换 inode 会把**链接本身**
+    /// 替换成普通文件：用户的仓库从此收不到改动，而他以为还在被管理。
+    ///
+    /// 这条测试钉住我们的选择：写穿到链接指向的真实文件，链接保持是链接。
+    #[cfg(unix)]
+    #[test]
+    fn writing_through_a_symlink_keeps_the_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real.json");
+        let link = dir.path().join("settings.json");
+        std::fs::write(&real, "{\"a\":1}").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        write_atomic(&link, "{\"a\":2}").unwrap();
+
+        assert!(
+            std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(),
+            "符号链接被换成了普通文件 —— 用户的 dotfile 仓库从此收不到改动"
+        );
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "{\"a\":2}", "改动没写到链接指向的真文件上");
     }
 }
