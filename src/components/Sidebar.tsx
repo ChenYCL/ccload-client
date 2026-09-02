@@ -265,14 +265,23 @@ export function Sidebar(props: {
         ) : (
           <button
             onClick={props.onStart}
-            disabled={props.starting}
+            /* 内核已经在启动中（比如设置页刚点过「重启内核」）时也要禁掉：
+               只看自己这个 mutation 的 isPending 的话，另一处发起的启动期间
+               这个按钮仍可点，后端就会收到第二次 start。 */
+            disabled={props.starting || props.status?.state === "starting"}
             title={collapsed ? t("启动内核") : undefined}
             className={cn(
               "mt-2.5 w-full rounded-lg bg-accent py-2 font-medium text-white shadow-sm hover:bg-accent/90 disabled:opacity-50",
               collapsed ? "px-0" : "px-2",
             )}
           >
-            {collapsed ? <Power className="mx-auto h-4 w-4" /> : props.starting ? t("启动中…") : t("启动内核")}
+            {collapsed ? (
+              <Power className="mx-auto h-4 w-4" />
+            ) : props.starting || props.status?.state === "starting" ? (
+              t("启动中…")
+            ) : (
+              t("启动内核")
+            )}
           </button>
         )}
       </div>

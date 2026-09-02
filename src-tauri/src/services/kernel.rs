@@ -178,6 +178,14 @@ pub struct Kernel {
     child: Mutex<Option<Child>>,
     status: Mutex<KernelStatus>,
     http: RwLock<reqwest::Client>,
+    /// 串行化 `start()`。
+    ///
+    /// 只看 `Running` 早退是不够的：状态为 `Starting` 时第二次调用会照样往下走，
+    /// `spawn_managed` 里那句 `*self.child = Some(child)` 把第一个 `Child` drop 掉
+    /// —— `kill_on_drop` 当场 SIGKILL 正在启动的内核，第二个要么撞 "address in
+    /// use" 要么起来后被第一个的轮询覆盖状态。界面上够得着：设置页「重启内核」
+    /// 把状态置为 starting，而侧栏「启动内核」按钮此时仍可点。
+    start_lock: Mutex<()>,
 }
 
 impl Kernel {
@@ -186,6 +194,7 @@ impl Kernel {
             child: Mutex::new(None),
             status: Mutex::new(KernelStatus::Stopped),
             http: RwLock::new(direct_loopback_client()),
+            start_lock: Mutex::new(()),
         })
     }
 
@@ -220,6 +229,9 @@ impl Kernel {
     /// no process is spawned. Idempotent: a already-running managed child is
     /// left alone.
     pub async fn start(&self, cfg: &KernelConfig, binary: Option<PathBuf>) -> Result<(), AppError> {
+        // 整个启动过程串行化。抢到锁之后再查一次状态：排在后面的那个调用
+        // 等到的多半是「前一个已经起好了」，直接复用即可。
+        let _serial = self.start_lock.lock().await;
         if let KernelStatus::Running { .. } = self.status().await {
             return Ok(());
         }
@@ -333,10 +345,33 @@ impl Kernel {
     }
 
     /// Terminate a managed child. No-op in remote mode.
+    /// 停掉托管内核。
+    ///
+    /// **先 SIGTERM 整个进程组，等它自己收尾，超时才 SIGKILL。**
+    /// 以前这里是 `start_kill()`（在 Unix 上就是 SIGKILL），所以下面那句
+    /// 「给它一点时间把 SQLite 刷盘」是假的 —— 进程在等待开始之前就已经死了。
+    /// 内核自己有 SIGTERM 处理：5s HTTP 收尾 + 10s 任务收尾，并在那里显式把
+    /// 排队的日志批次刷出去（vendor/ccLoad/main.go 的 shutdown 路径）。
+    /// 直接 SIGKILL 等于每次退出都丢掉日志尾巴，也跳过 WAL checkpoint。
+    ///
+    /// 发给 `-pgid` 而不是 pid：spawn 时设了 `process_group(0)`，内核自己拉起的
+    /// 子进程只有整组发信号才收得掉。
     pub async fn stop(&self) -> Result<(), AppError> {
         if let Some(mut child) = self.child.lock().await.take() {
+            #[cfg(unix)]
+            if let Some(pid) = child.id() {
+                unsafe { libc::kill(-(pid as i32), libc::SIGTERM) };
+                // 内核的收尾预算是 5s + 10s，给到 16s；正常情况下它几百毫秒就退了。
+                let graceful =
+                    tokio::time::timeout(Duration::from_secs(16), child.wait()).await;
+                if graceful.is_ok() {
+                    self.set_status(KernelStatus::Stopped).await;
+                    return Ok(());
+                }
+                tracing::warn!("kernel 没有在 16s 内响应 SIGTERM，改用 SIGKILL");
+                unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+            }
             let _ = child.start_kill();
-            // Give it a moment to flush SQLite before it is reaped.
             let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
         }
         self.set_status(KernelStatus::Stopped).await;

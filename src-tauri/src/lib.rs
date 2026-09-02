@@ -74,11 +74,25 @@ pub fn run() {
                 // 远端内核没有进程可管，但也得有人探一次 /health，否则状态停在
                 // Stopped、内核后台页一直显示「未运行」—— 哪怕远端活得好好的。
                 // 只探 Remote：Managed 模式保持「用户点启动才起进程」的现状。
-                // 远端真挂了也不致命，记一行日志即可。
-                if state.settings.read().await.kernel.mode == crate::services::kernel::KernelMode::Remote {
-                    if let Err(e) = state.kernel.start(&state.settings.read().await.kernel, None).await {
-                        tracing::warn!("kernel probe at launch: {e}");
-                    }
+                //
+                // **丢到旁边的任务里跑**：探测最坏要等 READY_TIMEOUT，而它后面
+                // 排着 CLI 代理 —— 远端不可达时，CLI 会对着一个还没监听的 15777
+                // 等上一分半。两件事本来就不相干。
+                //
+                // 另外必须**先把配置克隆出来再 await**：把 `settings.read().await`
+                // 的临时值直接借给 start()，那个读锁会活过整个探测，而 tokio 的
+                // RwLock 是写优先的 —— 期间任何一次 settings.write()（保存设置、
+                // 铸令牌、切代理开关）都会排队，其后所有 read() 跟着堵死，整个
+                // 界面停在「读取中…」。而这恰恰是用户要去设置页改远端地址的那刻。
+                let kernel_cfg = state.settings.read().await.kernel.clone();
+                if kernel_cfg.mode == crate::services::kernel::KernelMode::Remote {
+                    let h = handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let state = h.state::<AppState>();
+                        if let Err(e) = state.kernel.start(&kernel_cfg, None).await {
+                            tracing::warn!("kernel probe at launch: {e}");
+                        }
+                    });
                 }
                 if let Err(e) = crate::commands::kernel::ensure_embed_proxy(&state).await {
                     tracing::warn!("embed proxy: {e}");
@@ -285,6 +299,24 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = _event {
                 show_main_window(_app);
+            }
+            // ⌘Q / 菜单栏「退出」/ 注销走的是 AppKit 的 terminate:，最后落到
+            // `RunEvent::Exit`。托盘那条退出路径把内核和 Node 服务收干净了，
+            // **而 ⌘Q 是更常用的那个手势** —— 不在这里收一遍，退出后 ccload
+            // 还占着端口和 ccload.db（`app.exit` 不跑析构，`kill_on_drop` 永远
+            // 不触发，进程又被 process_group(0) 摘出了信号组），下次启动要么
+            // "address in use"，要么那个杀不掉的孤儿先应答 /health，界面显示
+            // 「运行中」而我们手里的句柄早已失效；node 服务拉起的 headless CLI
+            // 还会接着烧 token。
+            //
+            // Exit 是不可取消的收尾事件，此刻运行时还活着，可以 block_on。
+            if let tauri::RunEvent::Exit = _event {
+                if let Some(state) = _app.try_state::<AppState>() {
+                    tauri::async_runtime::block_on(async {
+                        state.node_services.stop_all().await;
+                        let _ = state.kernel.stop().await;
+                    });
+                }
             }
         });
 }
