@@ -473,6 +473,12 @@ async fn handle_conn(
 ) -> std::io::Result<()> {
     let mut buf: Vec<u8> = Vec::with_capacity(16 * 1024);
     let mut tmp = [0u8; 16 * 1024];
+    // 打点在**收到请求**时，不是 send 返回之后 —— 内核日志的时间是
+    // attemptStartTime（attempt 开始），会话配对做的是 `内核时间 − 代理时间 ∈
+    // [0, 180s]` 的正向配对。以前在 send 之后取值，gap 成了负的 TTFB：
+    // 大多数请求配不上自己的日志，转而去抓最近的一条**更晚的**同模型日志
+    // —— 那可能是下一个 turn、也可能是别的会话的，成本被悄悄挪了账。
+    let started = now_secs();
     let header_end = loop {
         let n = client.read(&mut tmp).await?;
         if n == 0 {
@@ -622,7 +628,7 @@ async fn handle_conn(
             push_record(
                 &records,
                 ProxyRecord {
-                    time: now_secs(),
+                    time: started,
                     cli,
                     session_id,
                     model,
@@ -647,7 +653,7 @@ async fn handle_conn(
     push_record(
         &records,
         ProxyRecord {
-            time: now_secs(),
+            time: started,
             cli,
             session_id,
             model,

@@ -103,8 +103,10 @@ pub struct SessionUsage {
 /// 今日按 CLI / 会话的消耗聚合。
 ///
 /// 对齐方式和日志页同一个（见 `lib/sessionMatch.ts` 的 Rust 侧镜像）：
-/// 代理在请求开始打点、内核在结束记录，所以只认「代理时间 <= 内核时间」
-/// 且模型名对得上的配对，一条代理记录只认领一条日志。
+/// 代理在**收到请求**时打点、内核在 **attempt 开始**时打点（attemptStartTime），
+/// 两者相差通常不到一秒；配对只认「0 <= 内核时间 − 代理时间 <= 180s」且模型名
+/// 对得上，一条代理记录只认领一条日志。打点位置曾经不对（send 返回后才取），
+/// gap 成了负的 TTFB，成本会挪到下一条日志头上 —— 改打点位置时两边要一起动。
 #[tauri::command]
 pub async fn cli_proxy_usage(state: State<'_, AppState>) -> AppResult<CliUsageReport> {
     use std::collections::HashMap;
