@@ -21,6 +21,15 @@ pub enum CliTarget {
 }
 
 impl CliTarget {
+    /// 这家 CLI 的配置里有没有「上下文窗口」这个键可写。
+    ///
+    /// Gemini CLI 没有 —— 它只有 `model.name` 一个槽位，窗口由模型自己决定。
+    /// 启动自愈比对窗口时必须跳过它，否则「磁盘上读不到 ≠ 策略算得出」会被当成
+    /// 永远修不好的漂移。
+    pub fn has_context_window_key(self) -> bool {
+        !matches!(self, CliTarget::GeminiCli)
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::ClaudeCode => "Claude Code",

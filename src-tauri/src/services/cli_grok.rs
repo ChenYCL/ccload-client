@@ -109,6 +109,16 @@ pub fn apply_with_model(
         endpoint,
         api_token,
     )?;
+    // 窗口写在 **profile 表**上（`[model.ccload].context_window`），不管 routed
+    // 是内置 grok 还是自定义别名：Grok 的自动压缩看的是当前选中那张表的
+    // context_window，而 `models.default = "ccload"` 选中的就是这张。以前只有
+    // 自定义别名那条路会写，路由到 grok-4.3（1M）时 profile 表一直停在建表时的
+    // DEFAULT_WINDOW —— 自愈每次启动都判「漂了」，重写，却从来没改到这个键。
+    if let Some(w) = context_tokens.filter(|n| *n > 0) {
+        if let Some(t) = doc["model"][profile.as_str()].as_table_like_mut() {
+            t.insert("context_window", toml_edit::value(w));
+        }
+    }
     if routed != profile {
         if is_grok_builtin(&routed) {
             override_builtin(&mut doc, &routed, endpoint, api_token)?;

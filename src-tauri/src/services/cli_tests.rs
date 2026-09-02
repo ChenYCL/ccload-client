@@ -926,3 +926,96 @@ fn switching_the_endpoint_makes_preview_report_not_active() {
     assert!(!p.already_active, "地址变了就该报「未生效」");
     assert!(p.exists, "文件是在的，只是指向不对");
 }
+
+// ---------------------------------------------------------------------------
+// 启动自愈的收敛性：写一次窗口之后，磁盘上读回来的必须等于写进去的。
+//
+// 这是 `cli_reconcile` 里 `window_drifted` 的前提。任何一家「读得到、写不到」
+// 的 CLI 都会让自愈每次启动判「漂了」→ 重写 → 占一份快照，却永远修不好 ——
+// 之前 OpenCode（没换模型时不写 limit.context）和 Grok（路由到内置 grok-* 时
+// profile 表的 context_window 不更新）正是这样。
+// ---------------------------------------------------------------------------
+
+fn takeover_with_window(root: &ConfigRoot, bk: &BackupStore, target: CliTarget, w: i64) {
+    let opts = TakeoverOptions {
+        context_tokens: Some(w),
+        ..Default::default()
+    };
+    apply_takeover(root, target, "http://127.0.0.1:15722", "tok", "w", bk, opts).unwrap();
+}
+
+#[test]
+fn reconcile_converges_opencode_window_without_changing_the_model() {
+    use crate::services::cli_config::current_context_tokens;
+    let (_keep, root, bk) = sandbox();
+    // 「模型导入」当天写下的 200k 停在目录项上，顶层 model 已经选中它。
+    write(
+        &root,
+        ".config/opencode/opencode.json",
+        r#"{"model":"ccload/claude-sonnet-4-5","provider":{"ccload":{"models":{"claude-sonnet-4-5":{"name":"s","limit":{"context":200000,"output":32000}}},"options":{"baseURL":"http://old/v1","apiKey":"old"}}}}"#,
+    );
+    assert_eq!(current_context_tokens(&root, CliTarget::OpenCode), Some(200_000));
+
+    // 自愈那条路：不传模型，只传算出来的窗口。
+    takeover_with_window(&root, &bk, CliTarget::OpenCode, 1_000_000);
+
+    assert_eq!(
+        current_context_tokens(&root, CliTarget::OpenCode),
+        Some(1_000_000),
+        "没换模型时也必须把窗口刷到当前选中的目录项上，否则自愈永远收敛不了"
+    );
+    // 目录里别的字段不能被顺手清掉。
+    let oc: serde_json::Value =
+        serde_json::from_str(&read(&root, ".config/opencode/opencode.json")).unwrap();
+    assert_eq!(oc.pointer("/provider/ccload/models/claude-sonnet-4-5/name").unwrap(), "s");
+    assert_eq!(oc.pointer("/provider/ccload/models/claude-sonnet-4-5/limit/output").unwrap(), 32000);
+}
+
+#[test]
+fn reconcile_converges_grok_window_even_when_routed_to_a_builtin() {
+    use crate::services::cli_config::current_context_tokens;
+    let (_keep, root, bk) = sandbox();
+    // profile 表建表时的默认 500k；用户在 /model 里选的是 grok-4.3（1M）。
+    write(
+        &root,
+        ".grok/config.toml",
+        "[models]\ndefault = \"ccload\"\n\n[model.ccload]\nname = \"ccLoad\"\nmodel = \"grok-4.3\"\nbase_url = \"http://old/v1\"\napi_key = \"old\"\napi_backend = \"responses\"\ncontext_window = 500000\n",
+    );
+    assert_eq!(current_context_tokens(&root, CliTarget::GrokBuild), Some(500_000));
+
+    takeover_with_window(&root, &bk, CliTarget::GrokBuild, 1_000_000);
+
+    assert_eq!(
+        current_context_tokens(&root, CliTarget::GrokBuild),
+        Some(1_000_000),
+        "路由到内置 grok-* 时窗口也得落在 profile 表上 —— Grok 的自动压缩看的是它"
+    );
+}
+
+#[test]
+fn every_cli_with_a_window_key_reads_back_what_it_wrote() {
+    use crate::services::cli_config::current_context_tokens;
+    for target in [CliTarget::ClaudeCode, CliTarget::Codex, CliTarget::OpenCode, CliTarget::GrokBuild] {
+        assert!(target.has_context_window_key());
+        let (_keep, root, bk) = sandbox();
+        // 每家都先接管一次并选个模型，让「当前模型」存在 —— 窗口是挂在它上面的。
+        let pick = TakeoverOptions {
+            anthropic_model: Some("claude-opus-5".into()),
+            codex_model: Some("gpt-5.4".into()),
+            opencode_model: Some("ccload/claude-opus-5".into()),
+            grok_model: Some("claude-opus-5".into()),
+            context_tokens: Some(200_000),
+            ..Default::default()
+        };
+        apply_takeover(&root, target, "http://127.0.0.1:15722", "tok", "p", &bk, pick).unwrap();
+        assert_eq!(current_context_tokens(&root, target), Some(200_000), "{target:?} first write");
+
+        // 第二次：自愈那条路，不带模型，只带新窗口。必须收敛。
+        takeover_with_window(&root, &bk, target, 1_000_000);
+        assert_eq!(current_context_tokens(&root, target), Some(1_000_000), "{target:?} reconcile write");
+    }
+    // Gemini 没有这个键：读永远是 None，自愈必须跳过它。
+    assert!(!CliTarget::GeminiCli.has_context_window_key());
+    let (_keep, root, _bk) = sandbox();
+    assert_eq!(current_context_tokens(&root, CliTarget::GeminiCli), None);
+}

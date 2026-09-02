@@ -251,9 +251,14 @@ pub async fn cli_reconcile(state: State<'_, AppState>) -> AppResult<Vec<String>>
         // `already_active` 为真，但磁盘上的窗口停在某次旧写入的数字上（最常见的是
         // 「模型导入」当天写的），而策略现在算出来是另一个数。光靠 already_active
         // 判断的话，用户必须手动去点每一家的「写入」才修得掉。
-        let window_drifted = opts.context_tokens.is_some_and(|want| {
-            crate::services::cli_config::current_context_tokens(&root, target) != Some(want)
-        });
+        //
+        // 只对**真有窗口键**的 CLI 做这个比对。Gemini 没有这个旋钮：磁盘上永远读
+        // 不到、策略却永远算得出，一比就是「漂了」—— 每次启动都重写、都占一份快照，
+        // 而实际上什么都改不了。
+        let window_drifted = target.has_context_window_key()
+            && opts.context_tokens.is_some_and(|want| {
+                crate::services::cli_config::current_context_tokens(&root, target) != Some(want)
+            });
         if p.already_active && !window_drifted {
             continue;
         }

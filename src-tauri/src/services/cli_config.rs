@@ -364,6 +364,13 @@ pub fn apply_takeover(
                 }
             } else {
                 ensure_opencode_default_model(&mut doc)?;
+                // 没换模型也要把窗口刷到**现在选中的**那条目录项上 —— 启动自愈
+                // 走的就是这条路（opencode_model 为 None）。不写的话，自愈每次
+                // 都判「窗口漂了」、每次都重写、每次都占一份快照，而 limit.context
+                // 从来没被碰过。
+                if let Some(alias) = current_model(root, target) {
+                    ensure_opencode_catalog_stub(&mut doc, &alias, opts.context_tokens)?;
+                }
             }
             if let Some(extra) = &opts.extra_env {
                 merge_extra_json(&mut doc, extra, CliTarget::OpenCode, false)?;

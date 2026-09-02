@@ -59,12 +59,18 @@ pub fn run() {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let state = handle.state::<AppState>();
-                // 模型窗口的第三方来源。先装磁盘缓存再按需更新，拉不到就退回
-                // 内置猜测表 —— 全程不阻塞，也不影响下面任何一步。
-                crate::services::model_catalog::startup(
-                    &state.config_dir().join("models-dev.json"),
-                )
-                .await;
+                // 模型窗口的第三方来源。**只装磁盘缓存**，网络更新丢到旁边去跑：
+                // 这条链后面是 CLI 代理和接管自愈，拉 models.dev 最坏要等 60s
+                // 超时 —— 让 CLI 对着一个还没监听的 15777 等一分钟，不值。
+                // 缓存过期时自愈用的是旧目录（或猜测表），下次启动就对了。
+                let cache = state.config_dir().join("models-dev.json");
+                crate::services::model_catalog::load_cache(&cache);
+                if crate::services::model_catalog::is_stale() {
+                    let cache = cache.clone();
+                    tauri::async_runtime::spawn(async move {
+                        crate::services::model_catalog::startup(&cache).await;
+                    });
+                }
                 // 远端内核没有进程可管，但也得有人探一次 /health，否则状态停在
                 // Stopped、内核后台页一直显示「未运行」—— 哪怕远端活得好好的。
                 // 只探 Remote：Managed 模式保持「用户点启动才起进程」的现状。
