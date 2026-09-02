@@ -71,6 +71,16 @@ impl ConfigRoot {
     pub(crate) fn join(&self, rel: &str) -> PathBuf {
         self.0.join(rel)
     }
+
+    /// 这个根的稳定标识，记进快照清单用。
+    ///
+    /// 快照必须知道自己是在哪个根下拍的：沙箱和真实 home 共用同一个 BackupStore，
+    /// 而恢复是 `root.join(rel)` —— 拿沙箱里那份「原始」快照（沙箱是空的，
+    /// 条目全是 existed:false）去恢复真实 home，等于**删掉** ~/.claude/settings.json
+    /// 和 ~/.codex/auth.json（里面是 ChatGPT 的 OAuth）。
+    pub(crate) fn tag(&self) -> String {
+        self.0.to_string_lossy().into_owned()
+    }
 }
 
 #[derive(Debug, Serialize)]

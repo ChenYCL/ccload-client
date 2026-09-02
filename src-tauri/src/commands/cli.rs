@@ -152,7 +152,10 @@ pub async fn cli_backups(
     state: State<'_, AppState>,
     target: Option<CliTarget>,
 ) -> AppResult<Vec<BackupEntry>> {
-    Ok(state.backups.list(target)?)
+    // 按当前配置根过滤：沙箱和真实 home 共用一个 store，把沙箱快照列出来
+    // 让用户点「恢复」，会按它记录的 existed:false 去删真实配置。
+    let root = state.config_root().await?;
+    Ok(state.backups.list_in(&root, target)?)
 }
 
 /// Roll a target's config files back to a snapshot. Files that did not exist
@@ -261,7 +264,7 @@ pub async fn cli_reconcile(state: State<'_, AppState>) -> AppResult<Vec<String>>
         // 没有快照 = 用户从没让我们接管过这一家，别自作主张。
         let taken_before = state
             .backups
-            .list(Some(target))
+            .list_in(&root, Some(target))
             .map(|v| !v.is_empty())
             .unwrap_or(false);
         if !taken_before {

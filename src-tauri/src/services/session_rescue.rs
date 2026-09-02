@@ -1611,16 +1611,24 @@ mod live_detect_tests {
 
     /// 回归：旧的 ps 扫描在标准安装上永远扫不到东西（argv[0] 是
     /// `~/.local/bin/claude` 符号链接，命令行里也没有 uuid），「活会话跳过」
-    /// 从来没生效过。新实现读 `~/.claude/sessions/<pid>.json`，本机一定有活的
-    /// Claude Code 进程（我们正跑在里面），所以集合必须非空，且 id 都是
-    /// uuid 形状。
+    /// 从来没生效过。
+    ///
+    /// **不能断言「一定有活会话」** —— CI 和任何不是从 Claude Code 里跑测试的
+    /// 终端上都没有，那样断言就是一条只在我这台机器上绿的测试。这里只钉住
+    /// 两件与环境无关的事：不 panic，且认出来的东西必须是 uuid 形状。
     #[test]
-    fn live_detection_finds_the_running_cli() {
-        let live = live_session_ids();
-        assert!(!live.is_empty(), "本机明明有活的 claude 进程，一个都没认出来");
-        for id in &live {
-            assert_eq!(id.len(), 36);
+    fn live_detection_returns_well_formed_ids() {
+        for id in &live_session_ids() {
+            assert_eq!(id.len(), 36, "{id} 不是 uuid 形状");
             assert_eq!(id.matches('-').count(), 4, "{id} 不是 uuid 形状");
         }
+    }
+
+    /// sessions 目录里 pid 已经不在的条目是崩溃残留，必须当过期丢掉 ——
+    /// 否则一条早就死掉的会话永远删不掉。用一个不可能存在的 pid 验证。
+    #[test]
+    fn a_dead_pid_is_not_live() {
+        assert!(!pid_alive(0x7FFF_FFFF), "不存在的 pid 被当成活的了");
+        assert!(pid_alive(std::process::id() as i64), "自己这个进程都认不出来");
     }
 }

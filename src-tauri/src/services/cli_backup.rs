@@ -38,7 +38,26 @@ pub struct BackupEntry {
     pub reason: String,
     /// True for the first snapshot of a target: the original user state.
     pub pristine: bool,
+    /// 拍这份快照时的配置根（沙箱路径或真实 home）。
+    ///
+    /// 沙箱和真实 home 共用同一个 BackupStore，而恢复是 `root.join(rel)`。
+    /// 不记根的话，沙箱里那份「原始」快照（沙箱是空的，条目全是 existed:false）
+    /// 可以被拿去恢复真实 home —— 结果是**删掉** ~/.claude/settings.json 和
+    /// ~/.codex/auth.json（ChatGPT 的 OAuth 在里面），而且 restore 之前没有
+    /// 任何后路。空字符串 = 旧清单里的条目，按「和当前根匹配」处理。
+    #[serde(default)]
+    pub root: String,
     pub files: Vec<BackupFile>,
+}
+
+impl BackupEntry {
+    /// 这份快照是不是在 `tag` 这个根下拍的。
+    ///
+    /// 空 root = 旧版本写的条目，那时只有一个根在用，按「匹配」处理，
+    /// 免得升级上来的用户突然看不到自己的历史快照。
+    pub(crate) fn matches_root(&self, tag: &str) -> bool {
+        self.root.is_empty() || self.root == tag
+    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -163,6 +182,19 @@ impl BackupStore {
         self.load().map(|_| ())
     }
 
+    /// 某个根下的快照。**必须传当前根** —— 沙箱和真实 home 共用一个 store，
+    /// 把沙箱的快照列给真实 home 看，用户点一下就会删掉真实配置。
+    pub fn list_in(
+        &self,
+        root: &ConfigRoot,
+        target: Option<CliTarget>,
+    ) -> Result<Vec<BackupEntry>, AppError> {
+        let tag = root.tag();
+        let mut entries = self.list(target)?;
+        entries.retain(|e| e.matches_root(&tag));
+        Ok(entries)
+    }
+
     pub fn list(&self, target: Option<CliTarget>) -> Result<Vec<BackupEntry>, AppError> {
         let _g = self.guard();
         let mut entries = self.load()?.entries;
@@ -199,8 +231,14 @@ impl BackupStore {
     ) -> Result<BackupEntry, AppError> {
         let _g = self.guard();
         let mut manifest = self.load()?;
+        let tag = root.tag();
         // The first snapshot of a target captures the user's original setup.
-        let pristine = !manifest.entries.iter().any(|e| e.target == target);
+        // **按根分别算**：在沙箱里拍过的快照不能让真实 home 的首次接管失去
+        // pristine 资格 —— 那会让用户真正的原始配置在 5 次写入后被轮换掉。
+        let pristine = !manifest
+            .entries
+            .iter()
+            .any(|e| e.target == target && e.matches_root(&tag));
 
         let snap_dir = self.dir.join(id);
         std::fs::create_dir_all(&snap_dir)?;
@@ -233,6 +271,7 @@ impl BackupStore {
             created_at: now_secs(),
             reason: reason.to_string(),
             pristine,
+            root: tag,
             files,
         };
         manifest.entries.push(entry.clone());
@@ -312,6 +351,7 @@ impl BackupStore {
             // 这类文件不在接管的文件集里，不代表「机器的原始状态」，
             // 所以永远不标 pristine —— 那个名额留给真正的首次接管快照。
             pristine: false,
+            root: root.tag(),
             files: vec![BackupFile {
                 rel: rel.to_string(),
                 stored: existed.then_some(stored),
@@ -342,6 +382,19 @@ impl BackupStore {
 
     /// Put the files back exactly as the snapshot found them.
     pub fn restore(&self, root: &ConfigRoot, id: &str) -> Result<Vec<String>, AppError> {
+        // 先给**现状**留一份，再覆盖。
+        //
+        // 恢复是不可逆地覆盖当前配置，而且「原始」那一份的语义是 existed:false ——
+        // 恢复它会**删掉**文件（Codex 的 auth.json 里是 ChatGPT 的 OAuth）。点错
+        // 一行之前没有任何后路。这一份快照就是那条后路。
+        //
+        // 拿不到 target 或快照失败不该挡住恢复本身：用户点恢复通常是因为当前
+        // 状态已经坏了，为了留档案把唯一的修复手段也堵死是本末倒置。
+        if let Ok(manifest) = self.load() {
+            if let Some(target) = manifest.entries.iter().find(|e| e.id == id).map(|e| e.target) {
+                let _ = self.snapshot(root, target, &unique_stamp(), "pre-restore");
+            }
+        }
         let _g = self.guard();
         let manifest = self.load()?;
         let entry = manifest
@@ -349,6 +402,17 @@ impl BackupStore {
             .iter()
             .find(|e| e.id == id)
             .ok_or_else(|| AppError::Config(format!("no backup with id {id}")))?;
+        // 跨根恢复必须挡住，这是最后一道。沙箱里那份「原始」快照的条目全是
+        // existed:false（沙箱当时是空的），拿它恢复真实 home 就是逐个 remove_file
+        // —— ~/.claude/settings.json 和 ~/.codex/auth.json（ChatGPT 的 OAuth）
+        // 当场消失。界面已经按根过滤了，但命令是公开的，别只靠界面。
+        if !entry.matches_root(&root.tag()) {
+            return Err(AppError::Config(
+                "这份快照是在另一个配置根下拍的（沙箱 ↔ 真实目录），不能拿来恢复当前目录 —— \
+                 它记录的「文件当时不存在」会变成删除。先在设置里切回拍它时的那个模式。"
+                    .into(),
+            ));
+        }
 
         let snap_dir = self.dir.join(&entry.id);
         let mut touched = Vec::new();
@@ -641,5 +705,104 @@ mod tests {
         let raw = std::fs::read_to_string(store.manifest_path()).unwrap();
         serde_json::from_str::<Manifest>(&raw).expect("manifest must stay valid JSON");
         assert!(store.list(Some(CliTarget::ClaudeCode)).unwrap().len() <= MAX_SNAPSHOTS_PER_TARGET);
+    }
+}
+
+#[cfg(test)]
+mod root_scope_tests {
+    use super::*;
+
+    fn store(dir: &std::path::Path) -> BackupStore {
+        BackupStore::new(dir.join("backups"))
+    }
+
+    /// 沙箱和真实 home 共用一个 store。沙箱里那份「原始」快照的条目全是
+    /// existed:false（沙箱当时是空的）—— 拿它恢复真实 home 就是逐个 remove_file：
+    /// ~/.claude/settings.json 和 ~/.codex/auth.json（ChatGPT 的 OAuth）当场消失。
+    /// 而 sandbox_cli_writes 默认开着，这是**默认路径**，不是边角情况。
+    #[test]
+    fn a_sandbox_snapshot_cannot_be_restored_over_the_real_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = store(dir.path());
+        let sandbox = ConfigRoot::sandbox(dir.path().join("sandbox"));
+        let realish = ConfigRoot::sandbox(dir.path().join("home"));
+
+        // 真实根下有一份用户的配置。
+        let real_file = realish.join(".claude/settings.json");
+        std::fs::create_dir_all(real_file.parent().unwrap()).unwrap();
+        std::fs::write(&real_file, "{\"mine\":true}").unwrap();
+
+        // 沙箱是空的 → 快照里全是 existed:false。
+        let snap = st
+            .snapshot(&sandbox, CliTarget::ClaudeCode, "s1", "takeover")
+            .unwrap();
+        assert!(snap.pristine);
+        assert!(snap.files.iter().all(|f| !f.existed));
+
+        // 拿它去恢复真实根：必须被拒，文件必须还在。
+        let err = st.restore(&realish, "s1").unwrap_err();
+        assert!(
+            format!("{err}").contains("另一个配置根"),
+            "跨根恢复没有被挡住：{err}"
+        );
+        assert!(real_file.exists(), "真实配置被跨根恢复删掉了");
+    }
+
+    /// 列表也要按根过滤 —— 界面上根本不该出现另一个根的快照。
+    #[test]
+    fn list_in_only_shows_the_current_roots_snapshots() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = store(dir.path());
+        let a = ConfigRoot::sandbox(dir.path().join("a"));
+        let b = ConfigRoot::sandbox(dir.path().join("b"));
+        st.snapshot(&a, CliTarget::Codex, "a1", "takeover").unwrap();
+        st.snapshot(&b, CliTarget::Codex, "b1", "takeover").unwrap();
+
+        let in_a = st.list_in(&a, Some(CliTarget::Codex)).unwrap();
+        assert_eq!(in_a.len(), 1);
+        assert_eq!(in_a[0].id, "a1");
+    }
+
+    /// pristine 按根各算一份：在沙箱试过之后，真实根的首次接管仍然是「原始」，
+    /// 否则用户真正的原始配置会在 5 次写入后被轮换掉。
+    #[test]
+    fn each_root_gets_its_own_pristine() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = store(dir.path());
+        let sandbox = ConfigRoot::sandbox(dir.path().join("sandbox"));
+        let realish = ConfigRoot::sandbox(dir.path().join("home"));
+
+        let s = st.snapshot(&sandbox, CliTarget::GrokBuild, "s1", "takeover").unwrap();
+        let r = st.snapshot(&realish, CliTarget::GrokBuild, "r1", "takeover").unwrap();
+        assert!(s.pristine, "沙箱的首份是它自己那个根的原始状态");
+        assert!(r.pristine, "真实根的首次接管必须也算原始 —— 否则会被轮换掉");
+    }
+
+    /// 恢复之前先给现状留一份，点错了还有后路。
+    #[test]
+    fn restore_snapshots_the_current_state_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = store(dir.path());
+        let root = ConfigRoot::sandbox(dir.path().join("home"));
+        let f = root.join(".claude/settings.json");
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+
+        std::fs::write(&f, "{\"v\":1}").unwrap();
+        st.snapshot(&root, CliTarget::ClaudeCode, "v1", "takeover").unwrap();
+        std::fs::write(&f, "{\"v\":2}").unwrap();
+
+        st.restore(&root, "v1").unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "{\"v\":1}");
+
+        let pre = st
+            .list_in(&root, Some(CliTarget::ClaudeCode))
+            .unwrap()
+            .into_iter()
+            .find(|e| e.reason == "pre-restore")
+            .expect("恢复前没有留下后路快照");
+        // 那份后路里存的必须是恢复**之前**的内容。
+        let stored = st.dir().join(&pre.id).join("__claude__settings.json".replace("__claude", ".claude"));
+        let body = std::fs::read_to_string(stored).unwrap();
+        assert_eq!(body, "{\"v\":2}", "后路快照存的不是恢复前的现状");
     }
 }

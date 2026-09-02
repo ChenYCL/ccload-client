@@ -94,7 +94,13 @@ pub fn copy_atomic(src: &Path, dest: &Path) -> Result<(), AppError> {
 fn carry_permissions(target: &Path, tmp: &Path) -> Result<(), AppError> {
     use std::os::unix::fs::PermissionsExt;
     let mode = match std::fs::metadata(target) {
-        Ok(m) => m.permissions().mode() & 0o7777,
+        // **收紧而不是原样沿用**。这些文件里有我们写进去的 ccload 凭据，而多数
+        // 是 CLI 自己按 umask 建的 0644 —— 实测本机 ~/.config/opencode/opencode.json
+        // 和 ~/.grok/config.toml 都是 0644 且各含 3~4 处 api key，同机任何用户
+        // 可读。AGENTS.md 那条「保留原权限」写在我们往里塞凭据之前；保留用户
+        // 自己加的位（比如给某个组开的读权限做不到，但至少不倒退），去掉
+        // group/other 的一切权限。
+        Ok(m) => (m.permissions().mode() & 0o7777) & !0o077,
         // 不存在（首次写入）或读不到元数据，都按私有建。
         Err(_) => PRIVATE_MODE,
     };
@@ -164,6 +170,41 @@ mod tests {
 
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "0600 file must not come back world-readable");
+    }
+
+    /// CLI 自己按 umask 建出来的 0644 文件，被我们塞进凭据之后必须收紧。
+    ///
+    /// 实测本机 ~/.config/opencode/opencode.json 和 ~/.grok/config.toml 都是
+    /// 0644 且各含 3~4 处 api key —— 同机任何用户直接可读。
+    #[cfg(unix)]
+    #[test]
+    fn a_world_readable_config_is_tightened_when_we_write_credentials() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("opencode.json");
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        write_atomic(&path, "{\"apiKey\":\"secret\"}").unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "写进凭据之后还留着 group/other 的读权限");
+    }
+
+    /// 但用户自己给 owner 加的执行位之类不该被抹掉 —— 只去 group/other。
+    #[cfg(unix)]
+    #[test]
+    fn tightening_keeps_the_owner_bits() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hook.json");
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        write_atomic(&path, "{\"a\":1}").unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "owner 的位要留着，只去掉 group/other");
     }
 
     /// 新建的配置文件同样带凭据，不能按 umask 落成 0644。
