@@ -55,6 +55,13 @@ pub struct AppSettings {
     /// 而且要在会话之间留下来。
     #[serde(default)]
     pub context_policy: crate::services::context_window::ContextPolicy,
+    /// 用户主动**退出接管**的目标。启动自愈跳过它们。
+    ///
+    /// 自愈的触发条件是「这一家有过快照」，本意是「用户让我们接管过」。但用户
+    /// 点「恢复」把配置还原回原样时快照还在 —— 于是下次启动又被悄悄接管回去，
+    /// 恢复按钮等于失灵。恢复时把目标记在这里，直到用户再次显式点「写入」。
+    #[serde(default)]
+    pub takeover_opted_out: std::collections::BTreeSet<crate::services::cli_types::CliTarget>,
 }
 
 impl Default for AppSettings {
@@ -67,6 +74,7 @@ impl Default for AppSettings {
             client_api_token: None,
             route_cli_through_proxy: false,
             context_policy: Default::default(),
+            takeover_opted_out: Default::default(),
         }
     }
 }

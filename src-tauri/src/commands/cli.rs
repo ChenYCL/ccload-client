@@ -79,6 +79,14 @@ pub async fn cli_apply(
         )
     })?;
     let root = state.config_root().await?;
+    // 显式点「写入」= 重新表态要接管这一家，解除之前恢复留下的退出标记。
+    {
+        let mut s = state.settings.write().await;
+        if s.takeover_opted_out.remove(&target) {
+            drop(s);
+            state.persist().await?;
+        }
+    }
     let mut options = options.unwrap_or_default();
     options.context_tokens = resolve_context_tokens(&state, &root, target, &options).await;
     Ok(apply_takeover(
@@ -155,7 +163,20 @@ pub async fn cli_restore(
     backup_id: String,
 ) -> AppResult<Vec<String>> {
     let root = state.config_root().await?;
-    Ok(state.backups.restore(&root, &backup_id)?)
+    let restored = state.backups.restore(&root, &backup_id)?;
+    // 恢复 = 用户要的是「回到那个样子」。启动自愈的触发条件是「这一家有过快照」，
+    // 而恢复并不会删快照 —— 不记一笔的话，下次启动又被接管回去，恢复按钮等于失灵。
+    // 直到用户再显式点一次「写入」才解除。
+    if let Some(target) = state
+        .backups
+        .list(None)
+        .ok()
+        .and_then(|all| all.into_iter().find(|b| b.id == backup_id).map(|b| b.target))
+    {
+        state.settings.write().await.takeover_opted_out.insert(target);
+        state.persist().await?;
+    }
+    Ok(restored)
 }
 
 /// 一份快照相对某个基准改了什么。
@@ -230,8 +251,13 @@ pub async fn cli_reconcile(state: State<'_, AppState>) -> AppResult<Vec<String>>
         return Ok(Vec::new());
     };
 
+    let opted_out = state.settings.read().await.takeover_opted_out.clone();
     let mut healed = Vec::new();
     for target in TARGETS {
+        // 用户点过「恢复」= 明确不要这一家被接管了。快照还在不代表他还想要。
+        if opted_out.contains(&target) {
+            continue;
+        }
         // 没有快照 = 用户从没让我们接管过这一家，别自作主张。
         let taken_before = state
             .backups
