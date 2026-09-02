@@ -11,7 +11,7 @@ use crate::services::fallback::{
 };
 use crate::state::AppState;
 
-fn store_path(state: &AppState) -> std::path::PathBuf {
+pub(crate) fn store_path(state: &AppState) -> std::path::PathBuf {
     // Sibling of settings.json so a wipe of ~/.ccload-client takes both.
     state.config_dir().join("fallback.json")
 }

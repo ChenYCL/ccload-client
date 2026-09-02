@@ -5,6 +5,8 @@ import type {
   BackupEntry,
   CliTarget,
   ConfigFileView,
+  ContextMode,
+  ContextPolicy,
   DiffBase,
   FileDiff,
   TakeoverOptions,
@@ -18,6 +20,7 @@ import { TextArea, TextInput } from "../components/ui/Input";
 import { ComboBox } from "../components/ui/ComboBox";
 import { kernelAliases, type ChannelModels } from "../lib/modelOptions";
 import { ALL_TARGETS, TARGET_LABELS } from "../lib/targets";
+import { formatWindow } from "../lib/modelMeta";
 import { cn } from "../lib/cn";
 
 export function CliPage() {
@@ -33,6 +36,9 @@ export function CliPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["cli-preview"] });
       qc.invalidateQueries({ queryKey: ["cli-backups"] });
+      // 窗口是接管时写进去的，写完那张表就该跟着变 —— 不刷新它就又回到
+      // 「界面一个数、磁盘另一个数」。
+      qc.invalidateQueries({ queryKey: ["context-window-preview"] });
     },
   });
   const restore = useMutation({
@@ -96,6 +102,7 @@ export function CliPage() {
         </button>
       </div>
       <LongCacheCard />
+      <ContextWindowCard />
       <ProxyRoutingCard
         on={settings.data?.route_cli_through_proxy ?? false}
         onDone={(msg) => {
@@ -1283,6 +1290,133 @@ function ProxyRoutingCard({
 /// 只有「按小时轮询、两轮之间隔很久」的定时任务才划算：1h 档写入价 2×、
 /// 5m 档 1.25×，而实测 98.1% 的相邻请求短于 5 分钟 —— 交互式会话开着就是
 /// 白付涨价。这里把这笔账直接写在界面上，别让用户当成「越长越好」。
+/// 上下文窗口**总控**。
+///
+/// 为什么要有这么一个东西：窗口在五家 CLI 里是五个不同的键（Claude 的
+/// `CLAUDE_CODE_MAX_CONTEXT_TOKENS`、Codex 的 `model_context_window`、OpenCode
+/// 的 `limit.context`、Grok 目录项的 context…）。过去只有「模型导入」那条路会
+/// 写，接管页换模型**不写** —— 于是模型从 200k 的换成 1M 的，CLI 里还留着上次
+/// 导入写下的 200k：界面显示 200k、实际能吃 1M，四分之一处就开始压缩。
+/// 现在接管写入时按这里的策略一次落到所有支持的 CLI，而下面那张表显示的就是
+/// 真正会被写进去的数（和写入走同一条解析路径，不是另抄一份规则）。
+const WINDOW_CHOICES: [string, number][] = [
+  ["1M", 1_000_000],
+  ["500k", 500_000],
+  ["256k", 256_000],
+  ["200k", 200_000],
+  ["128k", 128_000],
+];
+
+function ContextWindowCard() {
+  const t = useT();
+  const qc = useQueryClient();
+  const policy = useQuery({ queryKey: ["context-policy"], queryFn: api.contextPolicyGet });
+  const windows = useQuery({
+    queryKey: ["context-window-preview"],
+    queryFn: api.contextWindowPreview,
+  });
+  const [notice, setNotice] = useState<string | null>(null);
+  const save = useMutation({
+    mutationFn: api.contextPolicySet,
+    onSuccess: (stale) => {
+      qc.invalidateQueries({ queryKey: ["context-policy"] });
+      qc.invalidateQueries({ queryKey: ["context-window-preview"] });
+      // 存策略 ≠ 写 CLI。不说清楚的话用户改完开关就走了，配置纹丝未动。
+      setNotice(
+        stale > 0
+          ? t("策略已保存。已接管的 CLI 要再点一次下面的「写入」才会跟上新窗口。")
+          : t("策略已保存。"),
+      );
+    },
+  });
+
+  const p = policy.data;
+  if (!p) return null;
+  const set = (next: Partial<ContextPolicy>) => save.mutate({ ...p, ...next });
+
+  return (
+    <div className="mt-4 rounded-xl border border-border bg-surface-2/40 px-3.5 py-3">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <span className="text-sm font-medium">{t("上下文窗口总控")}</span>
+        <div className="flex items-center gap-3 text-xs">
+          {(
+            [
+              ["auto", t("按模型自动")],
+              ["fixed", t("固定")],
+              ["off", t("不写入")],
+            ] as [ContextMode, string][]
+          ).map(([mode, label]) => (
+            <label key={mode} className="flex cursor-pointer items-center gap-1.5">
+              <input
+                type="radio"
+                name="ctx-mode"
+                checked={p.mode === mode}
+                disabled={save.isPending}
+                onChange={() => set({ mode })}
+              />
+              {label}
+            </label>
+          ))}
+        </div>
+        {p.mode === "fixed" && (
+          <select
+            value={p.fixed_tokens}
+            disabled={save.isPending}
+            onChange={(e) => set({ fixed_tokens: Number(e.target.value) })}
+            className="rounded-md border border-border bg-surface px-2 py-1 text-xs"
+          >
+            {WINDOW_CHOICES.map(([label, n]) => (
+              <option key={n} value={n}>
+                {label}
+              </option>
+            ))}
+          </select>
+        )}
+        {p.mode === "auto" && (
+          <label className="flex items-center gap-1.5 text-xs text-muted">
+            {t("上限")}
+            <select
+              value={p.cap_tokens}
+              disabled={save.isPending}
+              onChange={(e) => set({ cap_tokens: Number(e.target.value) })}
+              className="rounded-md border border-border bg-surface px-2 py-1 text-xs"
+            >
+              <option value={0}>{t("不夹")}</option>
+              {WINDOW_CHOICES.map(([label, n]) => (
+                <option key={n} value={n}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+      </div>
+      <p className="mt-1.5 text-xs text-muted">
+        {p.mode === "auto"
+          ? t("按当前选中的模型名推断（claude 4.6+ / glm-5.2+ / gemini 1M，grok-4.5/4.6 500k，名字里带 [1m]/[500k] 的以名字为准）。「上限」给「模型声称 1M、但这条中转其实只给 500k」的情况 —— 按 1M 写会撑到发不出去。")
+          : p.mode === "fixed"
+            ? t("不管选了什么模型，五家 CLI 一律写这个数。")
+            : t("一个字都不写，各 CLI 保持现状。")}
+      </p>
+      {windows.data && p.mode !== "off" && (
+        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted">
+          {windows.data.map((w) => (
+            <span key={w.target}>
+              {t(TARGET_LABELS[w.target])}
+              {": "}
+              <span className={w.tokens ? "font-mono text-accent" : "font-mono"}>
+                {w.tokens ? formatWindow(w.tokens) : t("不写")}
+              </span>
+              {w.model && <span className="ml-1 opacity-60">({w.model})</span>}
+            </span>
+          ))}
+        </div>
+      )}
+      {notice && <p className="mt-1.5 text-xs text-amber-700">{notice}</p>}
+    </div>
+  );
+}
+
 function LongCacheCard() {
   const t = useT();
   const qc = useQueryClient();

@@ -160,6 +160,12 @@ pub struct TakeoverOptions {
     /// OpenCode: top-level `model` (`ccload/<alias>`). Empty = don't touch the
     /// user's current pick.
     pub opencode_model: Option<String>,
+    /// 这次接管要写进 CLI 的上下文窗口，**已经解析完**的最终值。
+    ///
+    /// 由 `commands::cli::cli_apply` 按用户的总控策略（`ContextPolicy`）算好再
+    /// 传进来 —— 策略要看设置、要看模型链最窄的那一跳，这些在纯函数里都拿不到。
+    /// `None` = 不写，各 CLI 保留现状。
+    pub context_tokens: Option<i64>,
 }
 
 /// Claude Code 有**两种**换模型的机制，配错格子的人都在同一个坑里：

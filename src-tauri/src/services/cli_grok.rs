@@ -70,7 +70,7 @@ pub fn apply(
     endpoint: &str,
     api_token: &str,
 ) -> Result<Vec<String>, AppError> {
-    apply_with_model(root, endpoint, api_token, None)
+    apply_with_model(root, endpoint, api_token, None, None)
 }
 
 /// `model` is the kernel alias the ccload profile should send. `None` keeps
@@ -80,6 +80,8 @@ pub fn apply_with_model(
     endpoint: &str,
     api_token: &str,
     model: Option<&str>,
+    // 总控算好的窗口。None 时退回按模型名推断（老行为）。
+    context_tokens: Option<i64>,
 ) -> Result<Vec<String>, AppError> {
     let path = root.join(".grok/config.toml");
     let raw = if path.exists() {
@@ -114,7 +116,9 @@ pub fn apply_with_model(
             // A non-grok alias (opus-5, glm-5.3-flash[1M], …) has no built-in
             // catalog to inherit. Write a full custom table so `/model` and
             // `/effort` both work without a separate import.
-            let w = crate::services::context_window::parse_window(&routed) as i64;
+            let w = context_tokens
+                .filter(|n| *n > 0)
+                .unwrap_or_else(|| crate::services::context_window::parse_window(&routed) as i64);
             write_catalog_entry(&mut doc, &routed, endpoint, api_token, Some(w))?;
         }
     }

@@ -11,6 +11,7 @@ use crate::services::cli_backup_diff::{diff_backup, BackupDiff, DiffBase};
 use crate::services::cli_config::{
     apply_takeover, preview, CliTarget, TakeoverPreview, TakeoverResult,
 };
+use crate::services::context_window::ContextPolicy;
 use crate::state::AppState;
 use crate::services::cli_backup::unique_stamp;
 
@@ -78,6 +79,8 @@ pub async fn cli_apply(
         )
     })?;
     let root = state.config_root().await?;
+    let mut options = options.unwrap_or_default();
+    options.context_tokens = resolve_context_tokens(&state, &root, target, &options).await;
     Ok(apply_takeover(
         &root,
         target,
@@ -85,8 +88,54 @@ pub async fn cli_apply(
         &token,
         &unique_stamp(),
         &state.backups,
-        options.unwrap_or_default(),
+        options,
     )?)
+}
+
+/// 这次接管该把上下文窗口写成多少。`None` = 不写，保留 CLI 现状。
+///
+/// 模型名的来源有先后：**这次表单里选的** → 磁盘上现有的。用户只点「写入」
+/// 没动模型时也要按现有模型重算 —— 那正是「上次导入写了 200k，后来在别处把模型
+/// 换成了 1M 的，窗口却一直停在 200k」的修法。
+///
+/// Claude Code 还要多一步：和**模型链最窄的那一跳**取 min。名字上写着 1M、真跑
+/// 起来会掉到一条 500k 的渠道上时，按 1M 写就是本模块开头讲的那个死锁 —— 等
+/// compact 触发时早就越过了真实天花板，而 compact 自己也要把整段发出去。
+async fn resolve_context_tokens(
+    state: &AppState,
+    root: &crate::services::cli_config::ConfigRoot,
+    target: CliTarget,
+    opts: &TakeoverOptions,
+) -> Option<i64> {
+    let policy = state.settings.read().await.context_policy;
+    let picked = match target {
+        CliTarget::ClaudeCode => opts.anthropic_model.clone(),
+        CliTarget::Codex => opts.codex_model.clone(),
+        CliTarget::GeminiCli => opts.gemini_model.clone(),
+        CliTarget::GrokBuild => opts.grok_model.clone(),
+        CliTarget::OpenCode => opts.opencode_model.clone(),
+    };
+    let model = picked
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| crate::services::cli_config::current_model(root, target))
+        .unwrap_or_default();
+
+    let mut tokens = policy.resolve(&model)?;
+    if matches!(target, CliTarget::ClaudeCode) {
+        if let Some(ceiling) = chain_ceiling_for(state, &model) {
+            tokens = tokens.min(ceiling);
+        }
+    }
+    i64::try_from(tokens).ok()
+}
+
+/// 这个别名配了模型链的话，链上最窄那一跳的窗口。读不到就当没有 —— 窗口是
+/// 个优化，不该因为链文件坏了就让接管整体失败。
+fn chain_ceiling_for(state: &AppState, alias: &str) -> Option<u64> {
+    let path = crate::commands::fallback::store_path(state);
+    let store = crate::services::fallback::FallbackStore::load(&path).ok()?;
+    let chain = store.chains.iter().find(|c| c.alias == alias)?;
+    crate::services::context_window::chain_ceiling(&chain.hops)
 }
 
 /// Snapshots for one target, or all targets when `target` is omitted.
@@ -196,6 +245,10 @@ pub async fn cli_reconcile(state: State<'_, AppState>) -> AppResult<Vec<String>>
         if p.already_active {
             continue;
         }
+        // 自愈也要带上窗口：不然被 CLI 冲掉的配置重写回来时窗口这一项是空的，
+        // 用户下次打开就看到又变回 CLI 自己的默认值。
+        let mut opts = TakeoverOptions::default();
+        opts.context_tokens = resolve_context_tokens(&state, &root, target, &opts).await;
         match apply_takeover(
             &root,
             target,
@@ -203,7 +256,7 @@ pub async fn cli_reconcile(state: State<'_, AppState>) -> AppResult<Vec<String>>
             &token,
             &unique_stamp(),
             &state.backups,
-            TakeoverOptions::default(),
+            opts,
         ) {
             Ok(_) => healed.push(target.label().to_string()),
             // 一家写不动不该拖垮其余四家。
@@ -232,4 +285,58 @@ pub async fn cli_set_proxy_routing(
         p.exists && !p.already_active
     });
     Ok(needs_rewrite)
+}
+
+/// 上下文窗口总控的现值。
+#[tauri::command]
+pub async fn context_policy_get(state: State<'_, AppState>) -> AppResult<ContextPolicy> {
+    Ok(state.settings.read().await.context_policy)
+}
+
+/// 改总控。**只存策略，不写 CLI** —— 真正落盘要用户去点每家的「写入」，和这一
+/// 页其它开关一个规矩（配置是用户的，我们不背着他改）。返回值是「有几家已接管
+/// 的 CLI 还没按新策略重写」，前端拿它提示要不要去点写入。
+#[tauri::command]
+pub async fn context_policy_set(
+    state: State<'_, AppState>,
+    policy: ContextPolicy,
+) -> AppResult<usize> {
+    state.settings.write().await.context_policy = policy;
+    state.persist().await?;
+    let root = state.config_root().await?;
+    let mut stale = 0usize;
+    for t in TARGETS {
+        if crate::services::cli_config::current_endpoint(&root, t).is_some() {
+            stale += 1;
+        }
+    }
+    Ok(stale)
+}
+
+/// 每家 CLI 按当前策略**会写成多少**，给界面显示用。
+///
+/// 和 `resolve_context_tokens` 走同一条路 —— 显示和实际写入必须是同一个数，
+/// 否则又回到「界面说 200k、实际 1M」那种谁也不信谁的状态。
+#[tauri::command]
+pub async fn context_window_preview(state: State<'_, AppState>) -> AppResult<Vec<WindowPreview>> {
+    let root = state.config_root().await?;
+    let mut out = Vec::new();
+    for target in TARGETS {
+        let opts = TakeoverOptions::default();
+        out.push(WindowPreview {
+            target,
+            model: crate::services::cli_config::current_model(&root, target),
+            tokens: resolve_context_tokens(&state, &root, target, &opts).await,
+        });
+    }
+    Ok(out)
+}
+
+#[derive(serde::Serialize)]
+pub struct WindowPreview {
+    pub target: CliTarget,
+    /// 磁盘上现在选的模型，窗口就是按它算的。
+    pub model: Option<String>,
+    /// None = 这一家不写窗口（Off 档，或者压根没选模型）。
+    pub tokens: Option<i64>,
 }

@@ -10,6 +10,8 @@ import type {
   BackupEntry,
   CliTarget,
   ConfigFileView,
+  ContextPolicy,
+  WindowPreview,
   DiffBase,
   EnvKeyInfo,
   Envelope,
@@ -134,6 +136,14 @@ export const api = {
   /** 切「CLI 走本地代理」。只改设置，返回是否还需要点「写入」才生效。 */
   cliSetProxyRouting: (enabled: boolean) =>
     invoke<boolean>("cli_set_proxy_routing", { enabled }),
+
+  /** 上下文窗口总控。五家 CLI 各写各的键，但用同一个策略。 */
+  contextPolicyGet: () => invoke<ContextPolicy>("context_policy_get"),
+  /** 只存策略不写 CLI；返回还有几家已接管的 CLI 需要点「写入」才会跟上。 */
+  contextPolicySet: (policy: ContextPolicy) =>
+    invoke<number>("context_policy_set", { policy }),
+  /** 每家 CLI 按当前策略会写成多少 —— 和真正写入走同一条解析路径。 */
+  contextWindowPreview: () => invoke<WindowPreview[]>("context_window_preview"),
   cliApply: (target: CliTarget, options?: TakeoverOptions) =>
     invoke<TakeoverResult>("cli_apply", { target, options: options ?? null }),
   cliBackups: (target?: CliTarget) =>

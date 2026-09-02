@@ -1084,4 +1084,19 @@ registerDict("en", {
   "未配对 {n}": "Unmatched {n}",
   "还没有经代理的请求": "No requests through the proxy yet",
   "会话（最贵前 10）": "Sessions (top 10 by cost)",
+  "上下文窗口总控": "Context-window control",
+  "按模型自动": "Auto (from model)",
+  固定: "Fixed",
+  不写入: "Don't write",
+  上限: "Cap",
+  不夹: "No cap",
+  不写: "not written",
+  "策略已保存。": "Policy saved.",
+  "策略已保存。已接管的 CLI 要再点一次下面的「写入」才会跟上新窗口。":
+    "Policy saved. Already-taken-over CLIs need another \u201cApply\u201d below to pick up the new window.",
+  "按当前选中的模型名推断（claude 4.6+ / glm-5.2+ / gemini 1M，grok-4.5/4.6 500k，名字里带 [1m]/[500k] 的以名字为准）。「上限」给「模型声称 1M、但这条中转其实只给 500k」的情况 —— 按 1M 写会撑到发不出去。":
+    "Inferred from the selected model name (claude 4.6+ / glm-5.2+ / gemini are 1M, grok-4.5/4.6 is 500k; an explicit [1m]/[500k] suffix wins). Use the cap when a model claims 1M but your relay only serves 500k \u2014 writing 1M there means the session grows until nothing can be sent.",
+  "不管选了什么模型，五家 CLI 一律写这个数。":
+    "Every CLI gets this number regardless of the selected model.",
+  "一个字都不写，各 CLI 保持现状。": "Nothing is written; each CLI keeps whatever it has.",
 });

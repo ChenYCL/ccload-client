@@ -41,7 +41,7 @@ use crate::services::cli_config::{current_endpoint, current_token};
 use crate::services::cli_grok;
 use crate::services::cli_io::{object_at, read_json, write_atomic, write_pretty_json};
 use crate::services::cli_types::{CliTarget, ConfigRoot};
-use crate::services::context_window::COMPACT_HEADROOM;
+use crate::services::context_window::auto_compact_window;
 use crate::services::model_caps::{claude_capabilities, reasoning_menu};
 
 /// One row of the import table.
@@ -88,17 +88,6 @@ fn claude_tier_key(tier: &str) -> Result<Option<&'static str>, AppError> {
 /// OpenCode `limit.output` when the alias carries a context window. Absent
 /// windows leave the whole `limit` block out so OpenCode keeps its defaults.
 const DEFAULT_OUTPUT_TOKENS: i64 = 32_000;
-
-/// Claude Code's auto-compact window is a global integer in `[100000, 1000000]`.
-/// Leave enough headroom for the compact request itself; skip the key when
-/// the window is too small to satisfy the official floor.
-fn claude_auto_compact_window(context: i64) -> Option<i64> {
-    if context <= 0 {
-        return None;
-    }
-    let w = (context as u64).saturating_sub(COMPACT_HEADROOM);
-    (w >= 100_000).then_some(w.min(1_000_000) as i64)
-}
 
 /// The alias with any `vendor/` prefix removed (`amazon/nova-2-lite-v1` →
 /// `nova-2-lite-v1`), or None when there is no prefix to strip.
@@ -259,7 +248,7 @@ pub fn apply_import(
                         "CLAUDE_CODE_MAX_CONTEXT_TOKENS".into(),
                         Value::String(w.to_string()),
                     );
-                    if let Some(compact) = claude_auto_compact_window(w) {
+                    if let Some(compact) = auto_compact_window(w) {
                         env.insert(
                             "CLAUDE_CODE_AUTO_COMPACT_WINDOW".into(),
                             Value::String(compact.to_string()),

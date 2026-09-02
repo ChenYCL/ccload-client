@@ -138,8 +138,30 @@ export type TakeoverOptions = {
   opencode_model?: string;
 };
 
-export type ConfigFormat = "json" | "toml";
+/// 上下文窗口总控。窗口在五家 CLI 里是五个不同的键，这里是唯一的口径。
+///   * `off`   —— 一个字都不写，各 CLI 保持现状。
+///   * `auto`  —— 按当前选中的模型名推断（和调度图、模型导入同一张表）。
+///   * `fixed` —— 不管选了什么模型，一律写 `fixed_tokens`。
+export type ContextMode = "off" | "auto" | "fixed";
 
+export type ContextPolicy = {
+  mode: ContextMode;
+  /** `fixed` 档写的数。 */
+  fixed_tokens: number;
+  /** `auto` 推断结果的上限；0 = 不夹。 */
+  cap_tokens: number;
+};
+
+/// 每家 CLI 按当前策略**会写成多少**。显示和实际写入走的是同一条解析路径。
+export type WindowPreview = {
+  target: CliTarget;
+  /** 磁盘上现在选的模型，窗口就是按它算的。 */
+  model: string | null;
+  /** null = 这一家不写窗口。 */
+  tokens: number | null;
+};
+
+export type ConfigFormat = "json" | "toml";
 export type ConfigFileView = {
   rel: string;
   path: string;

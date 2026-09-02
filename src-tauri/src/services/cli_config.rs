@@ -123,7 +123,7 @@ pub fn preview(
 }
 
 /// The model this CLI will send, for the takeover card's combo box.
-fn current_model(root: &ConfigRoot, target: CliTarget) -> Option<String> {
+pub(crate) fn current_model(root: &ConfigRoot, target: CliTarget) -> Option<String> {
     match target {
         CliTarget::ClaudeCode => read_json(&root.join(".claude/settings.json"))
             .ok()?
@@ -201,6 +201,27 @@ pub fn apply_takeover(
                 }
                 if let Some(m) = opts.haiku_model.filter(|s| !s.is_empty()) {
                     env.insert("ANTHROPIC_DEFAULT_HAIKU_MODEL".into(), Value::String(m));
+                }
+                // 上下文窗口总控。Claude Code 的窗口是**全局一个键**，不是
+                // per-model —— 换模型不跟着改，就会留着上次导入写的那个数（症状：
+                // 明明换成了 1M 的模型，界面还显示 200k，四分之一处就开始压缩）。
+                if let Some(w) = opts.context_tokens.filter(|n| *n > 0) {
+                    env.insert(
+                        "CLAUDE_CODE_MAX_CONTEXT_TOKENS".into(),
+                        Value::String(w.to_string()),
+                    );
+                    // 网关别名不在官方目录里，不解除强制校验的话上面那个数会被
+                    // Claude Code 按「未知模型」重新夹回去。
+                    env.insert(
+                        "CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT".into(),
+                        Value::String("1".into()),
+                    );
+                    if let Some(compact) = crate::services::context_window::auto_compact_window(w) {
+                        env.insert(
+                            "CLAUDE_CODE_AUTO_COMPACT_WINDOW".into(),
+                            Value::String(compact.to_string()),
+                        );
+                    }
                 }
                 // Free-form extra env (timeout, retry, telemetry flags, …).
                 // Same rules as every other CLI's merge: an emptied form field
@@ -300,7 +321,7 @@ pub fn apply_takeover(
             if let Some(m) = opts.opencode_model.as_ref().filter(|s| !s.is_empty()) {
                 let alias = m.strip_prefix("ccload/").unwrap_or(m).trim();
                 if !alias.is_empty() {
-                    ensure_opencode_catalog_stub(&mut doc, alias)?;
+                    ensure_opencode_catalog_stub(&mut doc, alias, opts.context_tokens)?;
                     let root_obj = doc.as_object_mut().ok_or_else(|| {
                         AppError::Config("opencode.json 顶层不是对象".into())
                     })?;
@@ -325,6 +346,7 @@ pub fn apply_takeover(
                 &endpoint,
                 api_token,
                 opts.grok_model.as_deref(),
+                opts.context_tokens,
             )?);
             if let Some(extra) = &opts.extra_env {
                 let path = root.join(".grok/config.toml");
@@ -398,7 +420,13 @@ fn write_codex(
     if let Some(e) = opts.codex_reasoning_effort.as_ref().filter(|s| !s.is_empty()) {
         doc["model_reasoning_effort"] = toml_edit::value(e);
     }
-    if let Some(c) = opts.codex_context_window.filter(|n| *n > 0) {
+    // 窗口：表单里显式填过的 `model_context_window` 是用户的明确意愿，优先；
+    // 没填才用总控算出来的值。
+    if let Some(c) = opts
+        .codex_context_window
+        .filter(|n| *n > 0)
+        .or(opts.context_tokens.filter(|n| *n > 0))
+    {
         doc["model_context_window"] = toml_edit::value(c);
     }
     if let Some(extra) = &opts.extra_env {
@@ -510,7 +538,11 @@ fn set_gemini_auth_type(doc: &mut Value) -> Result<(), AppError> {
 /// OpenCode only lists models that exist under `provider.ccload.models`.
 /// Picking a kernel alias on takeover must also stub the catalog entry, or
 /// `/models` would offer a `ccload/<alias>` that 503s when selected.
-fn ensure_opencode_catalog_stub(doc: &mut Value, alias: &str) -> Result<(), AppError> {
+fn ensure_opencode_catalog_stub(
+    doc: &mut Value,
+    alias: &str,
+    context_tokens: Option<i64>,
+) -> Result<(), AppError> {
     let provider = doc
         .pointer_mut("/provider/ccload")
         .and_then(Value::as_object_mut)
@@ -522,9 +554,25 @@ fn ensure_opencode_catalog_stub(doc: &mut Value, alias: &str) -> Result<(), AppE
             provider.get_mut("models").and_then(Value::as_object_mut).unwrap()
         }
     };
-    models.entry(alias.to_string()).or_insert_with(|| {
-        serde_json::json!({ "name": alias })
-    });
+    let entry = models
+        .entry(alias.to_string())
+        .or_insert_with(|| serde_json::json!({ "name": alias }));
+    // 窗口写在**已存在**的条目上也要更新：目录项多半是「模型导入」早先建的，
+    // 里面那个 limit.context 停在导入那天的值。换模型不改它，OpenCode 就一直
+    // 按旧数字提前压缩（这正是「显示 200k、实际 1M」的那个症状）。
+    if let Some(w) = context_tokens.filter(|n| *n > 0) {
+        if let Some(obj) = entry.as_object_mut() {
+            let limit = obj
+                .entry("limit".to_string())
+                .or_insert_with(|| Value::Object(Default::default()));
+            if let Some(limit) = limit.as_object_mut() {
+                limit.insert("context".into(), Value::from(w));
+                limit
+                    .entry("output".to_string())
+                    .or_insert_with(|| Value::from(32_000));
+            }
+        }
+    }
     Ok(())
 }
 

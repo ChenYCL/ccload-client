@@ -48,6 +48,13 @@ pub struct AppSettings {
     /// 成另一个地址。第一次打开由用户在「CLI 接管」页显式点。
     #[serde(default)]
     pub route_cli_through_proxy: bool,
+    /// 上下文窗口总控：接管写入时给每家 CLI 写多大的窗口。
+    ///
+    /// 默认 `Auto`（按选中的模型名推断）。放在设置里而不是 TakeoverOptions：
+    /// 这是一条**跨 CLI 的统一口径**，五家各写各的键但必须是同一个决定，
+    /// 而且要在会话之间留下来。
+    #[serde(default)]
+    pub context_policy: crate::services::context_window::ContextPolicy,
 }
 
 impl Default for AppSettings {
@@ -59,6 +66,7 @@ impl Default for AppSettings {
             sandbox_cli_writes: true,
             client_api_token: None,
             route_cli_through_proxy: false,
+            context_policy: Default::default(),
         }
     }
 }

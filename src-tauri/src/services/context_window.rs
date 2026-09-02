@@ -12,6 +12,7 @@
 //! * 已经撑爆、原生 compact 自己也发不出去时，按链从前往后挑**窗口够的**那一
 //!   跳做分块总结。原生优先，撑不住再往后。
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::AppError;
@@ -23,6 +24,81 @@ use crate::services::fallback::FallbackHop;
 
 /// 压缩请求本身也占上下文，顶着上限做不成任何事。给挑模型留的余量。
 pub const COMPACT_HEADROOM: u64 = 80_000;
+
+/// 上下文窗口总控的三档。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextMode {
+    /// 一个字都不写，各 CLI 保持现状。老行为，给不想让我们碰这个键的人。
+    Off,
+    /// 按当前选中的模型名推断（`parse_window`）。默认。
+    Auto,
+    /// 不管选了什么模型，一律写 `fixed_tokens`。
+    Fixed,
+}
+
+/// 上下文窗口**总控**。
+///
+/// 为什么需要一个总控：窗口这件事在五家 CLI 里是五个不同的键（Claude 的
+/// `CLAUDE_CODE_MAX_CONTEXT_TOKENS`、Codex 的 `model_context_window`、
+/// OpenCode 的 `limit.context`、Grok 目录项的 context…），过去只有「模型导入」
+/// 那条路会写，接管页换模型**不写**。于是出现这个症状：模型从 200k 的换成 1M
+/// 的，CLI 里还留着上次导入写下的 200k —— 界面显示 200k，实际能吃 1M，早压缩
+/// 五分之四的可用窗口。现在接管写入时按这里的策略一次落到所有支持的 CLI。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ContextPolicy {
+    pub mode: ContextMode,
+    /// `Fixed` 档写的数。
+    pub fixed_tokens: u64,
+    /// `Auto` 推断结果的上限；0 = 不夹。
+    ///
+    /// 给「模型名声称 1M、但我这条中转其实只给 500k」的人用 —— 按名字写 1M 会
+    /// 让 CLI 一路撑到打不出去为止，那正是模块开头讲的死锁。
+    pub cap_tokens: u64,
+}
+
+impl Default for ContextPolicy {
+    fn default() -> Self {
+        Self {
+            mode: ContextMode::Auto,
+            fixed_tokens: 1_000_000,
+            cap_tokens: 0,
+        }
+    }
+}
+
+impl ContextPolicy {
+    /// 这次接管该写多少。`None` = 不写（Off 档，或者 Auto 档但没有模型名）。
+    pub fn resolve(&self, model: &str) -> Option<u64> {
+        match self.mode {
+            ContextMode::Off => None,
+            ContextMode::Fixed => (self.fixed_tokens > 0).then_some(self.fixed_tokens),
+            ContextMode::Auto => {
+                let m = model.trim();
+                if m.is_empty() {
+                    return None;
+                }
+                let w = parse_window(m);
+                Some(if self.cap_tokens > 0 {
+                    w.min(self.cap_tokens)
+                } else {
+                    w
+                })
+            }
+        }
+    }
+}
+
+/// Claude Code 的 auto-compact 窗口是个全局整数，官方区间 `[100000, 1000000]`。
+/// 给压缩请求本身留出余量；余量扣完低于官方下限就干脆不写这个键。
+pub fn auto_compact_window(context: i64) -> Option<i64> {
+    if context <= 0 {
+        return None;
+    }
+    let w = (context as u64).saturating_sub(COMPACT_HEADROOM);
+    (w >= 100_000).then_some(w.min(1_000_000) as i64)
+}
 
 /// 从模型名读窗口。
 ///
@@ -242,6 +318,69 @@ mod tests {
         assert_eq!(parse_window("glm-5.3-flash"), 1_000_000);
         assert_eq!(parse_window("glm-5.1"), 200_000);
         assert_eq!(parse_window("glm-4.6"), 200_000);
+    }
+
+    /// 总控三档的行为。Auto 按名字推断，Fixed 一律照写，Off 什么都不写。
+    #[test]
+    fn policy_modes_do_what_they_say() {
+        let auto = ContextPolicy::default();
+        assert_eq!(auto.mode, ContextMode::Auto, "默认必须是自动，不是不写");
+        assert_eq!(auto.resolve("claude-opus-5"), Some(1_000_000));
+        assert_eq!(auto.resolve("grok-4.6"), Some(500_000));
+        // 没模型名就没得推断 —— 硬写一个默认值等于替用户瞎猜。
+        assert_eq!(auto.resolve("  "), None);
+
+        let fixed = ContextPolicy {
+            mode: ContextMode::Fixed,
+            fixed_tokens: 500_000,
+            cap_tokens: 0,
+        };
+        assert_eq!(fixed.resolve("claude-opus-5"), Some(500_000));
+        assert_eq!(fixed.resolve(""), Some(500_000), "固定档不看模型名");
+
+        let off = ContextPolicy {
+            mode: ContextMode::Off,
+            ..Default::default()
+        };
+        assert_eq!(off.resolve("claude-opus-5"), None);
+    }
+
+    /// 名字声称 1M、但这条中转其实只给 500k：夹子必须生效，否则就是模块开头
+    /// 讲的那个死锁（等 compact 触发时早已越过真实天花板）。
+    #[test]
+    fn the_cap_clamps_auto_but_never_inflates() {
+        let capped = ContextPolicy {
+            mode: ContextMode::Auto,
+            fixed_tokens: 0,
+            cap_tokens: 500_000,
+        };
+        assert_eq!(capped.resolve("claude-opus-5[1m]"), Some(500_000));
+        // 比夹子窄的不动 —— 夹子是上限，不是目标值。
+        assert_eq!(capped.resolve("claude-haiku-4-5-20251001"), Some(200_000));
+    }
+
+    /// 0 是「没填」不是「不写」：固定档填 0 时不该写一个 0 进 CLI。
+    #[test]
+    fn zero_is_not_a_window() {
+        let fixed = ContextPolicy {
+            mode: ContextMode::Fixed,
+            fixed_tokens: 0,
+            cap_tokens: 0,
+        };
+        assert_eq!(fixed.resolve("claude-opus-5"), None);
+    }
+
+    /// auto-compact 是 Claude Code 的全局整数，官方区间 [100k, 1M]，还要扣掉
+    /// 压缩请求自己的余量。扣完低于下限就不写这个键。
+    #[test]
+    fn auto_compact_respects_the_official_floor_and_ceiling() {
+        assert_eq!(auto_compact_window(1_000_000), Some(920_000));
+        assert_eq!(auto_compact_window(200_000), Some(120_000));
+        // 180k - 80k = 100k，正好压在下限上，算够。
+        assert_eq!(auto_compact_window(180_000), Some(100_000));
+        // 再窄一点就没有余量可言了。
+        assert_eq!(auto_compact_window(179_000), None);
+        assert_eq!(auto_compact_window(0), None);
     }
 
     fn hop(up: &str) -> FallbackHop {
