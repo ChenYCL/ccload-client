@@ -69,13 +69,20 @@ pub fn stats() -> Option<(usize, i64)> {
 
 /// 查一个别名的窗口。查不到返回 None，调用方退回家族猜测。
 ///
-/// 三段匹配，越靠前越可信：
+/// 两段匹配，越靠前越可信：
 ///   1. 精确命中；
-///   2. 目录里某个 id 是这个名字的**前缀**（`claude-opus-5-20260115` → `claude-opus-5`）；
-///   3. 目录里某个 id 被这个名字**包含**（中转在前后加了料）。
+///   2. 目录里某个 id 是这个名字的**前缀，且紧接着是分隔符**
+///      （`claude-opus-5-20260115` → `claude-opus-5`；`gpt-5.4-turbo` → `gpt-5.4`）。
 ///
-/// 2、3 都取**最长**的那个键，而不是「唯一匹配才算」：`glm-5.3-flash` 同时被
-/// `glm-5` 和 `glm-5.3-flash` 包含，最长的那个才是对的。
+/// 取**最长**前缀，而不是「唯一匹配才算」：`glm-5.3-flash-x` 同时被 `glm-5` 和
+/// `glm-5.3-flash` 命中，最长的那个才是对的。
+///
+/// **不做子串匹配。** 目录有两千多个键，里面有 `fast`、`auto`、`free`、`large`、
+/// `custom` 这种通用词（某些聚合站的路由别名）—— 子串匹配会让用户自己起的
+/// `my-fast-model` 命中 `fast`（1M），这是高估、也就是死锁的那个方向。前缀
+/// 匹配一样能覆盖「同一模型带日期/变体后缀」这个真实需求，却不会被这类词咬到。
+/// 中转在名字**前面**加料（`my-relay-gpt-5.4`）的情况查不到，退回猜测表 ——
+/// 猜错的代价是浪费一点窗口，比高估安全。
 pub fn lookup(alias: &str) -> Option<u64> {
     let g = CATALOG.read().ok()?;
     let cat = g.as_ref()?;
@@ -88,12 +95,19 @@ pub fn lookup(alias: &str) -> Option<u64> {
     }
     let mut best: Option<(usize, u64)> = None;
     for (k, v) in &cat.windows {
-        // 太短的键会乱咬（"o1" 能被无数名字包含）。前缀匹配至少 4 个字符起。
-        if k.len() < 4 {
+        // 前缀之后必须是分隔符：`gpt-5` 不能命中 `gpt-55`。
+        let Some(rest) = name.strip_prefix(k.as_str()) else {
+            continue;
+        };
+        if !rest.starts_with(['-', '.', ':', '_', '@', '/']) {
             continue;
         }
-        let hit = name.starts_with(k.as_str()) || name.contains(k.as_str());
-        if hit && best.is_none_or(|(len, _)| k.len() > len) {
+        // 只认长得像模型 id 的键（带数字或连字符）。纯单词键就是上面说的那批
+        // 通用路由别名，作为前缀也不可信：`auto-xxx` 不该命中 `auto`。
+        if !k.chars().any(|c| c.is_ascii_digit() || c == '-') {
+            continue;
+        }
+        if best.is_none_or(|(len, _)| k.len() > len) {
             best = Some((k.len(), *v));
         }
     }
@@ -333,11 +347,13 @@ mod tests {
     }
 
     #[test]
-    fn lookup_matches_exact_then_prefix_then_substring() {
+    fn lookup_matches_exact_then_longest_delimited_prefix() {
         set_for_test(&[
             ("claude-opus-5", 1_000_000),
             ("glm-5.3-flash", 1_000_000),
             ("glm-5", 204_800),
+            ("gpt-5", 400_000),
+            ("gpt-5.4", 1_050_000),
         ]);
         assert_eq!(lookup("claude-opus-5"), Some(1_000_000));
         // 带日期后缀的变体走前缀。
@@ -345,8 +361,27 @@ mod tests {
         // 厂商前缀和我们自己挂的 [1m] 后缀都要先剥掉。
         assert_eq!(lookup("anthropic/claude-opus-5[1m]"), Some(1_000_000));
         // 同时被 glm-5 和 glm-5.3-flash 命中时，最长的那个才是对的。
-        assert_eq!(lookup("glm-5.3-flash"), Some(1_000_000));
+        assert_eq!(lookup("glm-5.3-flash-x"), Some(1_000_000));
+        // gpt-5.4-turbo 该走 gpt-5.4（1M），不是 gpt-5（400k）。
+        assert_eq!(lookup("gpt-5.4-turbo"), Some(1_050_000));
+        // 前缀后面必须是分隔符：gpt-55 不是 gpt-5 的变体。
+        assert_eq!(lookup("gpt-55"), None);
         assert_eq!(lookup("unknown-model-xyz"), None);
+        clear_for_test();
+    }
+
+    /// 目录里有 `fast` / `auto` / `free` / `large` 这种通用词键（聚合站的路由
+    /// 别名）。子串匹配会让用户自己起的 `my-fast-model` 命中 `fast`（1M）——
+    /// 高估，死锁的那个方向。所以：不做子串；纯单词键连作前缀都不认。
+    #[test]
+    fn generic_word_keys_never_match_user_aliases() {
+        set_for_test(&[("fast", 1_000_000), ("auto", 2_000_000), ("custom", 128_000)]);
+        assert_eq!(lookup("my-fast-model"), None, "子串命中了通用词");
+        assert_eq!(lookup("ccload-auto"), None);
+        assert_eq!(lookup("auto-router"), None, "纯单词作前缀也不可信");
+        assert_eq!(lookup("claude-custom"), None);
+        // 精确命中还是算的 —— 用户真把模型叫 `auto` 时目录说了算。
+        assert_eq!(lookup("auto"), Some(2_000_000));
         clear_for_test();
     }
 
