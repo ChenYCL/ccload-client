@@ -539,6 +539,26 @@ mod tests {
         assert_eq!(got, vec!["glm-5.3[1m]", "deepseek-v4-flash"]);
     }
 
+    /// 分块总结按**一块**的大小挑模型，不是按整段会话。
+    ///
+    /// 模块开头那个场景：517k 的会话、链上最宽 500k。按整段挑 → 一跳都不够
+    /// （517k+80k > 500k），用户看到「没有窗口够的一跳」；可每块只有 120k，
+    /// 连 200k 的 haiku 都装得下。分块存在的理由就是整段发不出去。
+    #[test]
+    fn a_chunk_sized_need_finds_hops_the_whole_session_never_would() {
+        let hops = vec![
+            hop("claude-haiku-4-5-20251001"), // 200k
+            hop("grok-4.6"),                  // 500k
+        ];
+        // 整段口径：一个都挑不出来。
+        assert!(pick_compact_models(517_000, &hops).is_empty());
+        // 分块口径（120k + 80k 余量 = 200k）：两跳都够。
+        assert_eq!(
+            pick_compact_models(120_000, &hops),
+            vec!["claude-haiku-4-5-20251001", "grok-4.6"]
+        );
+    }
+
     /// 400k：haiku-4.5 200k 仍不够，glm 1M 够，grok 500k 也够（400k+80k=480k < 500k）。
     #[test]
     fn pick_keeps_later_hops_that_still_fit() {

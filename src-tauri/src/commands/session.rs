@@ -55,7 +55,8 @@ pub async fn session_compact(
         let s = state.settings.read().await;
         (s.kernel.base_url(), s.client_api_token.clone().unwrap_or_default())
     };
-    let candidates = compact_candidates(&state, &path, &model)?;
+    // 按**分块大小**挑模型，不是按整段会话 —— 分块总结的每次请求只发一块。
+    let candidates = compact_candidates(&state, &model, chunk_tokens)?;
     let mut last_err: Option<AppError> = None;
     let mut tried = Vec::new();
     for m in &candidates {
@@ -81,12 +82,17 @@ pub async fn session_compact(
 }
 
 /// 用户点的那个在前，链上窗口够的接在后面。点的那个自己也会 400，所以不能只试它。
+/// `chunk_tokens` 是**一块**的大小，也就是压缩请求实际会发出去的量。
+///
+/// 以前这里传的是整段会话的真实上下文（`last_context_of`）—— 那正好把分块总结
+/// 的意义抵消掉了：517k 的会话在一条 500k 的链上会得到「没有窗口够的一跳」，
+/// 可每一块只有 120k，200k 的模型绰绰有余。分块存在的理由就是整段发不出去。
 fn compact_candidates(
     state: &AppState,
-    path: &str,
     model: &str,
+    chunk_tokens: u64,
 ) -> Result<Vec<String>, AppError> {
-    let needed = session_rescue::last_context_of(path)?;
+    let needed = chunk_tokens;
     let store = FallbackStore::load(&state.config_dir().join("fallback.json"))?;
     let mut out = Vec::new();
     let picked = model.trim();

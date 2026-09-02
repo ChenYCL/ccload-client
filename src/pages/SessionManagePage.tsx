@@ -61,6 +61,10 @@ export function SessionManagePage() {
     sessionStorage.removeItem("ccload:focus-session");
     setQuery(id);
     setFocusId(id);
+    // 默认只列「30 天没动过的」，而从实时日志点过来的会话按定义就是刚刚在用
+    // 的 —— 不把这两个筛选放开，用户点完只会看到「没有匹配的会话」。
+    setOlderThan(0);
+    setProject("");
     const timer = setTimeout(() => setFocusId(null), 5000);
     return () => clearTimeout(timer);
   }, []);
