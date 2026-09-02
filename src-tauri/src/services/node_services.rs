@@ -231,8 +231,7 @@ impl NodeServices {
 
     pub async fn stop(&self, id: &str) -> Result<(), AppError> {
         if let Some(mut r) = self.running.lock().await.remove(id) {
-            let _ = r.child.kill().await;
-            let _ = r.child.wait().await;
+            kill_process_tree(&mut r.child).await;
         }
         Ok(())
     }
@@ -314,6 +313,32 @@ pub fn save_services(
     let body =
         serde_json::to_string_pretty(list).map_err(|e| AppError::Config(e.to_string()))?;
     crate::services::cli_io::write_atomic(&services_path(config_dir), &body)
+}
+
+/// 收掉整棵进程树，而不是只杀 node 自己。
+///
+/// `process_group(0)` 让服务当自己的组长，但 **tokio 的 `Child::kill` 只对 pid 发
+/// SIGKILL** —— 组里被 node 拉起的 headless CLI（一次跑上十分钟的 `claude -p`）
+/// 会被 reparent 给 launchd 继续跑完，token 照烧。所以先给 **-pgid** 发 SIGTERM
+/// 给整组一个退出的机会，等几秒，还活着就 SIGKILL 整组。
+async fn kill_process_tree(child: &mut tokio::process::Child) {
+    #[cfg(unix)]
+    if let Some(pgid) = child.id() {
+        let pgid: i32 = pgid as i32;
+        // 组长进程自己也是组成员，-pgid 一并覆盖。
+        unsafe { libc::kill(-pgid, libc::SIGTERM) };
+        for _ in 0..50 {
+            // try_wait 轮询的是 node 自己；它退了，整组里其余成员也已失去
+            // 家长 —— 但真正的判据仍是它，组里别的进程没有句柄可等。
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        unsafe { libc::kill(-pgid, libc::SIGKILL) };
+    }
+    let _ = child.kill().await;
+    let _ = child.wait().await;
 }
 
 #[cfg(test)]
@@ -543,5 +568,54 @@ mod platform_env_tests {
         assert_eq!(v["p"], "from-platform", "平台独有变量要进到子进程");
         assert_eq!(v["u"], "from-user", "用户同名 env 必须覆盖平台值");
         svc.stop("envtest").await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod orphan_tests {
+    use super::*;
+
+    fn spec(id: &str, entry: &str, port: u16) -> NodeService {
+        NodeService {
+            id: id.into(),
+            entry: entry.into(),
+            args: vec![],
+            cwd: None,
+            port,
+            health_path: None,
+            env: Default::default(),
+            enabled: true,
+        }
+    }
+
+    /// stop() 必须收掉 node 拉起的**孙进程**。tokio 的 kill 只对 pid 发信号，
+    /// 曾经的实现在杀掉 node 后留下 `claude -p` 这类长跑子进程继续烧 token ——
+    /// 这里用 sh 循环模拟：stop 之后日志必须不再增长。
+    #[tokio::test]
+    async fn stop_kills_the_whole_process_group_not_just_node() {
+        let dir = tempfile::tempdir().unwrap();
+        let entry = dir.path().join("srv.js");
+        std::fs::write(
+            &entry,
+            r#"const { spawn } = require('child_process');
+spawn('sh', ['-c', 'while true; do echo tick >> /tmp/ccload-orphan-test.log; sleep 1; done'], { stdio: 'ignore' });
+require('http').createServer((q,s)=>{s.writeHead(200);s.end('ok')}).listen(Number(process.env.PORT));"#,
+        )
+        .unwrap();
+        let log = "/tmp/ccload-orphan-test.log";
+        let _ = std::fs::remove_file(log);
+
+        let svc = NodeServices::new();
+        let s = spec("orphan", entry.to_str().unwrap(), 4133);
+        svc.start(&s, []).await.expect("起不来");
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        assert!(std::path::Path::new(log).exists(), "孙进程应当已经在写日志");
+
+        svc.stop("orphan").await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+        let before = std::fs::read_to_string(log).unwrap().lines().count();
+        tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+        let after = std::fs::read_to_string(log).unwrap().lines().count();
+        assert_eq!(before, after, "stop 之后孙进程还在跑（{before} → {after} ticks）—— 进程组没被收掉");
     }
 }

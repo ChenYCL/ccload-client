@@ -286,9 +286,53 @@ fn save(path: &Path, entries: &[Value]) -> Result<String, AppError> {
     Ok(backup.display().to_string())
 }
 
-/// 哪些会话正被 claude 进程拿着。一次 `ps` 查完，别对每个文件各查一次。
+/// 哪些会话正被 claude 进程拿着。
+///
+/// 首选来源是 `~/.claude/sessions/<pid>.json`（每个活的 CLI 进程都会写一份，
+/// 里面带 sessionId）；pid 已经不在了的条目当过期清掉。ps 扫描只做兜底，且
+/// 只是「命令行里出现的 uuid」—— 旧实现在标准安装上**永远扫不到东西**
+/// （argv[0] 是 `~/.local/bin/claude` 符号链接，不含 `share/claude/versions`；
+/// 不带 `--resume` 时命令行里也没有 uuid），于是瘦身/压缩/删除的「活会话跳过」
+/// 从来没生效过。
 fn live_session_ids() -> HashSet<String> {
     let mut out = HashSet::new();
+
+    // 主路：sessions 目录。pid 活着才认 —— 崩溃残留的陈旧文件不能让一条
+    // 已经死掉的会话永远删不掉。
+    let Some(sessions_dir) = dirs::home_dir().map(|h| h.join(".claude/sessions")) else {
+        return out;
+    };
+    if let Ok(entries) = std::fs::read_dir(&sessions_dir) {
+        for e in entries.flatten() {
+            let path = e.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(doc) = std::fs::read_to_string(&path)
+                .map_err(|_| ())
+                .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).map_err(|_| ()))
+            else {
+                continue;
+            };
+            let Some(pid) = doc.get("pid").and_then(|v| v.as_i64()) else {
+                continue;
+            };
+            let Some(id) = doc.get("sessionId").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if pid <= 0 || unsafe { libc::kill(pid as i32, 0) } != 0 {
+                continue; // 进程不在了：条目是残留
+            }
+            out.insert(id.to_string());
+        }
+    }
+    if !out.is_empty() {
+        return out;
+    }
+
+    // 兜底：ps 扫命令行。只有 sessions 目录没有产出时才走 —— 它认得出
+    // `--resume <uuid>` / `--session-id <uuid>` 这种显式携带，但认不出正常的
+    // 交互式进程。
     let Ok(o) = std::process::Command::new("ps")
         .args(["-eo", "command"])
         .output()
@@ -300,8 +344,6 @@ fn live_session_ids() -> HashSet<String> {
         if !line.contains("share/claude/versions") && !line.contains("ClaudeCode.app") {
             continue;
         }
-        // 命令行里 uuid 可能以 `--session-id <id>` 或 `--resume <path>` 出现，
-        // 两种都只需要认出那串 uuid 本身。
         for tok in line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-')) {
             if tok.len() == 36 && tok.matches('-').count() == 4 {
                 out.insert(tok.to_string());
@@ -634,12 +676,25 @@ fn strip_images(entry: &mut Value) -> u64 {
 }
 
 /// 超长文本留首尾，中间换成一行说明。只动 `message`（进上下文的那份）。
+///
+/// **`signature` 和 `thinking` 不能碰**：signature 是上游对 thinking 块的签名，
+/// 改一个字符、下一个请求就整体 400（invalid signature）—— 瘦身反而把会话
+/// 变成永久打不开。这两个键超长时直接整个值丢弃不行（签名块删了同样 400），
+/// 所以原样保留，靠「thinking 块超长先于普通文本被整体移除」的另一条路省空间。
 fn truncate_texts(entry: &mut Value, limit: usize) -> u64 {
     let Some(msg) = entry.get_mut("message") else {
         return 0;
     };
     let mut saved = 0u64;
     rewrite(msg, &mut |parent, key, val| {
+        // signature 长在 content 数组元素的顶层（thinking / redacted_thinking 块），
+        // parent.key 就是它自己 —— 任何位置出现的这个键都不许截。
+        if key == "signature" || key == "data" && parent.get("type").map(|t| t == "redacted_thinking").unwrap_or(false) {
+            return None;
+        }
+        if parent.get("type").map(|t| t == "thinking").unwrap_or(false) && key == "thinking" {
+            return None;
+        }
         let s = val.as_str()?;
         if s.chars().count() <= limit || is_b64_image(parent, key, val) {
             return None;
@@ -1515,5 +1570,25 @@ mod tests {
         let err = delete_under(&root, &HashSet::new(), &[]).unwrap_err();
         assert!(err.to_string().contains("没有选中"), "{err}");
         std::fs::remove_dir_all(&root).ok();
+    }
+}
+
+#[cfg(test)]
+mod live_detect_tests {
+    use super::*;
+
+    /// 回归：旧的 ps 扫描在标准安装上永远扫不到东西（argv[0] 是
+    /// `~/.local/bin/claude` 符号链接，命令行里也没有 uuid），「活会话跳过」
+    /// 从来没生效过。新实现读 `~/.claude/sessions/<pid>.json`，本机一定有活的
+    /// Claude Code 进程（我们正跑在里面），所以集合必须非空，且 id 都是
+    /// uuid 形状。
+    #[test]
+    fn live_detection_finds_the_running_cli() {
+        let live = live_session_ids();
+        assert!(!live.is_empty(), "本机明明有活的 claude 进程，一个都没认出来");
+        for id in &live {
+            assert_eq!(id.len(), 36);
+            assert_eq!(id.matches('-').count(), 4, "{id} 不是 uuid 形状");
+        }
     }
 }

@@ -38,24 +38,37 @@ http.createServer((req, res) => {
     req.on('data', (c) => (body += c));
     req.on('end', () => {
       let msg; try { msg = JSON.parse(body); } catch { res.writeHead(400); return res.end('{}'); }
+      // 通知(无 id)必须 202 且不带响应体 —— 回 200+body 会让官方 SDK 的
+      // 客户端在 initialize 阶段直接断开,整个握手就废了。
+      if (msg === null || typeof msg !== 'object' || Array.isArray(msg) || msg.id === undefined) {
+        res.writeHead(msg && typeof msg === 'object' && !Array.isArray(msg) ? 202 : 400);
+        return res.end();
+      }
       const reply = (result) => {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }));
+      };
+      const fail = (code, message) => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, error: { code, message } }));
       };
       if (msg.method === 'initialize')
         return reply({ protocolVersion: '2025-03-26', capabilities: { tools: {} },
                        serverInfo: { name: 'ccload-hub', version: '0.1.0' } });
       if (msg.method === 'tools/list') return reply({ tools: TOOLS });
       if (msg.method === 'tools/call') {
+        // 按名字分发:未知工具要回 -32602,别把回显结果报给一个不存在的工具。
+        const tool = TOOLS.find((t) => t.name === msg.params?.name);
+        if (!tool) return fail(-32602, 'unknown tool: ' + String(msg.params?.name));
         const text = msg.params?.arguments?.text ?? '';
         return reply({ content: [{ type: 'text', text: 'echo: ' + text }] });
       }
-      res.writeHead(404); res.end('{}');
+      fail(-32601, 'method not found: ' + String(msg.method));
     });
     return;
   }
   res.writeHead(404); res.end();
-}).listen(Number(process.env.PORT));
+}).listen(Number(process.env.PORT), '127.0.0.1');
 `;
 
 /// webhook → 无头 CLI 的事件触发器。收到 POST /hook 就 spawn claude/codex,
@@ -78,6 +91,11 @@ const CLIs = {
   opencode: (p) => ['opencode', ['run', p]],
   grok:     (p) => ['grok',     ['-p', p]],
 };
+// 只认自己的键:job.cli 是外部输入,'hasOwnProperty' 这类原型链名字会直接把
+// 下面的函数查找炸出 TypeError,一个恶意 POST 就能把服务打挂。
+function pickCli(name) {
+  return Object.hasOwn(CLIs, name) ? CLIs[name] : CLIs.claude;
+}
 
 // 并发上限:每个无头 CLI 会话都在烧钱,事件风暴不该变成账单风暴。
 // 排队而不拒绝 —— webhook 送达方通常有重试,丢任务比慢更糟。
@@ -86,30 +104,36 @@ let running = 0;
 const queue = [];
 
 function launch(job) {
-  const [bin, args] = (CLIs[job.cli ?? 'claude'] ?? CLIs.claude)(job.prompt ?? '');
+  running++;                                     // 计数只在 launch 一处增加
+  const [bin, args] = pickCli(job.cli)(job.prompt ?? '');
   let child;
+  let done = false;
   try {
     child = spawn(bin, args, {
       env: { ...process.env },   // CCLOAD_* 平台变量原样传给 CLI
+      stdio: ['ignore', 'pipe', 'pipe'],         // 开着的 stdin 会让 claude 干等几秒
       timeout: 10 * 60 * 1000,
     });
   } catch (e) {
     console.error('[webhook] spawn failed:', e.message);
-    finish(job, { code: 127, output: 'spawn failed: ' + e.message });
+    finish({ code: 127, output: 'spawn failed: ' + e.message });
     return;
   }
-  child.on('error', (e) => {          // spawn 后的异步错误(如 CLI 不存在)
-    console.error('[webhook] child error:', e.message);
-    finish(job, { code: 127, output: 'child error: ' + e.message });
-  });
   let out = '';
-  child.stdout.on('data', (c) => (out += c));
-  child.stderr.on('data', (c) => (out += c));
-  child.on('close', (code) => finish(job, { code, output: out }));
+  child.stdout.on('data', (c) => { if (out.length < 256e3) out += c; });
+  child.stderr.on('data', (c) => { if (out.length < 256e3) out += c; });
+  // 'error'(spawn 失败)和 'close' 可能都发 —— done 标记保证只收一次尾。
+  child.on('error', (e) => {
+    console.error('[webhook] child error:', e.message);
+    finish({ code: 127, output: 'child error: ' + e.message });
+  });
+  child.on('close', (code) => finish({ code, output: out }));
 
-  function finish(job, result) {
+  function finish(result) {
+    if (done) return;
+    done = true;
     running--;
-    if (queue.length) launch(queue.shift());
+    if (queue.length) launch(queue.shift());     // launch 自己会 ++
     const cb = job.callback;
     if (!cb) return console.log('[webhook] done', result.code, String(result.output).slice(0, 500));
     fetch(cb, { method: 'POST',
@@ -123,15 +147,18 @@ http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/health') { res.writeHead(200); return res.end('ok'); }
   if (req.method !== 'POST' || req.url !== '/hook') { res.writeHead(404); return res.end(); }
   let body = '';
-  req.on('data', (c) => (body += c));
+  req.on('data', (c) => { if (body.length < 1e6) body += c; });
   req.on('end', () => {
     let job; try { job = JSON.parse(body); } catch { res.writeHead(400); return res.end('{}'); }
+    if (job === null || typeof job !== 'object' || Array.isArray(job)) {
+      res.writeHead(400); return res.end('{}');
+    }
     if (running >= MAX_CONCURRENT) queue.push(job);
-    else { running++; launch(job); }
+    else launch(job);
     res.writeHead(202, { 'content-type': 'application/json' });
     res.end('{"accepted":true}');
   });
-}).listen(Number(process.env.PORT));
+}).listen(Number(process.env.PORT), '127.0.0.1');
 `;
 
 /// 定时分析:内建 cron,到点拉数据 → 问模型 → 推结果。
@@ -153,6 +180,10 @@ async function analyze() {
   inFlight = true;
   try {
     await runOnce();
+  } catch (e) {
+    // 内核没起、上游 502、返回非 JSON —— 都不算致命。没有这个 catch,
+    // setInterval 里的未捕获 rejection 会直接把进程带走(Node ≥15 默认行为)。
+    console.error('[cron] run failed:', e.message);
   } finally {
     inFlight = false;
   }
@@ -180,7 +211,7 @@ http.createServer((req, res) => {
   if (req.url === '/health') { res.writeHead(200); return res.end('ok'); }
   if (req.url === '/run-now') { analyze().catch((e) => console.error(e)); res.writeHead(202); return res.end(); }
   res.writeHead(404); res.end();
-}).listen(Number(process.env.PORT), () => {
+}).listen(Number(process.env.PORT), '127.0.0.1', () => {
   console.log('[cron] schedule =', SCHEDULE);
   timer = setInterval(analyze, everyMs(SCHEDULE));
 });

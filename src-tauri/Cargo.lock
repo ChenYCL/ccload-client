@@ -433,6 +433,7 @@ dependencies = [
  "base64 0.22.1",
  "dirs 5.0.1",
  "futures-util",
+ "libc",
  "objc2",
  "objc2-foundation",
  "rand 0.8.7",
