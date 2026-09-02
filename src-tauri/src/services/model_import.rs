@@ -317,6 +317,14 @@ pub fn apply_import(
         CliTarget::OpenCode => {
             let path = root.join(".config/opencode/opencode.json");
             let mut doc = opencode_doc.expect("parsed above");
+            // 顶层 model / small_model 正指着的别名。prune 绝不能删它们 ——
+            // 否则用户当前的选择指向一个不存在的模型，下一次请求直接失败。
+            let protected: std::collections::HashSet<String> = ["model", "small_model"]
+                .iter()
+                .filter_map(|k| doc.get(*k).and_then(Value::as_str))
+                .map(|m| m.strip_prefix("ccload/").unwrap_or(m).trim().to_string())
+                .filter(|m| !m.is_empty())
+                .collect();
             {
                 // provider.ccload exists because the takeover check above passed.
                 let provider = doc
@@ -379,10 +387,18 @@ pub fn apply_import(
                                 .chain(bare_alias(&e.alias).map(str::to_string))
                         })
                         .collect();
+                    // 只删**我们建的**条目：导入写出来的条目一定带 `name` 且
+                    // name == key（见 entry_for）。用户手工加的、或形状不同的，
+                    // 一律不碰 —— prune 的语义是「收敛我们自己的目录」，不是清空。
+                    let ours = |k: &str, v: &Value| {
+                        v.get("name").and_then(Value::as_str) == Some(k)
+                    };
                     let dropped: Vec<String> = catalog
-                        .keys()
-                        .filter(|k| !keep.contains(*k))
-                        .cloned()
+                        .iter()
+                        .filter(|(k, v)| {
+                            !keep.contains(*k) && !protected.contains(*k) && ours(k, v)
+                        })
+                        .map(|(k, _)| k.clone())
                         .collect();
                     for k in &dropped {
                         catalog.remove(k);
@@ -873,14 +889,16 @@ mod tests {
         let (root, bk) = root_in(dir);
         let path = root.join(".config/opencode/opencode.json");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        // 目录里混着三类：内核还认的、内核已经退役的、用户手工加的。
+        // 目录里混着三类：内核还认的、内核已经退役的（我们导入建的，name == key）、
+        // 用户手工加的（name 是自己起的显示名，不等于 key —— prune 绝不能碰）。
         std::fs::write(
             &path,
             r#"{"model":"ccload/kimi-k3",
                 "provider":{"ccload":{"options":{"baseURL":"http://x/v1"},
                   "models":{"kimi-k3":{"name":"kimi-k3"},
-                            "claude-4.6-opus-max":{"name":"retired"},
-                            "auto":{"name":"retired too"}}}}}"#,
+                            "claude-4.6-opus-max":{"name":"claude-4.6-opus-max"},
+                            "auto":{"name":"auto"},
+                            "my-pick":{"name":"My hand-tuned pick"}}}}}"#,
         )
         .unwrap();
         (root, bk, path)
@@ -907,9 +925,48 @@ mod tests {
         assert!(models.get("kimi-k3").is_some(), "本次清单里的要留下");
         assert!(models.get("claude-4.6-opus-max").is_none(), "退役的要清掉");
         assert!(models.get("auto").is_none(), "退役的要清掉");
+        assert!(
+            models.get("my-pick").is_some(),
+            "用户手工加的条目被 prune 删了 —— 它根本不是我们建的"
+        );
         let mut removed = out.removed.clone();
         removed.sort();
         assert_eq!(removed, vec!["auto", "claude-4.6-opus-max"]);
+    }
+
+    /// 顶层 `model` 正指着的别名，哪怕本次清单没有它也不能删 —— 删了用户当前的
+    /// 选择就指向一个不存在的模型，下一次请求直接失败。
+    #[test]
+    fn prune_never_removes_the_active_selection() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, bk) = root_in(&dir);
+        let path = root.join(".config/opencode/opencode.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // 当前选中的是 old-pick（我们建的形状），本次清单里没有它。
+        std::fs::write(
+            &path,
+            r#"{"model":"ccload/old-pick",
+                "provider":{"ccload":{"options":{"baseURL":"http://x/v1"},
+                  "models":{"old-pick":{"name":"old-pick"}}}}}"#,
+        )
+        .unwrap();
+
+        let out = apply_import(
+            &root,
+            CliTarget::OpenCode,
+            &[entry("kimi-k3", Some(262_144), None)],
+            "s1",
+            &bk,
+            true,
+        )
+        .unwrap();
+
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(
+            doc.pointer("/provider/ccload/models/old-pick").is_some(),
+            "顶层 model 指着的条目被删了，用户的选择成了悬空引用"
+        );
+        assert!(out.removed.is_empty());
     }
 
     /// prune 是显式开关。不开时行为和以前一模一样 —— 一个都不删。
@@ -1025,7 +1082,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (root, bk, path) = grok_root(&dir);
         let mut raw = std::fs::read_to_string(&path).unwrap();
-        raw.push_str("\n[model.retired]\nbase_url = \"http://x/v1\"\n");
+        // 导入建的完整目录表才归 prune 管：带 name + model。
+        raw.push_str(
+            "\n[model.retired]\nname = \"retired\"\nmodel = \"retired\"\nbase_url = \"http://x/v1\"\n",
+        );
         std::fs::write(&path, raw).unwrap();
 
         let out = apply_import(

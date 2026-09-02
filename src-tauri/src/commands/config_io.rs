@@ -62,6 +62,9 @@ pub async fn config_export(
     if !include_secrets {
         kernel.admin_password = String::new();
         token = None;
+        // 出口代理地址可能带 user:pass@（ssh -D / 付费 SOCKS 常见），
+        // 说好不含密钥的文件不能把它原样带出去。
+        kernel.outbound_proxy = kernel.outbound_proxy.map(|p| strip_userinfo(&p));
     }
     let bundle = ConfigBundle {
         format_version: FORMAT_VERSION,
@@ -146,22 +149,29 @@ pub async fn config_import(
     done.push(format!("模型链已合并，现共 {n} 条"));
 
     if apply_kernel {
-        let mut s = state.settings.write().await;
-        let keep_password = s.kernel.admin_password.clone();
-        let keep_data_dir = s.kernel.data_dir.clone();
-        s.kernel = bundle.kernel;
-        // 没带密钥的文件里密码是空串，别用它把本机能用的密码盖掉。
-        if s.kernel.admin_password.is_empty() {
-            s.kernel.admin_password = keep_password;
+        let mut kernel = bundle.kernel;
+        {
+            let s = state.settings.read().await;
+            // 没带密钥的文件里密码是空串，别用它把本机能用的密码盖掉。
+            if kernel.admin_password.is_empty() {
+                kernel.admin_password = s.kernel.admin_password.clone();
+            }
+            // data_dir 是本机路径，跟着别人的机器走必然是错的。
+            kernel.data_dir = s.kernel.data_dir.clone();
         }
-        // data_dir 是本机路径，跟着别人的机器走必然是错的。
-        s.kernel.data_dir = keep_data_dir;
-        s.sandbox_cli_writes = bundle.sandbox_cli_writes;
-        if bundle.client_api_token.is_some() {
-            s.client_api_token = bundle.client_api_token;
+        // 走和设置页同一条路：校验、失效令牌、重建客户端、重定向代理。
+        // 之前这里直接赋值，切换内核身份后旧 token 留着，每个 CLI 都 401。
+        crate::commands::settings::apply_kernel_config(&state, kernel).await?;
+        // 文件里的 token 是给**那台内核**的，只在身份没换（apply 没清掉它）时
+        // 才有意义；apply 清过就以清过为准。sandbox 是本机偏好，不从文件带。
+        if let Some(tok) = bundle.client_api_token {
+            let mut s = state.settings.write().await;
+            if s.client_api_token.is_none() {
+                s.client_api_token = Some(tok);
+            }
+            drop(s);
+            state.persist().await?;
         }
-        drop(s);
-        state.persist().await?;
         done.push("内核连接设置已应用（需重启内核生效）".into());
     }
     Ok(done)
@@ -220,4 +230,33 @@ pub async fn pick_open_path(app: tauri::AppHandle) -> Option<String> {
     picked
         .and_then(|p| p.into_path().ok())
         .map(|p| p.display().to_string())
+}
+
+/// `socks5://user:pass@host:1080` → `socks5://host:1080`。解析不了就原样返回
+/// —— 那种写法本来也过不了 parse_outbound_proxy 的校验。
+fn strip_userinfo(url: &str) -> String {
+    match reqwest::Url::parse(url) {
+        Ok(mut u) if !u.username().is_empty() || u.password().is_some() => {
+            let _ = u.set_username("");
+            let _ = u.set_password(None);
+            u.to_string()
+        }
+        _ => url.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod redaction_tests {
+    use super::*;
+
+    /// 说好不含密钥的导出文件，出口代理里的 user:pass 也得摘干净。
+    #[test]
+    fn export_without_secrets_strips_proxy_credentials() {
+        assert_eq!(
+            strip_userinfo("socks5://alice:s3cret@127.0.0.1:1080"),
+            "socks5://127.0.0.1:1080"
+        );
+        assert_eq!(strip_userinfo("http://127.0.0.1:7890"), "http://127.0.0.1:7890");
+        assert_eq!(strip_userinfo("not a url"), "not a url");
+    }
 }

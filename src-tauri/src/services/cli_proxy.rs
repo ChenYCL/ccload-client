@@ -36,6 +36,28 @@ pub const PROXY_PORT: u16 = 15777;
 /// 逐条转发记录里保留多少条。日志页只回看最近的请求，再多就是白占内存。
 const MAX_RECORDS: usize = 2000;
 
+/// 连内核失败时重试几次、每次退避多久。三次 × 递增退避共约 1.2s，够托管内核
+/// 从 `syscall.Exec` 自重启里回来、也够隧道抖一下；再长就该把错误交给 CLI 了。
+const CONNECT_RETRIES: u32 = 3;
+const CONNECT_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// 请求**还没送达内核**就失败了——这类可以安全重试。
+///
+/// `is_connect()` 覆盖连接拒绝/握手失败；`is_request()` 且非超时覆盖
+/// 「连接池里的旧连接被对端关了」（reqwest 报成 request error）。
+/// 超时不算：请求可能已经在内核里跑了，重放等于双倍账单。
+fn is_connect_failure(e: &reqwest::Error) -> bool {
+    if e.is_timeout() {
+        return false;
+    }
+    if e.is_connect() {
+        return true;
+    }
+    // hyper 的 "connection closed before message completed" / "connection reset"
+    // 在 reqwest 里是 request error；只认还没拿到状态的那种。
+    e.is_request() && e.status().is_none()
+}
+
 /// 请求体上限。CLI 的对话请求（含整段上下文）实测最大几百 MB 量级；
 /// 上限挡的是异常与恶意 —— 声明 10GB 的 Content-Length 不该把进程内存
 /// 吃穿。超过就 413，客户端自己会重试或报错，比 OOM 强。
@@ -560,18 +582,41 @@ async fn handle_conn(
         return write_simple(&mut client, 400, "bad method").await;
     };
     let http = http.read().await.clone();
-    let mut req = http.request(method_parsed, &url);
-    for (name, value) in &fwd {
-        if let Ok(hv) = reqwest::header::HeaderValue::from_str(value) {
-            req = req.header(name, hv);
+    // 和内核同一个宗旨：**能重试的绝不直接抛错给 CLI**。内核对上游是 Key →
+    // 模型 → 渠道三级冷却切换；到了这一层，唯一能透明兜住的是「连内核这一跳」
+    // 的瞬时失败——托管内核刚重启、远端隧道抖了一下、连接池里的旧连接被对端
+    // 关了。这些都是几百毫秒内自愈的事，一次就 502 会让 Claude Code 把整个
+    // turn 判失败，用户看到红字重发，prompt cache 还得重建。
+    //
+    // 只重试**请求还没发出去**就失败的情况（连不上、握手失败）：请求体已经进
+    // 了内核就不能再发第二遍——那是内核自己的故障转移在管的事，重放会让一次
+    // 请求变两次账单。
+    let resp = {
+        let mut attempt = 0u32;
+        loop {
+            let mut r = http.request(method_parsed.clone(), &url);
+            for (name, value) in &fwd {
+                if let Ok(hv) = reqwest::header::HeaderValue::from_str(value) {
+                    r = r.header(name, hv);
+                }
+            }
+            if !out_body.is_empty() {
+                r = r.header(reqwest::header::CONTENT_LENGTH, out_body.len());
+                r = r.body(out_body.clone());
+            }
+            match r.send().await {
+                Ok(resp) => break Ok(resp),
+                Err(e) if attempt < CONNECT_RETRIES && is_connect_failure(&e) => {
+                    attempt += 1;
+                    tracing::debug!("cli proxy: connect to kernel failed, retry {attempt}: {e}");
+                    tokio::time::sleep(CONNECT_RETRY_BACKOFF * attempt).await;
+                }
+                Err(e) => break Err(e),
+            }
         }
-    }
-    if !out_body.is_empty() {
-        req = req.header(reqwest::header::CONTENT_LENGTH, out_body.len());
-        req = req.body(out_body);
-    }
+    };
 
-    let resp = match req.send().await {
+    let resp = match resp {
         Ok(r) => r,
         Err(e) => {
             push_record(
@@ -1336,5 +1381,117 @@ mod hardening_tests {
             .unwrap();
         let body = server.await.unwrap().unwrap();
         assert_eq!(String::from_utf8_lossy(&body), "hello val!");
+    }
+}
+
+#[cfg(test)]
+mod availability_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    /// 内核「晚起」几百毫秒（托管内核自重启、隧道抖一下）时，CLI 必须拿到 200，
+    /// 而不是一次 502 让整个 turn 失败、prompt cache 重建。
+    ///
+    /// 做法：先把端口号定下来但**不监听**，让代理第一次连被拒；300ms 后再真的
+    /// 监听。代理的连接重试要把这段空窗吞掉。
+    #[tokio::test]
+    async fn a_briefly_unreachable_kernel_still_yields_200() {
+        // 占一个端口拿到号，然后立刻释放，制造「拒绝连接」的空窗。
+        let probe = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let up_port = probe.local_addr().unwrap().port();
+        drop(probe);
+
+        // 300ms 后才在同一个端口起上游。
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            let up = TcpListener::bind(("127.0.0.1", up_port)).await.unwrap();
+            let (mut s, _) = up.accept().await.unwrap();
+            let mut buf = vec![0u8; 8192];
+            let _ = s.read(&mut buf).await;
+            let body = b"{\"ok\":true}";
+            let head = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n",
+                body.len()
+            );
+            s.write_all(head.as_bytes()).await.unwrap();
+            s.write_all(body).await.unwrap();
+        });
+
+        let target = Arc::new(RwLock::new(format!("http://127.0.0.1:{up_port}")));
+        let rewrites = Arc::new(RwLock::new(ModelRewrites::new()));
+        let records = Arc::new(RwLock::new(Vec::new()));
+        let front = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let front_port = front.local_addr().unwrap().port();
+        let (t, w, r) = (Arc::clone(&target), Arc::clone(&rewrites), Arc::clone(&records));
+        tokio::spawn(async move {
+            let (stream, _) = front.accept().await.unwrap();
+            let _ = handle_conn(
+                stream,
+                t,
+                w,
+                r,
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                test_proxy_http(),
+            )
+            .await;
+        });
+
+        let mut c = TcpStream::connect(("127.0.0.1", front_port)).await.unwrap();
+        let body = br#"{"model":"claude-opus-5","max_tokens":8}"#;
+        c.write_all(
+            format!(
+                "POST /v1/messages HTTP/1.1\r\nHost: x\r\ncontent-length: {}\r\n\r\n",
+                body.len()
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+        c.write_all(body).await.unwrap();
+        let mut got = Vec::new();
+        c.read_to_end(&mut got).await.unwrap();
+        let got = String::from_utf8_lossy(&got);
+        assert!(got.contains("200 OK"), "空窗没有被重试吞掉，CLI 看到了：{got}");
+        assert_eq!(records.read().await.last().map(|r| r.status), Some(200));
+    }
+
+    /// 内核真的不在（超过重试预算），要干净地给 502，不能挂死。
+    #[tokio::test]
+    async fn a_truly_dead_kernel_gets_a_prompt_502() {
+        let probe = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let up_port = probe.local_addr().unwrap().port();
+        drop(probe);
+
+        let target = Arc::new(RwLock::new(format!("http://127.0.0.1:{up_port}")));
+        let rewrites = Arc::new(RwLock::new(ModelRewrites::new()));
+        let records = Arc::new(RwLock::new(Vec::new()));
+        let front = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let front_port = front.local_addr().unwrap().port();
+        let (t, w, r) = (Arc::clone(&target), Arc::clone(&rewrites), Arc::clone(&records));
+        tokio::spawn(async move {
+            let (stream, _) = front.accept().await.unwrap();
+            let _ = handle_conn(
+                stream,
+                t,
+                w,
+                r,
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                test_proxy_http(),
+            )
+            .await;
+        });
+
+        let started = std::time::Instant::now();
+        let mut c = TcpStream::connect(("127.0.0.1", front_port)).await.unwrap();
+        c.write_all(b"POST /v1/messages HTTP/1.1\r\nHost: x\r\ncontent-length: 2\r\n\r\n{}")
+            .await
+            .unwrap();
+        let mut got = Vec::new();
+        c.read_to_end(&mut got).await.unwrap();
+        let got = String::from_utf8_lossy(&got);
+        assert!(got.contains("502"), "{got}");
+        // 3 次退避 200/400/600ms ≈ 1.2s，加连接本身；别超过 5s。
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 }

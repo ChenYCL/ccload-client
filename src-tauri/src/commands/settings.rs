@@ -20,6 +20,19 @@ pub async fn settings_set_kernel(
     state: State<'_, AppState>,
     kernel: KernelConfig,
 ) -> AppResult<AppSettings> {
+    apply_kernel_config(&state, kernel).await?;
+    Ok(state.settings.read().await.clone())
+}
+
+/// 换内核连接设置的**唯一入口**：校验、归一化、失效令牌、重建 HTTP 客户端、
+/// 重定向两个代理。设置页和配置导入都走这里 —— 以前导入自己直接
+/// `s.kernel = bundle.kernel`，跳过全部失效步骤：托管→远端切换后旧 token
+/// 留着（每个 CLI 都 401）、admin 会话没失效、代理还指着旧地址、
+/// outbound_proxy 没校验也没在 Managed 模式清空。
+pub(crate) async fn apply_kernel_config(
+    state: &AppState,
+    kernel: KernelConfig,
+) -> Result<(), crate::error::AppError> {
     {
         let mut s = state.settings.write().await;
         // Normalize at the boundary so a pasted " https://host " never reaches
@@ -46,8 +59,7 @@ pub async fn settings_set_kernel(
         {
             return Err(crate::error::AppError::Config(
                 "remote_url is required in remote mode".into(),
-            )
-            .into());
+            ));
         }
         // API tokens are per kernel instance: one minted for the managed
         // kernel means nothing to a remote one (and vice versa), which
@@ -63,9 +75,9 @@ pub async fn settings_set_kernel(
     state.admin.invalidate().await;
     let cfg = state.settings.read().await.kernel.clone();
     state.kernel.rebuild_http(&cfg).await?;
-    let _ = crate::commands::cli_proxy::ensure_cli_proxy(&state).await;
-    let _ = crate::commands::kernel::ensure_embed_proxy(&state).await;
-    Ok(state.settings.read().await.clone())
+    let _ = crate::commands::cli_proxy::ensure_cli_proxy(state).await;
+    let _ = crate::commands::kernel::ensure_embed_proxy(state).await;
+    Ok(())
 }
 
 #[tauri::command]

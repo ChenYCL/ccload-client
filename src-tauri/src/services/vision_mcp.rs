@@ -240,15 +240,24 @@ pub fn serve_stdio() -> i32 {
                 record_call(&name, started, &out);
                 out
             }
-            _ => Err("method not found".to_string()),
+            // 规范：ping 回空对象。以前落到 method not found，客户端的心跳
+            // 探测会把我们判成坏掉的服务器。
+            "ping" => Ok(json!({})),
+            _ => Err(format!("method not found: {method}")),
         };
 
         let body = match result {
             Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
-            Err(message) => json!({
-                "jsonrpc": "2.0", "id": id,
-                "error": { "code": -32603, "message": message },
-            }),
+            Err(message) => {
+                // 未知方法是 -32601（Method not found），别的才是 -32603（Internal）。
+                // 客户端会按码决定要不要重试 —— 把「你不支持这个」报成「我内部
+                // 出错了」，它就会一直重试一个永远不会成功的调用。
+                let code = if message.starts_with("method not found") { -32601 } else { -32603 };
+                json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "error": { "code": code, "message": message },
+                })
+            }
         };
         let mut line = body.to_string();
         line.push('\n');

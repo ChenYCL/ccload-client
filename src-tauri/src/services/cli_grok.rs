@@ -408,20 +408,34 @@ pub fn prune_catalog(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    // profile 表当前路由到的模型：接管给它写过 `[model.<routed>]` 内置覆盖表
+    // （只有 base_url + api_key），那正是让 `grok --resume` 留在内核上的东西 ——
+    // 模块头讲的。prune 把它删掉，恢复的会话就绕过内核直连 xAI 了。
+    let routed = doc
+        .get("model")
+        .and_then(|m| m.get(PROFILE))
+        .and_then(|t| t.get("model"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     let Some(table) = doc.get_mut("model").and_then(|m| m.as_table_like_mut()) else {
         return Vec::new();
     };
     let dropped: Vec<String> = table
         .iter()
         .filter(|(k, v)| {
-            if *k == PROFILE || *k == default {
+            if *k == PROFILE || *k == default || *k == routed {
                 return false;
             }
             if keep.contains(*k) {
                 return false;
             }
-            v.as_table_like()
-                .and_then(|t| t.get("base_url"))
+            let Some(t) = v.as_table_like() else { return false };
+            // 只删导入建的完整目录表（有 `name` + `model` 键）。接管写的内置
+            // 覆盖表没有这两个键；用户手写的表也多半没有 —— 都不是我们的。
+            let ours = t.get("name").is_some() && t.get("model").is_some();
+            ours && t
+                .get("base_url")
                 .and_then(|v| v.as_str())
                 .is_some_and(|url| trimmed(url) == trimmed(endpoint))
         })
@@ -730,9 +744,19 @@ mod tests {
 [models]
 default = "ccload"
 [model.ccload]
+model = "grok-4.6"
 base_url = "https://proxy.test/v1"
+# 导入建的完整目录表（name + model）：内核不认了就该收掉。
 [model.retired]
+name = "retired"
+model = "retired"
 base_url = "https://proxy.test/v1"
+# 接管写的内置覆盖表：只有 base_url + api_key，没有 name/model。这是让
+# `grok --resume` 留在内核上的东西，prune 删掉它，恢复的会话就直连 xAI 了。
+[model."grok-4.6"]
+base_url = "https://proxy.test/v1"
+api_key = "tok"
+# 用户自己写的、指向别处的表，与我们无关。
 [model.mine]
 base_url = "https://elsewhere.test/v1"
 "#
@@ -744,5 +768,9 @@ base_url = "https://elsewhere.test/v1"
         assert!(doc["model"].get("ccload").is_some());
         assert!(doc["model"].get("mine").is_some());
         assert!(doc["model"].get("retired").is_none());
+        assert!(
+            doc["model"].get("grok-4.6").is_some(),
+            "接管的内置覆盖表被 prune 删了 —— grok --resume 会绕过内核"
+        );
     }
 }

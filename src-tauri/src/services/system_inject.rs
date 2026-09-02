@@ -492,7 +492,19 @@ pub fn apply(
 ) -> Result<String, AppError> {
     let rel = instructions_path(target);
     let path = root.join(rel);
-    let doc = std::fs::read_to_string(&path).unwrap_or_default();
+    // 文件在、却读不出来（权限、非 UTF-8）时必须报错停下。以前 unwrap_or_default
+    // 把这种情况当成「空文件」，接着把整份 CLAUDE.md 替换成只剩我们那一块 ——
+    // 有快照能回滚，但用户要等到 CLI 行为变了才发现。
+    let doc = match std::fs::read_to_string(&path) {
+        Ok(d) => d,
+        Err(_) if !path.exists() => String::new(),
+        Err(e) => {
+            return Err(AppError::Io(format!(
+                "读不出 {}：{e}。不会用一个只含注入块的文件把它盖掉",
+                path.display()
+            )))
+        }
+    };
 
     let rendered = render_block(spec);
     let block = if spec.is_empty() { None } else { Some(rendered.as_str()) };

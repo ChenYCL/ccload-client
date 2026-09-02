@@ -507,8 +507,32 @@ fn delete_one(root: &Path, live: &HashSet<String>, canon: &Path) -> Result<Delet
                 }
             }
         }
+        // Claude Code 还给每条会话留一个同名目录：`<uuid>/subagents/`、
+        // `<uuid>/tool-results/`。实测本机这类目录合计 353 MB，单条会话的能比
+        // 它的 jsonl 还大 —— 不一起删，「腾出 X」报的数就是假的，空间也没回来。
+        let side = dir.join(&id);
+        if side.is_dir() {
+            bytes += dir_size(&side);
+            let _ = std::fs::remove_dir_all(&side);
+        }
     }
     Ok(DeleteOne::Deleted { bytes })
+}
+
+fn dir_size(dir: &Path) -> u64 {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    rd.flatten()
+        .map(|e| {
+            let p = e.path();
+            if p.is_dir() {
+                dir_size(&p)
+            } else {
+                e.metadata().map(|m| m.len()).unwrap_or(0)
+            }
+        })
+        .sum()
 }
 
 /// `root/<project>/<uuid>.jsonl`，和 [`list_sessions`] 扫的形状对齐。
