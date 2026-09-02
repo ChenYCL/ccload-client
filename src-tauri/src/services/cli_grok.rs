@@ -132,6 +132,17 @@ pub fn apply_with_model(
 
 /// The id Grok will send, not the profile name. `models.default = "ccload"`
 /// plus `[model.ccload].model = "glm-5.3-flash[1M]"` should report the latter.
+/// 当前默认模型那张目录表里写着的 `context_window`。启动自愈拿它比对。
+pub fn current_context_tokens(root: &ConfigRoot) -> Option<i64> {
+    let raw = std::fs::read_to_string(root.join(".grok/config.toml")).ok()?;
+    let doc: toml_edit::DocumentMut = raw.parse().ok()?;
+    let profile = doc.get("models")?.get("default")?.as_str()?.trim();
+    doc.get("model")?
+        .get(profile)?
+        .get("context_window")?
+        .as_integer()
+}
+
 pub fn current_model(root: &ConfigRoot) -> Option<String> {
     let raw = std::fs::read_to_string(root.join(".grok/config.toml")).ok()?;
     let doc: toml_edit::DocumentMut = raw.parse().ok()?;

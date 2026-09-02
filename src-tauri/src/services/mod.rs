@@ -20,6 +20,7 @@ pub mod image_mcp;
 pub mod kernel;
 pub mod mcp_usage;
 pub mod model_caps;
+pub mod model_catalog;
 pub mod model_import;
 pub mod node_services;
 pub mod session_preset;

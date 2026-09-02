@@ -162,6 +162,38 @@ pub(crate) fn current_model(root: &ConfigRoot, target: CliTarget) -> Option<Stri
     }
 }
 
+/// 这个 CLI 磁盘上**现在**写着多大的上下文窗口。
+///
+/// 给启动自愈比对用：策略算出来的数和它对不上，就说明配置停在某次旧写入上
+/// （最常见的是「模型导入」当天写的那个数），该重写一遍。
+/// Gemini CLI 没有这个旋钮，永远返回 None。
+pub(crate) fn current_context_tokens(root: &ConfigRoot, target: CliTarget) -> Option<i64> {
+    match target {
+        CliTarget::ClaudeCode => read_json(&root.join(".claude/settings.json"))
+            .ok()?
+            .pointer("/env/CLAUDE_CODE_MAX_CONTEXT_TOKENS")?
+            .as_str()?
+            .trim()
+            .parse()
+            .ok(),
+        CliTarget::Codex => {
+            let raw = std::fs::read_to_string(root.join(".codex/config.toml")).ok()?;
+            raw.parse::<toml_edit::DocumentMut>()
+                .ok()?
+                .get("model_context_window")?
+                .as_integer()
+        }
+        CliTarget::OpenCode => {
+            let doc = read_json(&root.join(".config/opencode/opencode.json")).ok()?;
+            let alias = current_model(root, target)?;
+            doc.pointer(&format!("/provider/ccload/models/{alias}/limit/context"))?
+                .as_i64()
+        }
+        CliTarget::GrokBuild => cli_grok::current_context_tokens(root),
+        CliTarget::GeminiCli => None,
+    }
+}
+
 pub fn apply_takeover(
     root: &ConfigRoot,
     target: CliTarget,

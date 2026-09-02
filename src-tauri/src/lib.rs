@@ -59,6 +59,12 @@ pub fn run() {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let state = handle.state::<AppState>();
+                // 模型窗口的第三方来源。先装磁盘缓存再按需更新，拉不到就退回
+                // 内置猜测表 —— 全程不阻塞，也不影响下面任何一步。
+                crate::services::model_catalog::startup(
+                    &state.config_dir().join("models-dev.json"),
+                )
+                .await;
                 // 远端内核没有进程可管，但也得有人探一次 /health，否则状态停在
                 // Stopped、内核后台页一直显示「未运行」—— 哪怕远端活得好好的。
                 // 只探 Remote：Managed 模式保持「用户点启动才起进程」的现状。
@@ -216,6 +222,7 @@ pub fn run() {
             commands::cli::context_policy_get,
             commands::cli::context_policy_set,
             commands::cli::context_window_preview,
+            commands::cli::model_catalog_refresh,
             commands::cli::cli_backups,
             commands::cli::cli_backup_diff,
             commands::cli::cli_restore,

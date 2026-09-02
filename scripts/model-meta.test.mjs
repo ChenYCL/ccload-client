@@ -16,12 +16,15 @@ const { defaultContextWindow, formatWindow } = await import(out);
 /// 必须和 src-tauri/src/services/context_window.rs 的 family_window 对齐。
 /// 调度图格子上标的窗口、导入表的默认值、CLI compact 挑模型，三处看见同一个数。
 
-test("claude 4.6 起是 1M，haiku 和 4.5 仍是 200k", () => {
+test("claude 4.6 起是 1M；haiku 和 opus-4.5 仍是 200k，但 sonnet-4.5 是 1M", () => {
   assert.equal(defaultContextWindow("claude-opus-5"), 1_000_000);
   assert.equal(defaultContextWindow("claude-opus-4-8"), 1_000_000);
   assert.equal(defaultContextWindow("claude-fable-5"), 1_000_000);
   assert.equal(defaultContextWindow("claude-sonnet-5"), 1_000_000);
-  assert.equal(defaultContextWindow("claude-sonnet-4-5-20250929"), 200_000);
+  // models.dev 第一方数据：claude-sonnet-4-5 = 1,000,000。以前这里跟着
+  // 「整个 4-5 都是 200k」的旧规则写成 200k，正是用户看到的那个错数。
+  assert.equal(defaultContextWindow("claude-sonnet-4-5-20250929"), 1_000_000);
+  assert.equal(defaultContextWindow("claude-opus-4-5-20251101"), 200_000);
   assert.equal(defaultContextWindow("claude-haiku-4-5-20251001"), 200_000);
 });
 

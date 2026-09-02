@@ -1399,17 +1399,35 @@ function ContextWindowCard() {
             : t("一个字都不写，各 CLI 保持现状。")}
       </p>
       {windows.data && p.mode !== "off" && (
-        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted">
-          {windows.data.map((w) => (
-            <span key={w.target}>
-              {t(TARGET_LABELS[w.target])}
-              {": "}
-              <span className={w.tokens ? "font-mono text-accent" : "font-mono"}>
-                {w.tokens ? formatWindow(w.tokens) : t("不写")}
-              </span>
-              {w.model && <span className="ml-1 opacity-60">({w.model})</span>}
-            </span>
-          ))}
+        <div className="mt-2 space-y-0.5 text-[11px] text-muted">
+          {windows.data.map((w) => {
+            // 磁盘上的数和将要写的不一致 = 还没写入，或者就是那个存量旧值。
+            // 直接标出来，省得用户对着两个数字猜哪个是真的。
+            const drift = w.tokens !== null && w.on_disk !== null && w.on_disk !== w.tokens;
+            return (
+              <div key={w.target} className="flex flex-wrap items-baseline gap-x-1.5">
+                <span className="min-w-[5.5rem]">{TARGET_LABELS[w.target]}</span>
+                <span className={w.tokens ? "font-mono text-accent" : "font-mono"}>
+                  {w.tokens ? formatWindow(w.tokens) : t("不写")}
+                </span>
+                {w.source && (
+                  <span className="opacity-60">
+                    {w.source === "catalog"
+                      ? t("models.dev")
+                      : w.source === "suffix"
+                        ? t("模型名声明")
+                        : t("内置表")}
+                  </span>
+                )}
+                {w.model && <span className="opacity-50">· {w.model}</span>}
+                {drift && (
+                  <span className="text-amber-700">
+                    {t("磁盘上还是 {n}，点「写入」更新", { n: formatWindow(w.on_disk ?? 0) })}
+                  </span>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
       {notice && <p className="mt-1.5 text-xs text-amber-700">{notice}</p>}

@@ -7,25 +7,38 @@
 /// 对齐 —— 调度图、导入表、CLI compact 挑模型，三处看见的是同一个数。改一处
 /// 必须改另一处。
 
+/// 窗口值必须和 `src-tauri/src/services/context_window.rs` 的 `family_window`
+/// 对齐 —— 调度图、导入表、CLI compact 挑模型，三处看见的是同一个数。改一处
+/// 必须改另一处。
+///
+/// **这张表只是兜底**：真正的来源是 models.dev（前端 `modelCatalog.ts`、后端
+/// `model_catalog.rs` 都查它）。下面每条都拿 models.dev 的第一方数据核对过，
+/// 高估的（会死锁）尤其要盯：gpt-5 是 400k 不是 1M，glm-4.5 是 131k 不是 200k，
+/// deepseek 只有 v4 是 1M。
 const CONTEXT_PRESETS: [RegExp, number][] = [
   // 更具体的规则必须排在更宽的前面，不然 grok-4.6 会先被 /grok/ 吃成 256k。
   [/grok-4[.-]?[56]/i, 500_000],
+  [/grok-4[.-]?[23]/i, 1_000_000],
   [/grok/i, 256_000],
-  [/deepseek-v[34]/i, 1_000_000],
+  [/deepseek-v4/i, 1_000_000],
   [/deepseek/i, 128_000],
   [/glm-5\.[23]/i, 1_000_000],
+  [/glm-4\.5/i, 131_072],
   [/glm/i, 200_000],
+  [/kimi-k3/i, 1_000_000],
   [/kimi/i, 262_144],
   [/gemini/i, 1_000_000],
   [/gpt-4\.1/i, 1_000_000],
-  [/gpt-5/i, 1_000_000],
+  [/gpt-5\.[456]/i, 1_000_000],
+  [/gpt-5/i, 400_000],
   [/gpt-4o/i, 128_000],
-  [/o[34]/, 200_000],
+  [/o[134](-|$|-mini|-pro)/i, 200_000],
   [/qwen/i, 131_072],
-  // Claude 4.6 起（含 opus-5 / fable-5 / sonnet-5）是 1M；haiku 和 4.5 仍是 200k。
-  // 一刀切 200k 会让调度图把 opus-5 标成 200k，fallback 到 glm-5.3 时看不出两边都是 1M。
+  // Claude：haiku 和 **opus**-4.5 是 200k；sonnet-4.5 起、4.6+、opus-5 /
+  // fable-5 / sonnet-5 都是 1M。以前把整个 `4-5` 一刀切成 200k，于是
+  // sonnet-4.5（实际 1M）被压掉五分之四 —— 就是「显示 200k 实际 1M」那条。
   [/haiku/i, 200_000],
-  [/(claude|opus|sonnet|fable).*4[.-]5/i, 200_000],
+  [/opus.*4[.-]5/i, 200_000],
   [/claude|opus|sonnet|fable/i, 1_000_000],
 ];
 

@@ -153,12 +153,18 @@ export type ContextPolicy = {
 };
 
 /// 每家 CLI 按当前策略**会写成多少**。显示和实际写入走的是同一条解析路径。
+export type WindowSource = "suffix" | "catalog" | "preset";
+
 export type WindowPreview = {
   target: CliTarget;
   /** 磁盘上现在选的模型，窗口就是按它算的。 */
   model: string | null;
   /** null = 这一家不写窗口。 */
   tokens: number | null;
+  /** 这个数是哪来的：模型名后缀 / models.dev / 内置猜测表。 */
+  source: WindowSource | null;
+  /** 磁盘上**现在**写着的数。和 tokens 不一致 = 还没写入，或者是存量旧值。 */
+  on_disk: number | null;
 };
 
 export type ConfigFormat = "json" | "toml";

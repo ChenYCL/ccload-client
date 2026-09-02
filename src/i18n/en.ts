@@ -1099,4 +1099,8 @@ registerDict("en", {
   "不管选了什么模型，五家 CLI 一律写这个数。":
     "Every CLI gets this number regardless of the selected model.",
   "一个字都不写，各 CLI 保持现状。": "Nothing is written; each CLI keeps whatever it has.",
+  "models.dev": "models.dev",
+  模型名声明: "declared in name",
+  内置表: "built-in table",
+  "磁盘上还是 {n}，点「写入」更新": "on disk it is still {n} \u2014 hit Apply to update",
 });

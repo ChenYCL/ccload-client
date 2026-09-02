@@ -102,15 +102,48 @@ pub fn auto_compact_window(context: i64) -> Option<i64> {
 
 /// 从模型名读窗口。
 ///
-/// 先看后缀 `[1m]` / `[500k]` —— 这是上游自己挂在名字上的声明，比家族猜测准。
-/// 没有后缀再按家族给一个保守默认。保守的意思是：估小了最多提前 compact，
-/// 估大了会再次死锁。
+/// 三段优先级，越靠前越可信：
+///   1. 名字末尾的 `[1m]` / `[500k]` —— 上游自己挂上去的声明，最准；
+///   2. **models.dev 目录**（[`crate::services::model_catalog`]）—— 第三方数据，
+///      离线或查不到时才轮到下一档；
+///   3. 家族猜测 —— 关键字匹配，兜底用。
+///
+/// 为什么不只靠第 3 档：模型迭代比这张表快。拿 models.dev 的第一方数据对过一遍，
+/// 134 条里 64 条对不上 —— 低估只是浪费窗口（`claude-sonnet-4-5` 我们估 200k、
+/// 实际 1M，这就是「界面 200k 实际 1M」的来历），高估会直接死锁（`gpt-5` 估 1M、
+/// 实际 400k）。所以猜测表只在没有更好来源时用，而且宁可估小。
 pub fn parse_window(name: &str) -> u64 {
     let bare = strip_vendor(name);
     if let Some(n) = suffix_window(bare) {
         return n;
     }
+    if let Some(n) = crate::services::model_catalog::lookup(bare) {
+        return n;
+    }
     family_window(bare)
+}
+
+/// 这个窗口是哪来的。界面上要能一眼看出「这数字是第三方查的还是我们猜的」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowSource {
+    /// 模型名自己带的 `[1m]` / `[500k]`。
+    Suffix,
+    /// models.dev。
+    Catalog,
+    /// 内置家族猜测表。
+    Preset,
+}
+
+pub fn window_source(name: &str) -> WindowSource {
+    let bare = strip_vendor(name);
+    if suffix_window(bare).is_some() {
+        WindowSource::Suffix
+    } else if crate::services::model_catalog::lookup(bare).is_some() {
+        WindowSource::Catalog
+    } else {
+        WindowSource::Preset
+    }
 }
 
 fn strip_vendor(name: &str) -> &str {
@@ -149,29 +182,41 @@ fn parse_size(raw: &str) -> Option<u64> {
     Some((n * mul as f64) as u64)
 }
 
+/// 兜底猜测。**只在 models.dev 查不到时用**，所以规则宁可保守：估小了最多提前
+/// compact，估大了会死锁。下面每条都拿 models.dev 的第一方数据核对过。
 fn family_window(name: &str) -> u64 {
     let n = name.to_ascii_lowercase();
-    // grok-4.6 实测卡在 500k，比家族默认的 256k 大、比 1M 小。必须钉死，
-    // 不然按 grok 家族估会提前压，按 1M 估会再次死锁。
+    // grok-4.6/4.5 实测卡在 500k；4.2x/4.3 那批是 1M；grok-build 是 256k。
+    // 必须按从具体到宽泛的顺序，不然全被后面的 `grok` 一把吃成 256k。
     if n.contains("grok-4.6") || n.contains("grok-4.5") || n.contains("grok-4-6") {
         return 500_000;
+    }
+    if n.contains("grok-4.2") || n.contains("grok-4.3") {
+        return 1_000_000;
     }
     if n.contains("grok") {
         return 256_000;
     }
-    if n.contains("deepseek-v4") || n.contains("deepseek-v3") {
+    // v4 才是 1M。v3 系列是 128k~164k —— 以前这两条并在一起写成 1M，是**高估**，
+    // 也就是会死锁的那个方向。
+    if n.contains("deepseek-v4") {
         return 1_000_000;
     }
     if n.contains("deepseek") {
         return 128_000;
     }
-    // glm-5.2/5.3 上游标的是 1M，5.0/5.1 仍是 200k 档。整个 glm-5 按 200k 估会
-    // 把 5.3 压掉五分之四的可用窗口 —— 调度图里 flash 档常年挂的就是 5.3。
+    // glm-5.2/5.3 上游标的是 1M，5.0/5.1 仍是 200k 档，4.5 那批只有 131k。
     if n.contains("glm-5.2") || n.contains("glm-5.3") {
         return 1_000_000;
     }
+    if n.contains("glm-4.5") {
+        return 131_072;
+    }
     if n.contains("glm") {
         return 200_000;
+    }
+    if n.contains("kimi-k3") {
+        return 1_000_000;
     }
     if n.contains("kimi") {
         return 262_144;
@@ -182,13 +227,27 @@ fn family_window(name: &str) -> u64 {
     if n.contains("gpt-4.1") {
         return 1_000_000;
     }
-    if n.contains("gpt-5") {
+    // gpt-5 是 400k，不是 1M —— 5.4 起才回到 1M 档。以前一刀切 1M 是高估。
+    if n.contains("gpt-5.4") || n.contains("gpt-5.5") || n.contains("gpt-5.6") {
         return 1_000_000;
     }
-    // Claude 家族早就分了两档：4.5 及更早是 200k，4.6 起（含 opus-5 / fable-5 /
-    // sonnet-5）是 1M。一刀切 200k 会让 1M 的模型提前四倍触发 compact。
+    if n.contains("gpt-5") {
+        return 400_000;
+    }
+    if n.contains("o1") || n.contains("o3") || n.contains("o4-mini") {
+        return 200_000;
+    }
+    // Claude 家族：haiku 和 opus-4.5 是 200k，其余（sonnet-4.5 起、4.6+、
+    // opus-5 / fable-5 / sonnet-5）都是 1M。
+    //
+    // 注意 **sonnet-4.5 是 1M**：以前这里把整个 `-4-5` 都判成 200k，于是
+    // sonnet-4.5 被压掉五分之四的可用窗口 —— 「界面显示 200k、实际是 1M」
+    // 说的就是它。
     if n.contains("claude") || n.contains("opus") || n.contains("sonnet") || n.contains("fable") {
-        if n.contains("haiku") || n.contains("-4-5") || n.contains("-4.5") {
+        if n.contains("haiku") {
+            return 200_000;
+        }
+        if n.contains("opus") && (n.contains("-4-5") || n.contains("-4.5")) {
             return 200_000;
         }
         return 1_000_000;
@@ -304,6 +363,66 @@ mod tests {
         assert_eq!(parse_window("claude-haiku-4-5-20251001"), 200_000);
     }
 
+    /// **sonnet-4.5 是 1M**，不是 200k。以前这里把整个 `-4-5` 一刀切成 200k，
+    /// 于是它被压掉五分之四的可用窗口 —— 用户报的「界面显示 200k、实际是 1M」
+    /// 说的就是它。models.dev 的第一方数据：claude-sonnet-4-5 = 1,000,000。
+    #[test]
+    fn sonnet_45_is_1m_only_opus_and_haiku_are_capped_at_200k() {
+        assert_eq!(parse_window("claude-sonnet-4-5"), 1_000_000);
+        assert_eq!(parse_window("claude-sonnet-4-5-20250929"), 1_000_000);
+        assert_eq!(parse_window("claude-opus-4-5"), 200_000);
+        assert_eq!(parse_window("claude-haiku-4-5"), 200_000);
+    }
+
+    /// 高估是会死锁的那个方向，这几条以前全是高估。数字取自 models.dev 第一方。
+    #[test]
+    fn the_presets_no_longer_overestimate() {
+        // gpt-5 是 400k，不是 1M。
+        assert_eq!(parse_window("gpt-5"), 400_000);
+        assert_eq!(parse_window("gpt-5.2-pro"), 400_000);
+        // 5.4 起才回到 1M 档。
+        assert_eq!(parse_window("gpt-5.5"), 1_000_000);
+        // deepseek 只有 v4 是 1M；v3 系列是 128k 档，以前和 v4 并成了一条。
+        assert_eq!(parse_window("deepseek-v4-flash"), 1_000_000);
+        assert_eq!(parse_window("deepseek-v3.2"), 128_000);
+        // glm-4.5 那批只有 131k，不是 200k。
+        assert_eq!(parse_window("glm-4.5-air"), 131_072);
+    }
+
+    /// 低估只是浪费窗口，但也是错的。
+    #[test]
+    fn the_presets_no_longer_underestimate_the_wide_ones() {
+        assert_eq!(parse_window("grok-4.3"), 1_000_000);
+        assert_eq!(parse_window("grok-4.20-0309-reasoning"), 1_000_000);
+        assert_eq!(parse_window("kimi-k3"), 1_000_000);
+        assert_eq!(parse_window("o3-pro"), 200_000);
+        // grok-build 仍然是 256k 档，别被上面那条 4.2x 规则带跑。
+        assert_eq!(parse_window("grok-build-0.1"), 256_000);
+    }
+
+    /// 目录（第三方数据）必须**盖过**猜测表，而名字自带的后缀又盖过目录 ——
+    /// 这个顺序错了，用户在名字里写 `[500k]` 的意图就会被目录悄悄推翻。
+    #[test]
+    fn catalog_outranks_presets_but_the_suffix_outranks_everything() {
+        crate::services::model_catalog::set_for_test(&[("mystery-model", 777_000)]);
+        // 猜测表根本不认识它，只会给 128k 兜底；目录说 777k。
+        assert_eq!(parse_window("mystery-model"), 777_000);
+        assert_eq!(
+            window_source("mystery-model"),
+            WindowSource::Catalog
+        );
+        // 名字上挂了声明，以声明为准。
+        assert_eq!(parse_window("mystery-model[200k]"), 200_000);
+        assert_eq!(
+            window_source("mystery-model[200k]"),
+            WindowSource::Suffix
+        );
+        crate::services::model_catalog::clear_for_test();
+        // 目录没了就回落猜测表，不会 panic 也不会给 0。
+        assert_eq!(parse_window("mystery-model"), 128_000);
+        assert_eq!(window_source("mystery-model"), WindowSource::Preset);
+    }
+
     /// 渠道别名是人手填的，带空格和括号 —— 这些名字连 `claude` 都匹配不上时
     /// 会掉进 128k 兜底，UI 上就显示成 128000。
     #[test]
@@ -391,12 +510,12 @@ mod tests {
         }
     }
 
-    /// 842k 的会话：sonnet-4.5 200k / grok 500k 都不够，glm-5.3 1M 和 deepseek 1M
+    /// 842k 的会话：haiku-4.5 200k / grok 500k 都不够，glm-5.3 1M 和 deepseek 1M
     /// 够。顺序跟链走，原生在前。
     #[test]
     fn pick_skips_hops_that_cannot_hold_the_session() {
         let hops = vec![
-            hop("claude-sonnet-4-5-20250929"),
+            hop("claude-haiku-4-5-20251001"),
             hop("glm-5.3[1m]"),
             hop("grok-4.6"),
             hop("deepseek-v4-flash"),
@@ -405,11 +524,11 @@ mod tests {
         assert_eq!(got, vec!["glm-5.3[1m]", "deepseek-v4-flash"]);
     }
 
-    /// 400k：sonnet-4.5 200k 仍不够，glm 1M 够，grok 500k 也够（400k+80k=480k < 500k）。
+    /// 400k：haiku-4.5 200k 仍不够，glm 1M 够，grok 500k 也够（400k+80k=480k < 500k）。
     #[test]
     fn pick_keeps_later_hops_that_still_fit() {
         let hops = vec![
-            hop("claude-sonnet-4-5-20250929"),
+            hop("claude-haiku-4-5-20251001"),
             hop("glm-5.3[1m]"),
             hop("grok-4.6"),
         ];

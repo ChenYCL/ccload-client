@@ -242,13 +242,21 @@ pub async fn cli_reconcile(state: State<'_, AppState>) -> AppResult<Vec<String>>
             continue;
         }
         let p = preview(&root, target, &base, Some(token.as_str()));
-        if p.already_active {
-            continue;
-        }
-        // 自愈也要带上窗口：不然被 CLI 冲掉的配置重写回来时窗口这一项是空的，
-        // 用户下次打开就看到又变回 CLI 自己的默认值。
+        // 自愈也要带上窗口 —— 不然重写回来的配置窗口是空的。
         let mut opts = TakeoverOptions::default();
         opts.context_tokens = resolve_context_tokens(&state, &root, target, &opts).await;
+        // 「窗口漂了」也算需要重写。
+        //
+        // 这条是「存量 200k 自动清掉」的实现：接管地址和令牌都没问题、
+        // `already_active` 为真，但磁盘上的窗口停在某次旧写入的数字上（最常见的是
+        // 「模型导入」当天写的），而策略现在算出来是另一个数。光靠 already_active
+        // 判断的话，用户必须手动去点每一家的「写入」才修得掉。
+        let window_drifted = opts.context_tokens.is_some_and(|want| {
+            crate::services::cli_config::current_context_tokens(&root, target) != Some(want)
+        });
+        if p.already_active && !window_drifted {
+            continue;
+        }
         match apply_takeover(
             &root,
             target,
@@ -323,13 +331,29 @@ pub async fn context_window_preview(state: State<'_, AppState>) -> AppResult<Vec
     let mut out = Vec::new();
     for target in TARGETS {
         let opts = TakeoverOptions::default();
+        let model = crate::services::cli_config::current_model(&root, target);
         out.push(WindowPreview {
             target,
-            model: crate::services::cli_config::current_model(&root, target),
+            source: model
+                .as_deref()
+                .map(crate::services::context_window::window_source),
+            model,
             tokens: resolve_context_tokens(&state, &root, target, &opts).await,
+            on_disk: crate::services::cli_config::current_context_tokens(&root, target),
         });
     }
     Ok(out)
+}
+
+/// 手动刷新 models.dev 目录。返回收录了多少个模型。
+#[tauri::command]
+pub async fn model_catalog_refresh(state: State<'_, AppState>) -> AppResult<usize> {
+    let path = state.config_dir().join("models-dev.json");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| AppError::Config(format!("build http client: {e}")))?;
+    Ok(crate::services::model_catalog::refresh(&client, &path).await?)
 }
 
 #[derive(serde::Serialize)]
@@ -339,4 +363,8 @@ pub struct WindowPreview {
     pub model: Option<String>,
     /// None = 这一家不写窗口（Off 档，或者压根没选模型）。
     pub tokens: Option<i64>,
+    /// 这个数是哪来的：模型名后缀 / models.dev / 内置猜测表。
+    pub source: Option<crate::services::context_window::WindowSource>,
+    /// 磁盘上**现在**写着的数。和 `tokens` 不一致就说明还没写入（或者是存量旧值）。
+    pub on_disk: Option<i64>,
 }
