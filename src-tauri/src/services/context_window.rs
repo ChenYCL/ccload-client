@@ -311,6 +311,21 @@ pub fn inject_claude_window(
             "CLAUDE_CODE_MAX_CONTEXT_TOKENS".into(),
             Value::String(tokens.to_string()),
         );
+        // auto-compact 阈值必须跟着一起改。接管那条路会写它（比如 1M 模型
+        // 写 920k），这里把天花板降到 500k 却不动它的话，阈值仍然高于新天花板
+        // —— 自动压缩永远不触发，正好是这个函数存在的理由的反面。
+        // 新天花板窄到给不出合法阈值时，把这个键删掉而不是留着旧值。
+        match auto_compact_window(tokens as i64) {
+            Some(w) => {
+                env.insert(
+                    "CLAUDE_CODE_AUTO_COMPACT_WINDOW".into(),
+                    Value::String(w.to_string()),
+                );
+            }
+            None => {
+                env.remove("CLAUDE_CODE_AUTO_COMPACT_WINDOW");
+            }
+        }
     }
     write_pretty_json(&path, &doc)?;
     Ok(format!(
@@ -540,6 +555,37 @@ mod tests {
     fn chain_ceiling_is_the_narrowest_hop() {
         let hops = vec![hop("glm-5.3[1m]"), hop("grok-4.6"), hop("deepseek-v4-flash")];
         assert_eq!(chain_ceiling(&hops), Some(500_000));
+    }
+
+    /// 降天花板时 auto-compact 阈值必须跟着降。接管写过 1M 的 920k，模型链
+    /// 把天花板压到 500k 却不动阈值的话，自动压缩永远不触发 —— 正好是这个
+    /// 函数要防的那件事的反面。
+    #[test]
+    fn injecting_a_narrower_window_also_lowers_the_auto_compact_threshold() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = ConfigRoot::sandbox(dir.path().to_path_buf());
+        let bk = BackupStore::new(dir.path().join("bk"));
+        let path = root.join(".claude/settings.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:15722","CLAUDE_CODE_MAX_CONTEXT_TOKENS":"1000000","CLAUDE_CODE_AUTO_COMPACT_WINDOW":"920000"}}"#,
+        )
+        .unwrap();
+
+        inject_claude_window(&root, &bk, "s1", 500_000).unwrap();
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(doc.pointer("/env/CLAUDE_CODE_MAX_CONTEXT_TOKENS").unwrap(), "500000");
+        assert_eq!(
+            doc.pointer("/env/CLAUDE_CODE_AUTO_COMPACT_WINDOW").unwrap(),
+            "420000",
+            "阈值还停在旧天花板上，自动压缩不会触发"
+        );
+
+        // 窄到给不出合法阈值（官方下限 100k）时，把键删掉而不是留旧值。
+        inject_claude_window(&root, &bk, "s2", 150_000).unwrap();
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(doc.pointer("/env/CLAUDE_CODE_AUTO_COMPACT_WINDOW").is_none());
     }
 
     #[test]
