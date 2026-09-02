@@ -15,7 +15,13 @@ use crate::state::AppState;
 /// 左键 / 双击托盘、菜单「显示窗口」都走这里，免得两处各写一遍漏掉恢复 Dock。
 fn show_main_window(app: &tauri::AppHandle) {
     #[cfg(target_os = "macos")]
-    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+    {
+        let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+        // ⌘H / Dock 右键「隐藏」是**应用级**隐藏：窗口自己还是 visible，被藏起来
+        // 的是整个 NSApplication。那种状态下 `window.show()` 是空操作 —— 托盘的
+        // 「显示窗口」点了没反应就是这么来的。先把 app 自己 unhide 回来。
+        let _ = app.show();
+    }
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
         let _ = w.unminimize();
@@ -253,6 +259,16 @@ pub fn run() {
             commands::settings::settings_set_sandbox,
             commands::settings::settings_set_client_token,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running ccload-client");
+        .build(tauri::generate_context!())
+        .expect("error while building ccload-client")
+        .run(|_app, _event| {
+            // 点 Dock 图标走的是 NSApplicationDelegate 的
+            // `applicationShouldHandleReopen`，Tauri 把它转成 RunEvent::Reopen。
+            // **不接这个事件，点 Dock 图标就什么都不会发生** —— 窗口被 ⌘H 或关窗
+            // 藏起来之后，用户唯一的直觉操作（点图标）是死的，只能去找托盘。
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = _event {
+                show_main_window(_app);
+            }
+        });
 }

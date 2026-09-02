@@ -247,6 +247,11 @@ pub async fn admin_dock_show(
 
 /// 内嵌面板的坐标修正（窗口 resize / 侧栏折叠 / 滚动后的重新落位）。
 /// 只挪不导航 —— 面板已经在了，这里只是跟上布局。
+///
+/// 返回值是「这次真的挪了吗」，前端必须看它：面板还没挂出来时（`admin_dock_show`
+/// 的 add_child 是异步的，中间还夹着一次登录请求）这里只能静默跳过，而前端如果
+/// 把跳过当成成功、把那一帧的 rect 记成新基准，**后面就再也不会重发**了 ——
+/// 挂载瞬间量到的那个过期坐标会永久留在屏幕上，表现就是面板盖住页面标题。
 #[tauri::command]
 pub async fn admin_dock_bounds(
     app: AppHandle,
@@ -254,9 +259,9 @@ pub async fn admin_dock_bounds(
     y: f64,
     width: f64,
     height: f64,
-) -> AppResult<()> {
+) -> AppResult<bool> {
     let Some(webview) = app.get_webview(DOCKED_ADMIN_LABEL) else {
-        return Ok(()); // 面板还没挂出来，前端正常流里会先走 show；静默即可。
+        return Ok(false);
     };
     webview
         .set_bounds(tauri::Rect {
@@ -264,7 +269,7 @@ pub async fn admin_dock_bounds(
             size: tauri::LogicalSize::new(width, height).into(),
         })
         .map_err(|e| crate::error::AppError::Config(e.to_string()))?;
-    Ok(())
+    Ok(true)
 }
 
 /// 收起 / 离开页面时藏起来。销毁留给应用退出 —— 反复建拆子 webview 在 macOS

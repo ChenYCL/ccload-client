@@ -101,9 +101,11 @@ export const api = {
     file: string,
     rect: { x: number; y: number; width: number; height: number },
   ) => invoke<void>("admin_dock_show", { file, ...rect }),
-  /** 布局变化后的坐标修正。面板不存在时是静默 no-op。 */
+  /** 布局变化后的坐标修正。返回「面板是否真的挪了」—— 面板还没挂出来时是
+      false，调用方必须靠它决定要不要重试，否则挂载瞬间那个过期坐标会永久留在
+      屏幕上（表现：面板盖住页面标题）。 */
   adminDockBounds: (rect: { x: number; y: number; width: number; height: number }) =>
-    invoke<void>("admin_dock_bounds", rect),
+    invoke<boolean>("admin_dock_bounds", rect),
   /** 离开页面 / 收起时藏起来（不销毁 —— 保留会话与页面状态）。 */
   adminDockHide: () => invoke<void>("admin_dock_hide"),
 
