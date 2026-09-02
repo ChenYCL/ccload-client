@@ -135,8 +135,18 @@ impl CliProxy {
         );
         let handle = tokio::spawn(async move {
             loop {
-                let Ok((stream, _)) = listener.accept().await else {
-                    break;
+                // accept 出错**不能**退出循环：一次瞬时错误（并发一多就撞的
+                // EMFILE、客户端在握手中途走掉的 ECONNABORTED）就会让 listener
+                // 被 drop、15777 空出来，而 `state.cli_proxy` 还是 Some ——
+                // 于是接管地址照旧指向它，每个 CLI 都 ECONNREFUSED，界面上
+                // 什么都看不出来，只能重启客户端。
+                let stream = match listener.accept().await {
+                    Ok((stream, _)) => stream,
+                    Err(e) => {
+                        tracing::warn!("cli proxy accept: {e}");
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        continue;
+                    }
                 };
                 let (t, w, r, lc, h) = (
                     Arc::clone(&t),
@@ -334,10 +344,17 @@ fn find_header_end(buf: &[u8]) -> Option<usize> {
 ///
 /// `head` 是头部之后已经读进来的字节，先于任何新读取被消费。终止条件是
 /// 0 长度块；trailers 一律丢弃（模型改写用不上它们）。
+/// 读一个 chunked 请求体。
+///
+/// `limit` 是**边读边算**的上限，不是读完再查：没有它的话，一个声称 4GB 的
+/// chunked 请求会把内存吃干才轮到外面那句 413；而 `raw` 还留着已经消费过的
+/// 字节，峰值是体积的两倍。size 行也要挡：`ffffffffffffffff` 解析出来是
+/// usize::MAX，`pos + size + 2` 直接溢出（debug 崩，release 回绕后越界崩）。
 async fn read_chunked_body(
     client: &mut TcpStream,
     head: Vec<u8>,
     tmp: &mut [u8; 16 * 1024],
+    limit: usize,
 ) -> std::io::Result<Vec<u8>> {
     // 把「当前消费位置」留在 chunk 量这一行，用最小实现：手写游标推进。
     let mut raw = head;
@@ -368,12 +385,23 @@ async fn read_chunked_body(
     while let Some(line) = read_line!() {
         // 量这一行可能带分号后的扩展（`1a;ext=…`），取分号前的十六进制。
         let size_part = line.split(';').next().unwrap_or("").trim();
-        let Ok(size) = usize::from_str_radix(size_part, 16) else {
+        // 16 位十六进制就是 u64 的全宽；再长的只可能是垃圾或攻击，别去 parse。
+        let Some(size) = (size_part.len() <= 16)
+            .then(|| usize::from_str_radix(size_part, 16).ok())
+            .flatten()
+        else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("bad chunk size line: {size_part:?}"),
             ));
         };
+        // 预算检查放在**读之前**：读完再查等于已经把内存吃掉了。
+        if size > limit.saturating_sub(out.len()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "chunked body exceeds the size limit",
+            ));
+        }
         if size == 0 {
             // 0 块之后是可选的 trailer 区，以空行结束。读到空行（或连接断）为止。
             while let Some(t) = read_line!() {
@@ -396,6 +424,9 @@ async fn read_chunked_body(
         }
         out.extend_from_slice(&raw[pos..pos + size]);
         pos += size + 2; // 跳过块尾的 \r\n
+        // 已经消费掉的前缀就别留着了 —— 不然 raw 和 out 各存一份整个请求体。
+        raw.drain(..pos);
+        pos = 0;
     }
     Ok(out)
 }
@@ -441,6 +472,16 @@ async fn handle_conn(
     let method = parts.next().unwrap_or("").to_string();
     let path = parts.next().unwrap_or("/").to_string();
 
+    // 请求目标必须是 origin-form（`/v1/messages`）。
+    //
+    // 它会被 `format!("{upstream}{path}")` 直接拼进 URL：`GET @evil.com/x` 拼出
+    // `http://127.0.0.1:8080@evil.com/x`，按 URL 规则 host 是 evil.com、前面那截
+    // 成了 userinfo —— 任意本地进程都能借这个代理连到外网，Remote 模式下还会走
+    // 用户配好的出口代理（SOCKS/SSH 隧道）。`//x` 是 protocol-relative，同理。
+    if !path.starts_with('/') || path.starts_with("//") {
+        return write_simple(&mut client, 400, "bad request target").await;
+    }
+
     let mut content_length = 0usize;
     let mut chunked = false;
     let mut fwd: Vec<(String, String)> = Vec::new();
@@ -475,11 +516,14 @@ async fn handle_conn(
     // RFC 9112：chunked 和 Content-Length 同时出现时以 chunked 为准。
     let leftover = buf[header_end..].to_vec();
     let body_bytes: Vec<u8> = if chunked {
-        let body = read_chunked_body(&mut client, leftover, &mut tmp).await?;
-        if body.len() > MAX_BODY {
-            return write_simple(&mut client, 413, "request body too large").await;
+        // 上限传进去边读边算 —— 超了当场报错，而不是把内存吃干再回 413。
+        match read_chunked_body(&mut client, leftover, &mut tmp, MAX_BODY).await {
+            Ok(body) => body,
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                return write_simple(&mut client, 413, "request body too large").await;
+            }
+            Err(e) => return Err(e),
         }
-        body
     } else if content_length > 0 {
         let mut body = leftover;
         while body.len() < content_length {
@@ -593,8 +637,20 @@ async fn handle_conn(
 
     // 逐块转发，绝不整体缓冲 —— CLI 全是流式，缓冲会让首字节等到最后。
     let mut stream = resp.bytes_stream();
+    let mut upstream_broke = false;
     while let Some(item) = stream.next().await {
-        let Ok(bytes) = item else { break };
+        let bytes = match item {
+            Ok(b) => b,
+            Err(e) => {
+                // 上游中途断了（内核崩了、隧道掉了）。**不能**照常收尾：
+                // 补上 `0\r\n\r\n` 会把一个截断的回答包装成格式完整的响应，
+                // CLI 分不出来，把半截输出当成最终结果。留着不收尾直接断开，
+                // 客户端才会看到 truncated body 并按错误处理。
+                tracing::warn!("cli proxy: upstream stream broke mid-response: {e}");
+                upstream_broke = true;
+                break;
+            }
+        };
         if !has_len {
             client
                 .write_all(format!("{:x}\r\n", bytes.len()).as_bytes())
@@ -605,6 +661,11 @@ async fn handle_conn(
             client.write_all(b"\r\n").await?;
         }
         client.flush().await?;
+    }
+    if upstream_broke {
+        // 不写终止块：让对端看到「连接断在半路」而不是「干净地结束了」。
+        let _ = client.flush().await;
+        return Ok(());
     }
     if !has_len {
         client.write_all(b"0\r\n\r\n").await?;
@@ -631,6 +692,13 @@ fn now_secs() -> i64 {
 /// Claude Code 的会话文件：`~/.claude/projects/<slug>/<session_id>.jsonl`。
 /// slug 是 cwd 把 `/` 换成 `-`，但我们不知道 CLI 当时的 cwd，所以按文件名找。
 pub fn claude_session_file(session_id: &str) -> Option<PathBuf> {
+    // session_id 来自请求头，是**外部输入**。`join` 遇到绝对路径会直接丢掉
+    // 前面的基准目录，`../` 也不会被拒 —— 不校验的话，任意本地进程发一个
+    // `X-Claude-Code-Session-Id: /Users/x/private/notes` 就能让日志页去读
+    // 并显示磁盘上任意一个文件。uuid 只有这些字符，多一个都不认。
+    if !is_safe_session_id(session_id) {
+        return None;
+    }
     let projects = dirs::home_dir()?.join(".claude/projects");
     let entries = std::fs::read_dir(projects).ok()?;
     for e in entries.flatten() {
@@ -642,12 +710,41 @@ pub fn claude_session_file(session_id: &str) -> Option<PathBuf> {
     None
 }
 
+/// 会话 id 的形状：uuid 用到的字符集，长度设个上限。路径分隔符、`.`、`~`
+/// 全都不在里面，所以拼进路径之后跑不出 `~/.claude/projects`。
+fn is_safe_session_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 /// 会话标题。Claude Code 自己会生成 `ai-title`，但磁盘上只有极少数会话有
 /// （实测 1416 个里 100 个），所以取不到就退回首条用户消息的开头。
 pub fn session_title(path: &std::path::Path) -> Option<String> {
-    let raw = std::fs::read_to_string(path).ok()?;
+    // 逐行读、读够就停：会话 jsonl 动辄几百 MB，为了一个 60 字的标题
+    // `read_to_string` 整个文件是白吃内存（日志页每点一次都来一遍）。
+    use std::io::BufRead;
+    const MAX_SCAN_BYTES: usize = 2 * 1024 * 1024;
+    let file = std::fs::File::open(path).ok()?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut scanned = 0usize;
+    let mut lines: Vec<String> = Vec::new();
+    loop {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(n) => {
+                scanned += n;
+                lines.push(line);
+                if scanned >= MAX_SCAN_BYTES {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
     let mut first_user: Option<String> = None;
-    for line in raw.lines() {
+    for line in lines.iter().map(|l| l.as_str()) {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
@@ -1129,5 +1226,115 @@ mod key_order_tests {
         let pos_type = out_str.find("\"type\":\"ephemeral\"").unwrap();
         let pos_ttl = out_str.find("\"ttl\":\"1h\"").unwrap();
         assert!(pos_type < pos_ttl, "ttl 应当追加在原键之后而非重排:{out_str}");
+    }
+}
+
+#[cfg(test)]
+mod hardening_tests {
+    use super::*;
+
+    /// session id 来自请求头。绝对路径会让 `join` 丢掉基准目录，`../` 能往上爬 ——
+    /// 任意本地进程发一个头，就能让日志页读并显示磁盘上任意文件。
+    #[test]
+    fn a_header_supplied_session_id_cannot_escape_the_projects_dir() {
+        for evil in [
+            "/Users/x/private/notes",
+            "../../../../etc/passwd",
+            "..",
+            "a/b",
+            "a\\b",
+            "with space",
+            "",
+            &"x".repeat(65),
+        ] {
+            assert!(!is_safe_session_id(evil), "{evil:?} 应当被拒");
+            assert!(claude_session_file(evil).is_none(), "{evil:?} 竟然解析出了路径");
+        }
+        // 正常的 uuid 要放行。
+        assert!(is_safe_session_id("39e5aab6-18e2-46b3-88c4-408ebbfb495b"));
+    }
+
+    /// 声称 4GB 的 chunked 请求必须在**读之前**就被挡掉，而不是把内存吃干
+    /// 之后才轮到 413；离谱的 size 行也不能把 `pos + size + 2` 溢出。
+    #[tokio::test]
+    async fn an_oversized_chunk_is_refused_before_it_is_read() {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut tmp = [0u8; 16 * 1024];
+            read_chunked_body(&mut sock, Vec::new(), &mut tmp, 1024).await
+        });
+
+        let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
+        // 声称 16MB，上限是 1KB。
+        c.write_all(b"1000000\r\n").await.unwrap();
+        let err = server.await.unwrap().unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData, "{err}");
+    }
+
+    /// `ffffffffffffffff` 解析成 usize::MAX，旧代码 `pos + size + 2` 当场溢出。
+    #[tokio::test]
+    async fn an_absurd_chunk_size_does_not_overflow() {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut tmp = [0u8; 16 * 1024];
+            read_chunked_body(&mut sock, Vec::new(), &mut tmp, MAX_BODY).await
+        });
+        let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
+        c.write_all(b"ffffffffffffffffff\r\n").await.unwrap();
+        let err = server.await.unwrap().unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData, "{err}");
+    }
+
+    /// 请求目标被原样拼进上游 URL。`@evil.com/x` 会让 host 变成 evil.com
+    /// （前面那截成了 userinfo）—— 任意本地进程借这个代理连外网，Remote 模式下
+    /// 还走用户配的出口代理。用 url crate 确认这个解析结果，再钉住我们的判据。
+    #[test]
+    fn a_non_origin_form_target_would_change_the_host() {
+        let upstream = "http://127.0.0.1:8080";
+        // `@` 那两个是真的会换 host：前面那截被解析成 userinfo。
+        for evil in ["@evil.com/x", ":9@evil.com/"] {
+            let joined = format!("{upstream}{evil}");
+            let u = reqwest::Url::parse(&joined).expect("仍是合法 URL");
+            assert_eq!(
+                u.host_str(),
+                Some("evil.com"),
+                "{joined} 没有换 host —— 这条用例失去意义了"
+            );
+            assert!(!evil.starts_with('/'), "{evil} 应当被判为非法目标");
+        }
+        // `//host/x` 接在已有 host 的 URL 后面不会换 host（只是多一层空路径段），
+        // 但它是 protocol-relative 形式，同样不是合法的 origin-form，一并挡掉。
+        assert!("//evil.com/x".starts_with("//"));
+        // 正常路径要放行。
+        for ok in ["/v1/messages", "/health", "/"] {
+            assert!(ok.starts_with('/') && !ok.starts_with("//"));
+        }
+    }
+
+    /// 正常的 chunked 请求体还要能读对（drain 之后游标别算错）。
+    #[tokio::test]
+    async fn a_normal_chunked_body_still_round_trips() {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut tmp = [0u8; 16 * 1024];
+            read_chunked_body(&mut sock, Vec::new(), &mut tmp, MAX_BODY).await
+        });
+        let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
+        // 三块 + 带扩展的量行 + trailer。
+        c.write_all(b"5\r\nhello\r\n3;ext=1\r\n va\r\n2\r\nl!\r\n0\r\n\r\n")
+            .await
+            .unwrap();
+        let body = server.await.unwrap().unwrap();
+        assert_eq!(String::from_utf8_lossy(&body), "hello val!");
     }
 }
