@@ -193,7 +193,7 @@ jobs:
         # `error: The specified item could not be found in the keychain`，
         # 整条流水线红在最后一步。签名相关的变量一律只由上面那个 step 在真的
         # 导入了证书之后写进 $GITHUB_ENV —— 没配就压根不存在，Tauri 直接跳过。
-        run: npx tauri build ${{ matrix.tauri_args }}
+        run: bash scripts/ci-tauri-build.sh ${{ matrix.tauri_args }}
 
       - name: Collect assets
         shell: bash
@@ -219,9 +219,13 @@ jobs:
           done
 
           # macOS 另外压一份 .app：DMG 之外给不想挂载磁盘映像的人一个选择。
+          # bundle_dmg.sh 偶发失败时 zip 就是唯一的 mac 产物，必须打出来。
           if [ "${{ runner.os }}" = "macOS" ]; then
             APP=$(find src-tauri/target -maxdepth 6 -name '*.app' -type d | head -1)
             [ -n "$APP" ] && ditto -c -k --sequesterRsrc --keepParent "$APP" "release-assets/${NAME}.zip"
+            if ! ls release-assets/*.dmg >/dev/null 2>&1; then
+              echo "::warning::no .dmg (hdiutil flaked); shipping .app zip only"
+            fi
           fi
 
           ls -lh release-assets
