@@ -33,10 +33,15 @@ function rectOf(el: HTMLElement): Rect {
 }
 
 const sameRect = (a: Rect, b: Rect) =>
-  Math.abs(a.x - b.x) < 0.5 &&
-  Math.abs(a.y - b.y) < 0.5 &&
-  Math.abs(a.width - b.width) < 0.5 &&
-  Math.abs(a.height - b.height) < 0.5;
+  Math.abs(a.x - b.x) < 1 &&
+  Math.abs(a.y - b.y) < 1 &&
+  Math.abs(a.width - b.width) < 1 &&
+  Math.abs(a.height - b.height) < 1;
+
+/// 子 webview 的 set_bounds 要派发到 AppKit 主线程。rAF 每帧都 IPC 就是当年
+/// 「白屏后冻结」的配方：主线程一堵，Dock / 托盘「显示窗口」一起死，用户只能
+/// 强制退出，进行中的 CLI 流跟着被掐。100ms 足够跟上侧栏 220ms 的折叠动画。
+const BOUNDS_MIN_MS = 100;
 
 export function WebAdminPage() {
   const t = useT();
@@ -51,6 +56,7 @@ export function WebAdminPage() {
   // 已经**确认落到原生侧**的坐标。没确认就不许更新它 —— 见下面 inflight 那段。
   const lastRect = useRef<Rect | null>(null);
   const inflight = useRef(false);
+  const lastSentAt = useRef(0);
 
   // 挂载 / 更新内嵌面板。StrictMode 双跑 effect 也没关系 —— show 是幂等的。
   useLayoutEffect(() => {
@@ -76,12 +82,13 @@ export function WebAdminPage() {
   }, [running]);
 
   // 布局跟踪：窗口 resize、侧栏折叠（宽度 transition 220ms）、字体加载都会改占
-  // 位元素的位置。rAF 比 ResizeObserver 覆盖面广（纯位移它不管），每帧一次
-  // getBoundingClientRect + 浅比较可以忽略不计。
+  // 位元素的位置。rAF 比 ResizeObserver 覆盖面广（纯位移它不管），比较本身
+  // 可以忽略不计；真正贵的是后面那次 IPC。
   //
   // 只有后端回 true（面板真的挪了）才推进基准；被丢掉的那次下一帧自动重试。
-  // inflight 保证同一时刻最多一条在飞，不会 60fps 轰炸主线程 —— 子 webview 的
-  // set_bounds 要派发到主线程，轰它就是当年「白屏后冻结」的配方。
+  // inflight 保证同一时刻最多一条在飞，BOUNDS_MIN_MS 再把频率压到 10Hz ——
+  // 子 webview 的 set_bounds 要派发到主线程，60fps 轰它就是当年「白屏后冻结」
+  // 的配方。
   useEffect(() => {
     if (!running) return;
     let raf = 0;
@@ -93,16 +100,20 @@ export function WebAdminPage() {
         if (rect.width >= 1 && rect.height >= 1) {
           const prev = lastRect.current;
           if (!prev || !sameRect(prev, rect)) {
-            inflight.current = true;
-            void api
-              .adminDockBounds(rect)
-              .then((applied) => {
-                if (applied) lastRect.current = rect;
-              })
-              .catch(() => {})
-              .finally(() => {
-                inflight.current = false;
-              });
+            const now = performance.now();
+            if (now - lastSentAt.current >= BOUNDS_MIN_MS) {
+              lastSentAt.current = now;
+              inflight.current = true;
+              void api
+                .adminDockBounds(rect)
+                .then((applied) => {
+                  if (applied) lastRect.current = rect;
+                })
+                .catch(() => {})
+                .finally(() => {
+                  inflight.current = false;
+                });
+            }
           }
         }
       }

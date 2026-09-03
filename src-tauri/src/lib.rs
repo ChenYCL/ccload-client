@@ -11,8 +11,7 @@ use tauri::Manager;
 
 use crate::state::AppState;
 
-/// 关窗会把窗口和 Dock 图标一起藏起来，菜单栏那颗图标是唯一回来的路。
-/// 左键 / 双击托盘、菜单「显示窗口」都走这里，免得两处各写一遍漏掉恢复 Dock。
+/// 左键 / 双击托盘、菜单「显示窗口」、点 Dock 图标都走这里，免得两处各写一遍。
 fn show_main_window(app: &tauri::AppHandle) {
     #[cfg(target_os = "macos")]
     {
@@ -26,6 +25,7 @@ fn show_main_window(app: &tauri::AppHandle) {
         let _ = w.show();
         let _ = w.unminimize();
         let _ = w.set_focus();
+        let _ = w.request_user_attention(Some(tauri::UserAttentionType::Informational));
     }
 }
 
@@ -73,7 +73,7 @@ pub fn run() {
                 }
                 // 远端内核没有进程可管，但也得有人探一次 /health，否则状态停在
                 // Stopped、内核后台页一直显示「未运行」—— 哪怕远端活得好好的。
-                // 只探 Remote：Managed 模式保持「用户点启动才起进程」的现状。
+                // Managed 不自动 spawn，只认领强制退出留下的孤儿。
                 //
                 // **丢到旁边的任务里跑**：探测最坏要等 READY_TIMEOUT，而它后面
                 // 排着 CLI 代理 —— 远端不可达时，CLI 会对着一个还没监听的 15777
@@ -91,6 +91,25 @@ pub fn run() {
                         let state = h.state::<AppState>();
                         if let Err(e) = state.kernel.start(&kernel_cfg, None).await {
                             tracing::warn!("kernel probe at launch: {e}");
+                        }
+                    });
+                } else {
+                    // 托管模式不自动 spawn，但强制退出留下的孤儿要认领：
+                    // 否则界面显示「未运行」，Claude Code 其实还连着那个内核，
+                    // 用户一点「启动」就撞 address in use。
+                    let h = handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let state = h.state::<AppState>();
+                        match state.kernel.adopt_if_running(&kernel_cfg).await {
+                            Ok(true) => {
+                                if let Err(e) =
+                                    crate::commands::kernel::ensure_client_token(&state).await
+                                {
+                                    tracing::warn!("token after kernel adopt: {e}");
+                                }
+                            }
+                            Ok(false) => {}
+                            Err(e) => tracing::warn!("kernel adopt at launch: {e}"),
                         }
                     });
                 }
@@ -117,27 +136,17 @@ pub fn run() {
                 }
             });
 
-            // Close hides the window AND the Dock icon — the managed kernel
-            // and any in-flight CLI sessions must keep running, and an app
-            // parked in the Dock with no window looks dead. The tray icon in
-            // the menu bar is the way back in; quit lives there too.
+            // 关窗只藏窗口，不摘 Dock 图标。内核和进行中的 CLI 会话必须继续跑；
+            // 以前切成 Accessory 把 Dock 图标也藏了，用户唯一的直觉操作（点
+            // Dock）彻底没了，只能去找托盘 —— 找不到就强制退出，CLI 代理和
+            // 内核一起被掐，Claude Code 报 Connection lost mid-response。
+            // Dock 上停着一个没窗口的图标，好过把正在流的回答切断。
             let window = app.get_webview_window("main").expect("main window");
-            // 只有 macOS 分支用得到它（切 Dock 显示策略），其他平台留着就是
-            // 一个未使用变量，clippy -D warnings 会红。
-            #[cfg(target_os = "macos")]
-            let app_handle = app.handle().clone();
             let win = window.clone();
             window.on_window_event(move |event| {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
                     let _ = win.hide();
-                    // Accessory = no Dock icon, no menu bar of our own. The
-                    // tray icon keeps running either way.
-                    // Dock 是 macOS 独有的概念，`set_activation_policy` 也只在
-                    // macOS 的 tauri 上存在 —— 不加守卫的话 Linux/Windows 直接
-                    // 编不过（cannot find `ActivationPolicy` in `tauri`）。
-                    #[cfg(target_os = "macos")]
-                    let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
                 }
             });
 

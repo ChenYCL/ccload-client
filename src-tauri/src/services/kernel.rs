@@ -165,6 +165,48 @@ fn generate_password() -> String {
         .collect()
 }
 
+/// 内核 pid 文件。强制退出不跑析构、`process_group(0)` 又把内核摘出信号组，
+/// 进程会活下来占着端口；下次启动靠这个文件认领，而不是再 spawn 一次撞
+/// "address in use"，也避免那个孤儿先应答 /health、界面显示「运行中」
+/// 而我们手里没有可 stop 的句柄。
+fn pid_file(data_dir: &std::path::Path) -> PathBuf {
+    data_dir.join("ccload.pid")
+}
+
+fn write_pid_file(data_dir: &std::path::Path, pid: u32) {
+    let _ = std::fs::write(pid_file(data_dir), pid.to_string());
+}
+
+fn clear_pid_file(path: &std::path::Path) {
+    let _ = std::fs::remove_file(path);
+}
+
+fn read_pid_file(data_dir: &std::path::Path) -> Option<u32> {
+    let text = std::fs::read_to_string(pid_file(data_dir)).ok()?;
+    let pid: u32 = text.trim().parse().ok()?;
+    (pid > 0).then_some(pid)
+}
+
+/// 这个 pid 还活着吗。Unix 用信号 0 探；别处只认 pid > 0，健康检查才是权威。
+fn pid_is_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        unsafe { libc::kill(pid as i32, 0) == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn live_pid_from_file(data_dir: &std::path::Path) -> Option<u32> {
+    let pid = read_pid_file(data_dir)?;
+    pid_is_alive(pid).then_some(pid)
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case", tag = "state")]
 pub enum KernelStatus {
@@ -186,6 +228,10 @@ pub struct Kernel {
     /// use" 要么起来后被第一个的轮询覆盖状态。界面上够得着：设置页「重启内核」
     /// 把状态置为 starting，而侧栏「启动内核」按钮此时仍可点。
     start_lock: Mutex<()>,
+    /// 我们认领的内核 pid。自己 spawn 的和强制退出留下的孤儿都写这里，
+    /// `stop()` 没 Child 句柄时靠它给进程组发信号。
+    owned_pid: Mutex<Option<u32>>,
+    pid_path: Mutex<Option<PathBuf>>,
 }
 
 impl Kernel {
@@ -195,6 +241,8 @@ impl Kernel {
             status: Mutex::new(KernelStatus::Stopped),
             http: RwLock::new(direct_loopback_client()),
             start_lock: Mutex::new(()),
+            owned_pid: Mutex::new(None),
+            pid_path: Mutex::new(None),
         })
     }
 
@@ -227,7 +275,8 @@ impl Kernel {
 
     /// Bring the kernel up. For `Remote` mode this only verifies reachability;
     /// no process is spawned. Idempotent: a already-running managed child is
-    /// left alone.
+    /// left alone. A managed kernel left behind by a force-quit is adopted
+    /// instead of spawned again.
     pub async fn start(&self, cfg: &KernelConfig, binary: Option<PathBuf>) -> Result<(), AppError> {
         // 整个启动过程串行化。抢到锁之后再查一次状态：排在后面的那个调用
         // 等到的多半是「前一个已经起好了」，直接复用即可。
@@ -236,6 +285,14 @@ impl Kernel {
             return Ok(());
         }
         self.rebuild_http(cfg).await?;
+
+        // 强制退出留下的孤儿先认领，再考虑 spawn。顺序不能反：spawn 进被占
+        // 的端口，新进程马上退，await_ready 却会把孤儿的 /health 当成自己
+        // 起来了，界面显示运行中、手里的 Child 已经是具尸体。
+        if cfg.mode == KernelMode::Managed && self.try_adopt_locked(cfg).await {
+            return Ok(());
+        }
+
         self.set_status(KernelStatus::Starting).await;
 
         if cfg.mode == KernelMode::Managed {
@@ -266,6 +323,56 @@ impl Kernel {
         }
     }
 
+    /// 启动时探一下：托管内核若已经在应答，认领过来，不要再拉起一份。
+    ///
+    /// 不自动 spawn —— 托管模式仍然是「用户点启动才起进程」。只收拾强制退出
+    /// 留下的那个还在转发 CLI 流量的孤儿，免得界面显示未运行、Claude Code
+    /// 其实连着它，一点启动就翻车。
+    pub async fn adopt_if_running(&self, cfg: &KernelConfig) -> Result<bool, AppError> {
+        if cfg.mode != KernelMode::Managed {
+            return Ok(false);
+        }
+        let _serial = self.start_lock.lock().await;
+        if let KernelStatus::Running { .. } = self.status().await {
+            return Ok(true);
+        }
+        self.rebuild_http(cfg).await?;
+        Ok(self.try_adopt_locked(cfg).await)
+    }
+
+    /// 调用方必须已经持有 `start_lock`。
+    async fn try_adopt_locked(&self, cfg: &KernelConfig) -> bool {
+        if !self.health_ok(cfg).await {
+            return false;
+        }
+        let pid = cfg
+            .data_dir
+            .as_deref()
+            .and_then(live_pid_from_file);
+        *self.owned_pid.lock().await = pid;
+        *self.pid_path.lock().await = cfg.data_dir.as_ref().map(|d| pid_file(d));
+        let version = self.probe_version(cfg).await;
+        tracing::info!(
+            pid = pid.unwrap_or(0),
+            "adopted already-running kernel"
+        );
+        self.set_status(KernelStatus::Running {
+            base_url: cfg.base_url(),
+            version,
+        })
+        .await;
+        true
+    }
+
+    async fn health_ok(&self, cfg: &KernelConfig) -> bool {
+        let health = format!("{}/health", cfg.base_url());
+        let req = self.http().await.get(&health).send();
+        match tokio::time::timeout(Duration::from_secs(2), req).await {
+            Ok(Ok(resp)) => resp.status().is_success(),
+            _ => false,
+        }
+    }
+
     async fn spawn_managed(&self, cfg: &KernelConfig, bin: &PathBuf) -> Result<(), AppError> {
         let data_dir = cfg
             .data_dir
@@ -292,6 +399,11 @@ impl Kernel {
         let child = cmd.spawn().map_err(|e| {
             AppError::Io(format!("failed to spawn ccload at {}: {e}", bin.display()))
         })?;
+        if let Some(pid) = child.id() {
+            write_pid_file(&data_dir, pid);
+            *self.owned_pid.lock().await = Some(pid);
+            *self.pid_path.lock().await = Some(pid_file(&data_dir));
+        }
         *self.child.lock().await = Some(child);
         Ok(())
     }
@@ -357,20 +469,56 @@ impl Kernel {
     /// 发给 `-pgid` 而不是 pid：spawn 时设了 `process_group(0)`，内核自己拉起的
     /// 子进程只有整组发信号才收得掉。
     pub async fn stop(&self) -> Result<(), AppError> {
-        if let Some(mut child) = self.child.lock().await.take() {
+        let mut child = self.child.lock().await.take();
+        let pid = match child.as_ref().and_then(Child::id) {
+            Some(p) => Some(p),
+            None => self.owned_pid.lock().await.take(),
+        };
+        *self.owned_pid.lock().await = None;
+        if let Some(path) = self.pid_path.lock().await.take() {
+            clear_pid_file(&path);
+        }
+
+        if let Some(pid) = pid {
             #[cfg(unix)]
-            if let Some(pid) = child.id() {
+            {
                 unsafe { libc::kill(-(pid as i32), libc::SIGTERM) };
                 // 内核的收尾预算是 5s + 10s，给到 16s；正常情况下它几百毫秒就退了。
-                let graceful =
-                    tokio::time::timeout(Duration::from_secs(16), child.wait()).await;
-                if graceful.is_ok() {
-                    self.set_status(KernelStatus::Stopped).await;
-                    return Ok(());
+                if let Some(mut child) = child.take() {
+                    let graceful =
+                        tokio::time::timeout(Duration::from_secs(16), child.wait()).await;
+                    if graceful.is_ok() {
+                        self.set_status(KernelStatus::Stopped).await;
+                        return Ok(());
+                    }
+                    tracing::warn!("kernel 没有在 16s 内响应 SIGTERM，改用 SIGKILL");
+                    unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+                    let _ = child.start_kill();
+                    let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
+                } else {
+                    // 认领来的孤儿没有 Child 句柄，用信号 0 等到它退。
+                    let deadline = tokio::time::Instant::now() + Duration::from_secs(16);
+                    while pid_is_alive(pid) && tokio::time::Instant::now() < deadline {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    if pid_is_alive(pid) {
+                        tracing::warn!("kernel 没有在 16s 内响应 SIGTERM，改用 SIGKILL");
+                        unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+                    }
                 }
-                tracing::warn!("kernel 没有在 16s 内响应 SIGTERM，改用 SIGKILL");
-                unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+                self.set_status(KernelStatus::Stopped).await;
+                return Ok(());
             }
+            #[cfg(not(unix))]
+            if child.is_none() {
+                let _ = tokio::process::Command::new("taskkill")
+                    .args(["/PID", &pid.to_string(), "/T", "/F"])
+                    .status()
+                    .await;
+            }
+        }
+
+        if let Some(mut child) = child {
             let _ = child.start_kill();
             let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
         }
@@ -439,5 +587,40 @@ mod tests {
         assert!(parse_outbound_proxy("http://127.0.0.1:7890").unwrap().is_some());
         let err = parse_outbound_proxy("ftp://127.0.0.1:21").unwrap_err();
         assert!(err.to_string().contains("socks5"), "{err}");
+    }
+
+    #[test]
+    fn pid_file_round_trip_and_rejects_garbage() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(read_pid_file(dir.path()), None);
+        write_pid_file(dir.path(), 12345);
+        assert_eq!(read_pid_file(dir.path()), Some(12345));
+        write_pid_file(dir.path(), 7);
+        assert_eq!(read_pid_file(dir.path()), Some(7));
+        clear_pid_file(&pid_file(dir.path()));
+        assert_eq!(read_pid_file(dir.path()), None);
+
+        std::fs::write(pid_file(dir.path()), "nope\n").unwrap();
+        assert_eq!(read_pid_file(dir.path()), None);
+        std::fs::write(pid_file(dir.path()), "0").unwrap();
+        assert_eq!(read_pid_file(dir.path()), None);
+    }
+
+    #[test]
+    fn pid_is_alive_knows_us_and_not_a_fake() {
+        assert!(pid_is_alive(std::process::id()), "自己这个进程都认不出来");
+        assert!(!pid_is_alive(0));
+        #[cfg(unix)]
+        assert!(!pid_is_alive(0x7FFF_FFFF), "不存在的 pid 被当成活的了");
+    }
+
+    #[test]
+    fn live_pid_from_file_only_returns_a_still_running_process() {
+        let dir = tempfile::tempdir().unwrap();
+        write_pid_file(dir.path(), std::process::id());
+        assert_eq!(live_pid_from_file(dir.path()), Some(std::process::id()));
+        write_pid_file(dir.path(), 0x7FFF_FFFF);
+        #[cfg(unix)]
+        assert_eq!(live_pid_from_file(dir.path()), None);
     }
 }

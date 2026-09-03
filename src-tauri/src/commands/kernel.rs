@@ -323,7 +323,7 @@ fn admin_session_script(session: Option<&crate::services::admin::WebSession>) ->
 /// token is re-validated against the live kernel first — tokens are bound
 /// to one kernel instance, and a stale one (kernel switched, token revoked
 /// on the kernel side) would 401 every CLI it was written into.
-async fn ensure_client_token(state: &AppState) -> Result<(), crate::error::AppError> {
+pub(crate) async fn ensure_client_token(state: &AppState) -> Result<(), crate::error::AppError> {
     let (base_url, password, existing) = {
         let s = state.settings.read().await;
         (
