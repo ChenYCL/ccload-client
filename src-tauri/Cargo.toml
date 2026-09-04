@@ -44,9 +44,12 @@ similar = { version = "3.2.0", default-features = false, features = ["text"] }
 
 # macOS 的自动大写/智能标点是系统级文本替换，HTML 的 autocapitalize 在桌面端
 # 只是软键盘提示，管不到它。要关只能在启动时改本应用的 NSUserDefaults。
+# objc2-app-kit：托盘/Dock 唤窗时直接 deminiaturize —— tao 的 unminimize 在
+# 最小化状态下实测不还原窗口（issue tauri#????），用户表现为「点 Dock 没反应」。
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSUserDefaults", "NSString"] }
+objc2-app-kit = "0.3"
 
 [dev-dependencies]
 tempfile = "3"

@@ -23,10 +23,48 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
+        // tao 的 unminimize 在窗口最小化时实测不还原（发 deminiaturize 但窗口
+        // 纹丝不动），先保留它管非 macOS，macOS 走下面那条原生路径。
         let _ = w.unminimize();
+        #[cfg(target_os = "macos")]
+        force_window_front(&w);
         let _ = w.set_focus();
         let _ = w.request_user_attention(Some(tauri::UserAttentionType::Informational));
     }
+}
+
+/// macOS：绕开运行时封装，直接对 NSWindow 做 deminiaturize + makeKeyAndOrderFront。
+///
+/// 本函数只从主线程的事件回调里调（托盘菜单/托盘点击/RunEvent::Reopen），
+/// `MainThreadMarker::new()` 失败说明调用点挪了位置，此时退回上面那组封装调用，
+/// 不做不安全假设。
+#[cfg(target_os = "macos")]
+fn force_window_front(w: &tauri::WebviewWindow) {
+    use objc2::rc::Retained;
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSApplication, NSWindow};
+
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let Ok(ptr) = w.ns_window() else {
+        return;
+    };
+    let Some(ptr) = std::ptr::NonNull::new(ptr.cast::<NSWindow>()) else {
+        return;
+    };
+    // +1 引用计数；ns_window() 给的是借来的指针。
+    let ns: Option<Retained<NSWindow>> = unsafe { Retained::retain(ptr.as_ptr()) };
+    let Some(ns) = ns else {
+        return;
+    };
+    if ns.isMiniaturized() {
+        ns.deminiaturize(None);
+    }
+    ns.makeKeyAndOrderFront(None);
+    // objc2 0.3 里 activate() 无参且标记为安全（老式 activateIgnoringOtherApps
+    // 已废弃）。拾起自己靠 makeKeyAndOrderFront + 上面那步 app.show()。
+    NSApplication::sharedApplication(mtm).activate();
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
