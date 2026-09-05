@@ -12,6 +12,11 @@
 //! CLI 发的模型名内核不一定认（`claude-opus-5[1m]` 这种带窗口后缀的实测 503，
 //! 和不存在的模型同样报错），转发前按映射表改写。
 //!
+//! 第三件事是**首选渠道钉住**（`services::pins`）：别名钉了渠道时，先把模型名换成
+//! 那个渠道的私有别名（`grok-4.6@ch21`）发一次；内核回「这条没人接得住」类的失败
+//! （见 [`is_fallback_status`]）再用原别名重发，退回内核自己的顺序。内核只按渠道
+//! 优先级选路，「选了哪个渠道就默认走它」只能在这一层做。
+//!
 //! 和 `embed_proxy` 的分工：那个是给 admin iframe 剥 `X-Frame-Options` 的，
 //! 只服务我们自己的窗口；这个是数据面，要扛 CLI 的长连接和 SSE。两者都手写
 //! HTTP/1.1 但目标不同，共用一份会把「安全边界」和「转发性能」搅在一起。
@@ -27,7 +32,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
 
 use crate::error::AppError;
+use crate::services::context_floor::alias_key;
 use crate::services::kernel::{http_client_for_kernel, HttpClientOpts, KernelConfig};
+use crate::services::pins::PinRules;
 
 /// 固定端口。CLI 配置里写死的就是它，换端口等于所有接管配置失效，所以不
 /// 像 embed_proxy 那样在一个区间里试探 —— 端口被占就是硬错误，得让用户看见。
@@ -85,10 +92,37 @@ pub struct ProxyRecord {
     /// 同上：输出 tokens。输入大头在缓存里，分项看内核日志。
     #[serde(default)]
     pub output_tokens: Option<i64>,
+    /// 钉住的首选渠道没接住、退让到了下一个名字：记的是**被放弃的**那个私有别名。
+    /// None = 第一发就成了（或根本没钉住）。
+    #[serde(default)]
+    pub fallback_from: Option<String>,
 }
 
 /// 模型名改写规则：CLI 发的名字 -> 内核认的名字。
 pub type ModelRewrites = HashMap<String, String>;
+
+/// 代理改模型名要看的全部规则。一把锁装两张表，改哪张都不用换 handle_conn 的签名。
+#[derive(Debug, Clone, Default)]
+pub struct ProxyRules {
+    pub rewrites: ModelRewrites,
+    /// 首选渠道钉住，键是 `alias_key`（剥后缀、小写）。
+    pub pins: PinRules,
+}
+
+/// 内核这次回的状态说明「这个别名没接住」，可以换下一个名字再发。
+///
+/// 照抄内核自己的分级表（`util/classifier.go`）：401/402/403/429 是 Key 级、5xx 是
+/// 渠道级 —— 内核遇到这些会自己换 Key / 换渠道；私有别名只有一个渠道可换，换完就
+/// 把状态原样交出来，于是轮到我们换名字。400 / 404 / 413 这些是客户端级：请求本身
+/// 有问题（比如上下文太长），换个落点再发一遍只会把同样的错再收一次，还多付一次账。
+///
+/// 已知代价：内核**自己**回的 401（客户端令牌不对）/ 429（令牌级限流）在这里分不出来，
+/// 会用原名再发一次、再收一次同样的错 —— 令牌配错期间每个请求翻倍，但一个字都到不了
+/// 上游，没有账单影响；令牌一修好就消失。不按响应体猜「这是内核的还是上游的」：那段
+/// 文案每换一版内核都可能变，猜错了退让就悄悄失灵。
+pub fn is_fallback_status(status: u16) -> bool {
+    matches!(status, 401 | 402 | 403 | 429) || status >= 500
+}
 
 /// 把请求里的 `cache_control` 升到 1 小时窗口。
 ///
@@ -123,7 +157,7 @@ fn upgrade_cache_ttl(v: &mut serde_json::Value) {
 
 pub struct CliProxy {
     target: Arc<RwLock<String>>,
-    rewrites: Arc<RwLock<ModelRewrites>>,
+    rules: Arc<RwLock<ProxyRules>>,
     /// 见 `upgrade_cache_ttl` —— 默认 false，实测多数场景开着更贵。
     long_cache: Arc<std::sync::atomic::AtomicBool>,
     records: Arc<RwLock<Vec<ProxyRecord>>>,
@@ -143,14 +177,14 @@ impl CliProxy {
             })?;
 
         let target = Arc::new(RwLock::new(cfg.base_url()));
-        let rewrites: Arc<RwLock<ModelRewrites>> = Arc::new(RwLock::new(HashMap::new()));
+        let rules: Arc<RwLock<ProxyRules>> = Arc::new(RwLock::new(ProxyRules::default()));
         let long_cache = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let records: Arc<RwLock<Vec<ProxyRecord>>> = Arc::new(RwLock::new(Vec::new()));
         let http = Arc::new(RwLock::new(cli_proxy_client(cfg)?));
 
         let (t, w, r, lc, h) = (
             Arc::clone(&target),
-            Arc::clone(&rewrites),
+            Arc::clone(&rules),
             Arc::clone(&records),
             Arc::clone(&long_cache),
             Arc::clone(&http),
@@ -185,7 +219,7 @@ impl CliProxy {
 
         Ok(Arc::new(Self {
             target,
-            rewrites,
+            rules,
             long_cache,
             records,
             http,
@@ -212,7 +246,12 @@ impl CliProxy {
     }
 
     pub async fn set_rewrites(&self, rules: ModelRewrites) {
-        *self.rewrites.write().await = rules;
+        self.rules.write().await.rewrites = rules;
+    }
+
+    /// 换一整张钉住表。保存 / 删除钉住之后调用，不用重启代理。
+    pub async fn set_pins(&self, pins: PinRules) {
+        self.rules.write().await.pins = pins;
     }
 
     /// 最近的转发记录，最新的在前。
@@ -331,6 +370,29 @@ fn resolve_rewrite(model: &str, rules: &ModelRewrites) -> Option<String> {
         }
     }
     None
+}
+
+/// 这次请求依次要发的模型名。第一个是 CLI 那边改写 / 剥后缀后的名字（和
+/// `rewrite_body` 算出来的一致）；钉了渠道就先私有别名、后（可选）原别名。
+fn alias_sequence(model: &str, rules: &ProxyRules) -> Vec<String> {
+    let plain = resolve_rewrite(model, &rules.rewrites).unwrap_or_else(|| model.to_string());
+    match rules.pins.get(&alias_key(&plain)) {
+        Some(rule) => rule.sequence(&plain),
+        None => vec![plain],
+    }
+}
+
+/// 把已经改写过的 body 再换一个模型名（重发用）。除 `model` 外一个字节不动，
+/// 键序保持（缓存前缀匹配靠它）。解析不了就原样返回。
+fn with_model(body: &[u8], model: &str) -> Vec<u8> {
+    let Ok(mut v) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return body.to_vec();
+    };
+    if v.get("model").is_none() {
+        return body.to_vec();
+    }
+    v["model"] = serde_json::Value::String(model.to_string());
+    serde_json::to_vec(&v).unwrap_or_else(|_| body.to_vec())
 }
 
 /// 连接超时 5s，响应体不设上限 —— 一次长回答流上几分钟是常态。
@@ -466,7 +528,7 @@ async fn write_simple(client: &mut TcpStream, status: u16, msg: &str) -> std::io
 async fn handle_conn(
     mut client: TcpStream,
     target: Arc<RwLock<String>>,
-    rewrites: Arc<RwLock<ModelRewrites>>,
+    rules: Arc<RwLock<ProxyRules>>,
     records: Arc<RwLock<Vec<ProxyRecord>>>,
     long_cache: Arc<std::sync::atomic::AtomicBool>,
     http: Arc<RwLock<reqwest::Client>>,
@@ -569,18 +631,25 @@ async fn handle_conn(
 
     let cli = detect_cli(&fwd);
     let session_id = detect_session(&fwd);
-    let rules = rewrites.read().await.clone();
+    let rules = rules.read().await.clone();
     let (model, rewritten) = rewrite_body(
         &body_bytes,
-        &rules,
+        &rules.rewrites,
         long_cache.load(std::sync::atomic::Ordering::Relaxed),
     );
-    let sent_model = rewritten.as_ref().and_then(|b| {
-        serde_json::from_slice::<serde_json::Value>(b)
+    // out_body 里现在写着的模型名：改写过就是改写后的，否则还是 CLI 的原名。
+    let name_in_body: Option<String> = match &rewritten {
+        Some(b) => serde_json::from_slice::<serde_json::Value>(b)
             .ok()
-            .and_then(|v| v.get("model").and_then(|m| m.as_str()).map(str::to_string))
-    });
+            .and_then(|v| v.get("model").and_then(|m| m.as_str()).map(str::to_string)),
+        None => model.clone(),
+    };
     let out_body = rewritten.unwrap_or(body_bytes);
+    // 钉住序列：没钉就只有一个名字（等于 name_in_body）；没有 model 字段就空，原样发。
+    let attempts: Vec<String> = model
+        .as_deref()
+        .map(|m| alias_sequence(m, &rules))
+        .unwrap_or_default();
 
     let upstream = target.read().await.clone();
     let url = format!("{upstream}{path}");
@@ -588,41 +657,46 @@ async fn handle_conn(
         return write_simple(&mut client, 400, "bad method").await;
     };
     let http = http.read().await.clone();
-    // 和内核同一个宗旨：**能重试的绝不直接抛错给 CLI**。内核对上游是 Key →
-    // 模型 → 渠道三级冷却切换；到了这一层，唯一能透明兜住的是「连内核这一跳」
-    // 的瞬时失败——托管内核刚重启、远端隧道抖了一下、连接池里的旧连接被对端
-    // 关了。这些都是几百毫秒内自愈的事，一次就 502 会让 Claude Code 把整个
-    // turn 判失败，用户看到红字重发，prompt cache 还得重建。
-    //
-    // 只重试**请求还没发出去**就失败的情况（连不上、握手失败）：请求体已经进
-    // 了内核就不能再发第二遍——那是内核自己的故障转移在管的事，重放会让一次
-    // 请求变两次账单。
-    let resp = {
-        let mut attempt = 0u32;
-        loop {
-            let mut r = http.request(method_parsed.clone(), &url);
-            for (name, value) in &fwd {
-                if let Ok(hv) = reqwest::header::HeaderValue::from_str(value) {
-                    r = r.header(name, hv);
+
+    // 依次试每个名字。首选（私有别名）被内核以「没接住」类状态拒了，就换下一个；
+    // 其它状态（成功、或客户端级错误）当场定案。连内核都连不上时换名字没意义，直接
+    // 502。每次重发用的都是同一份已缓冲的 body，只换 model 字段。
+    let mut sent_model: Option<String> = None;
+    let mut fallback_from: Option<String> = None;
+    let mut outcome: Option<Result<reqwest::Response, reqwest::Error>> = None;
+    if attempts.is_empty() {
+        outcome = Some(send_to_kernel(&http, &method_parsed, &url, &fwd, &out_body).await);
+    } else {
+        let total = attempts.len();
+        for (idx, alias) in attempts.iter().enumerate() {
+            let body = if name_in_body.as_deref() == Some(alias.as_str()) {
+                out_body.clone()
+            } else {
+                with_model(&out_body, alias)
+            };
+            let r = send_to_kernel(&http, &method_parsed, &url, &fwd, &body).await;
+            sent_model = Some(alias.clone());
+            match &r {
+                Ok(resp) if idx + 1 < total && is_fallback_status(resp.status().as_u16()) => {
+                    tracing::info!(
+                        "cli proxy: {alias} answered {}, falling back to {}",
+                        resp.status().as_u16(),
+                        attempts[idx + 1]
+                    );
+                    fallback_from = Some(alias.clone());
+                    continue;
                 }
-            }
-            if !out_body.is_empty() {
-                r = r.header(reqwest::header::CONTENT_LENGTH, out_body.len());
-                r = r.body(out_body.clone());
-            }
-            match r.send().await {
-                Ok(resp) => break Ok(resp),
-                Err(e) if attempt < CONNECT_RETRIES && is_connect_failure(&e) => {
-                    attempt += 1;
-                    tracing::debug!("cli proxy: connect to kernel failed, retry {attempt}: {e}");
-                    tokio::time::sleep(CONNECT_RETRY_BACKOFF * attempt).await;
+                _ => {
+                    outcome = Some(r);
+                    break;
                 }
-                Err(e) => break Err(e),
             }
         }
-    };
+    }
+    // 和 CLI 原名一样就不算改写；记录里 None 表示「没改」。
+    let sent_model = sent_model.filter(|n| Some(n.as_str()) != model.as_deref());
 
-    let resp = match resp {
+    let resp = match outcome.expect("at least one attempt is always made") {
         Ok(r) => r,
         Err(e) => {
             push_record(
@@ -637,6 +711,7 @@ async fn handle_conn(
                     status: 502,
                     cost: None,
                     output_tokens: None,
+                    fallback_from,
                 },
             )
             .await;
@@ -662,6 +737,7 @@ async fn handle_conn(
             status: status.as_u16(),
             cost: None,
             output_tokens: None,
+            fallback_from,
         },
     )
     .await;
@@ -722,6 +798,48 @@ async fn handle_conn(
         client.write_all(b"0\r\n\r\n").await?;
     }
     client.flush().await
+}
+
+/// 发一次请求到内核，带「连不上就重试」。
+///
+/// 和内核同一个宗旨：**能重试的绝不直接抛错给 CLI**。内核对上游是 Key →
+/// 模型 → 渠道三级冷却切换；到了这一层，唯一能透明兜住的是「连内核这一跳」
+/// 的瞬时失败——托管内核刚重启、远端隧道抖了一下、连接池里的旧连接被对端
+/// 关了。这些都是几百毫秒内自愈的事，一次就 502 会让 Claude Code 把整个
+/// turn 判失败，用户看到红字重发，prompt cache 还得重建。
+///
+/// 只重试**请求还没发出去**就失败的情况（连不上、握手失败）：请求体已经进
+/// 了内核就不能再发第二遍——那是内核自己的故障转移在管的事，重放会让一次
+/// 请求变两次账单。
+async fn send_to_kernel(
+    http: &reqwest::Client,
+    method: &reqwest::Method,
+    url: &str,
+    fwd: &[(String, String)],
+    body: &[u8],
+) -> Result<reqwest::Response, reqwest::Error> {
+    let mut attempt = 0u32;
+    loop {
+        let mut r = http.request(method.clone(), url);
+        for (name, value) in fwd {
+            if let Ok(hv) = reqwest::header::HeaderValue::from_str(value) {
+                r = r.header(name.as_str(), hv);
+            }
+        }
+        if !body.is_empty() {
+            r = r.header(reqwest::header::CONTENT_LENGTH, body.len());
+            r = r.body(body.to_vec());
+        }
+        match r.send().await {
+            Ok(resp) => return Ok(resp),
+            Err(e) if attempt < CONNECT_RETRIES && is_connect_failure(&e) => {
+                attempt += 1;
+                tracing::debug!("cli proxy: connect to kernel failed, retry {attempt}: {e}");
+                tokio::time::sleep(CONNECT_RETRY_BACKOFF * attempt).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 async fn push_record(records: &Arc<RwLock<Vec<ProxyRecord>>>, rec: ProxyRecord) {
@@ -965,7 +1083,7 @@ mod e2e {
         });
 
         let target = Arc::new(RwLock::new(format!("http://127.0.0.1:{up_port}")));
-        let rewrites = Arc::new(RwLock::new(ModelRewrites::new()));
+        let rewrites = Arc::new(RwLock::new(ProxyRules::default()));
         let records = Arc::new(RwLock::new(Vec::new()));
 
         let front = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
@@ -1101,7 +1219,7 @@ mod sse {
             handle_conn(
                 stream,
                 target,
-                Arc::new(RwLock::new(ModelRewrites::new())),
+                Arc::new(RwLock::new(ProxyRules::default())),
                 Arc::new(RwLock::new(Vec::new())),
                 Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 test_proxy_http(),
@@ -1196,7 +1314,7 @@ mod chunked_req {
             let _ = handle_conn(
                 stream,
                 target,
-                Arc::new(RwLock::new(ModelRewrites::new())),
+                Arc::new(RwLock::new(ProxyRules::default())),
                 Arc::new(RwLock::new(Vec::new())),
                 Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 test_proxy_http(),
@@ -1425,7 +1543,7 @@ mod availability_tests {
         });
 
         let target = Arc::new(RwLock::new(format!("http://127.0.0.1:{up_port}")));
-        let rewrites = Arc::new(RwLock::new(ModelRewrites::new()));
+        let rewrites = Arc::new(RwLock::new(ProxyRules::default()));
         let records = Arc::new(RwLock::new(Vec::new()));
         let front = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let front_port = front.local_addr().unwrap().port();
@@ -1470,7 +1588,7 @@ mod availability_tests {
         drop(probe);
 
         let target = Arc::new(RwLock::new(format!("http://127.0.0.1:{up_port}")));
-        let rewrites = Arc::new(RwLock::new(ModelRewrites::new()));
+        let rewrites = Arc::new(RwLock::new(ProxyRules::default()));
         let records = Arc::new(RwLock::new(Vec::new()));
         let front = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let front_port = front.local_addr().unwrap().port();
@@ -1499,5 +1617,274 @@ mod availability_tests {
         assert!(got.contains("502"), "{got}");
         // 3 次退避 200/400/600ms ≈ 1.2s，加连接本身；别超过 5s。
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+}
+
+#[cfg(test)]
+mod pin_tests {
+    use super::*;
+    use crate::services::pins::PinRule;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn rules_with_pin(alias: &str, channels: &[i64], fallback: bool) -> ProxyRules {
+        let mut rules = ProxyRules::default();
+        rules.pins.insert(
+            alias_key(alias),
+            PinRule {
+                base: alias.to_string(),
+                channels: channels.to_vec(),
+                fallback,
+            },
+        );
+        rules
+    }
+
+    /// 序列的形状：没钉住就一个名字（剥完后缀）；钉了就私有别名在前、原名在后；
+    /// 不退让时没有原名；显式改写表的结果才是查钉住表的键。
+    #[test]
+    fn alias_sequence_follows_the_pin_rule() {
+        assert_eq!(alias_sequence("claude-opus-5[1m]", &ProxyRules::default()), vec!["claude-opus-5"]);
+
+        let rules = rules_with_pin("grok-4.6", &[21], true);
+        assert_eq!(alias_sequence("grok-4.6", &rules), vec!["grok-4.6@ch21", "grok-4.6"]);
+        // 请求里带后缀 / 大小写不同：查得到同一条规则，私有别名用钉住表里的大小写
+        // （和内核条目一致），退让用的是剥完窗口后缀的原名。
+        assert_eq!(alias_sequence("Grok-4.6[1m]", &rules), vec!["grok-4.6@ch21", "Grok-4.6"]);
+
+        let strict = rules_with_pin("grok-4.6", &[21], false);
+        assert_eq!(alias_sequence("grok-4.6", &strict), vec!["grok-4.6@ch21"]);
+
+        let mut mapped = rules_with_pin("glm-5.3-flash", &[17], true);
+        mapped.rewrites.insert("my-alias".into(), "glm-5.3-flash".into());
+        assert_eq!(alias_sequence("my-alias", &mapped), vec!["glm-5.3-flash@ch17", "glm-5.3-flash"]);
+
+        // 内核的 thinking 后缀 `(max)` 不能让钉住失效，而且要跟到私有别名后面去。
+        let thinking = rules_with_pin("gpt-5.6", &[9], true);
+        assert_eq!(
+            alias_sequence("gpt-5.6(max)", &thinking),
+            vec!["gpt-5.6@ch9(max)", "gpt-5.6(max)"]
+        );
+    }
+
+    /// 照抄内核分级：Key 级（401/402/403/429）和渠道级（5xx）才换名字；客户端级不换。
+    #[test]
+    fn fallback_statuses_mirror_the_kernel_classifier() {
+        for s in [401, 402, 403, 429, 500, 502, 503, 504, 520, 524] {
+            assert!(is_fallback_status(s), "{s} 应当退让");
+        }
+        for s in [200, 201, 400, 404, 408, 413, 422] {
+            assert!(!is_fallback_status(s), "{s} 不该退让");
+        }
+    }
+
+    /// 重发只换 model，键序、其余字段一个字节不动。
+    #[test]
+    fn with_model_only_touches_the_model_field() {
+        let body = br#"{"model":"grok-4.6@ch21","max_tokens":8,"messages":[],"system":[{"cache_control":{"type":"ephemeral","ttl":"1h"}}]}"#;
+        let out = String::from_utf8(with_model(body, "grok-4.6")).unwrap();
+        assert_eq!(
+            out,
+            r#"{"model":"grok-4.6","max_tokens":8,"messages":[],"system":[{"cache_control":{"type":"ephemeral","ttl":"1h"}}]}"#
+        );
+        // 没有 model 字段 / 不是 JSON：原样。
+        assert_eq!(with_model(b"{\"a\":1}", "x"), b"{\"a\":1}");
+        assert_eq!(with_model(b"nope", "x"), b"nope");
+    }
+
+    /// 假内核：按收到的 model 决定回什么。每个连接处理一个请求就关，逼着代理每次
+    /// 重发都是一次完整的新请求（连接复用与否不影响断言）。
+    async fn spawn_kernel(
+        decide: fn(&str) -> (u16, String),
+    ) -> (u16, Arc<AtomicUsize>, Arc<RwLock<Vec<String>>>) {
+        let up = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = up.local_addr().unwrap().port();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let seen: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(Vec::new()));
+        let (h, sn) = (Arc::clone(&hits), Arc::clone(&seen));
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut s, _)) = up.accept().await else { break };
+                let (h, sn) = (Arc::clone(&h), Arc::clone(&sn));
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut tmp = [0u8; 8192];
+                    let body_start = loop {
+                        let n = s.read(&mut tmp).await.unwrap_or(0);
+                        if n == 0 {
+                            return;
+                        }
+                        buf.extend_from_slice(&tmp[..n]);
+                        if let Some(p) = find_header_end(&buf) {
+                            break p;
+                        }
+                    };
+                    let head = String::from_utf8_lossy(&buf[..body_start]).to_ascii_lowercase();
+                    let len: usize = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:"))
+                        .and_then(|v| v.trim().parse().ok())
+                        .unwrap_or(0);
+                    while buf.len() < body_start + len {
+                        let n = s.read(&mut tmp).await.unwrap_or(0);
+                        if n == 0 {
+                            break;
+                        }
+                        buf.extend_from_slice(&tmp[..n]);
+                    }
+                    let body: serde_json::Value =
+                        serde_json::from_slice(&buf[body_start..]).unwrap_or_default();
+                    let model = body["model"].as_str().unwrap_or("").to_string();
+                    h.fetch_add(1, Ordering::SeqCst);
+                    sn.write().await.push(model.clone());
+                    let (status, out) = decide(&model);
+                    let resp = format!(
+                        "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{out}",
+                        out.len()
+                    );
+                    let _ = s.write_all(resp.as_bytes()).await;
+                    let _ = s.flush().await;
+                });
+            }
+        });
+        (port, hits, seen)
+    }
+
+    async fn run_through_proxy(
+        kernel_port: u16,
+        rules: ProxyRules,
+        body: &[u8],
+    ) -> (String, Vec<ProxyRecord>) {
+        let target = Arc::new(RwLock::new(format!("http://127.0.0.1:{kernel_port}")));
+        let rules = Arc::new(RwLock::new(rules));
+        let records = Arc::new(RwLock::new(Vec::new()));
+        let front = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let front_port = front.local_addr().unwrap().port();
+        let (t, w, r) = (Arc::clone(&target), Arc::clone(&rules), Arc::clone(&records));
+        tokio::spawn(async move {
+            let (stream, _) = front.accept().await.unwrap();
+            let _ = handle_conn(
+                stream,
+                t,
+                w,
+                r,
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                test_proxy_http(),
+            )
+            .await;
+        });
+        let mut c = TcpStream::connect(("127.0.0.1", front_port)).await.unwrap();
+        c.write_all(
+            format!(
+                "POST /v1/messages HTTP/1.1\r\nHost: x\r\nUser-Agent: grok-build/1.0\r\ncontent-length: {}\r\n\r\n",
+                body.len()
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+        c.write_all(body).await.unwrap();
+        let mut got = Vec::new();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), c.read_to_end(&mut got)).await;
+        let recs = records.read().await.clone();
+        (String::from_utf8_lossy(&got).to_string(), recs)
+    }
+
+    /// 主线：私有别名被内核 503（那条只有一个渠道，冷却了就没人接），代理用原名重发，
+    /// CLI 拿到 200；记录里写明是从哪个名字退下来的。
+    #[tokio::test]
+    async fn a_cooled_preferred_channel_falls_back_to_the_plain_alias() {
+        let (port, hits, seen) = spawn_kernel(|m| {
+            if m.contains("@ch") {
+                (503, r#"{"error":"no available upstream (all cooled or none)"}"#.into())
+            } else {
+                (200, format!(r#"{{"model":"{m}"}}"#))
+            }
+        })
+        .await;
+        let rules = rules_with_pin("grok-4.6", &[21], true);
+        let (got, recs) =
+            run_through_proxy(port, rules, br#"{"model":"grok-4.6[1m]","max_tokens":8}"#).await;
+        assert!(got.contains("200"), "{got}");
+        assert!(got.contains(r#""model":"grok-4.6""#), "{got}");
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+        assert_eq!(*seen.read().await, vec!["grok-4.6@ch21", "grok-4.6"]);
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].status, 200);
+        assert_eq!(recs[0].model.as_deref(), Some("grok-4.6[1m]"));
+        assert_eq!(recs[0].sent_model.as_deref(), Some("grok-4.6"));
+        assert_eq!(recs[0].fallback_from.as_deref(), Some("grok-4.6@ch21"));
+    }
+
+    /// 首选接住了：只发一次，记录里 sent_model 是私有别名，没有退让。
+    #[tokio::test]
+    async fn a_healthy_preferred_channel_is_used_once() {
+        let (port, hits, _) = spawn_kernel(|m| (200, format!(r#"{{"model":"{m}"}}"#))).await;
+        let rules = rules_with_pin("grok-4.6", &[21], true);
+        let (got, recs) = run_through_proxy(port, rules, br#"{"model":"grok-4.6"}"#).await;
+        assert!(got.contains(r#""model":"grok-4.6@ch21""#), "{got}");
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        assert_eq!(recs[0].sent_model.as_deref(), Some("grok-4.6@ch21"));
+        assert_eq!(recs[0].fallback_from, None);
+    }
+
+    /// 不退让：首选没接住就把 503 原样交给 CLI，不用原名再发 —— 用户说了「不可用就
+    /// 停」，悄悄落到别家等于把这个开关做成了摆设。
+    #[tokio::test]
+    async fn without_fallback_the_failure_is_passed_through() {
+        let (port, hits, _) = spawn_kernel(|_| (503, r#"{"error":"no available upstream"}"#.into())).await;
+        let rules = rules_with_pin("grok-4.6", &[21], false);
+        let (got, recs) = run_through_proxy(port, rules, br#"{"model":"grok-4.6"}"#).await;
+        assert!(got.contains("503"), "{got}");
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        assert_eq!(recs[0].status, 503);
+        assert_eq!(recs[0].fallback_from, None);
+    }
+
+    /// 客户端级错误（400 too long）绝不重发：换个落点再发一遍只会再收一次 400，还多付
+    /// 一次账；而且退让的落点往往窗口更窄，更不可能接住。
+    #[tokio::test]
+    async fn a_client_error_is_never_retried_on_the_fallback_alias() {
+        let (port, hits, _) = spawn_kernel(|_| (400, r#"{"error":"prompt is too long"}"#.into())).await;
+        let rules = rules_with_pin("grok-4.6", &[21], true);
+        let (got, recs) = run_through_proxy(port, rules, br#"{"model":"grok-4.6"}"#).await;
+        assert!(got.contains("400"), "{got}");
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        assert_eq!(recs[0].status, 400);
+        assert_eq!(recs[0].sent_model.as_deref(), Some("grok-4.6@ch21"));
+        assert_eq!(recs[0].fallback_from, None);
+    }
+
+    /// 多个钉住落点按序试，全败再退原名；记录里的 fallback_from 是最后一个放弃的。
+    #[tokio::test]
+    async fn multiple_pinned_targets_are_tried_in_order() {
+        let (port, _, seen) = spawn_kernel(|m| {
+            if m.contains("@ch") {
+                (429, r#"{"error":"rate limited"}"#.into())
+            } else {
+                (200, "{}".into())
+            }
+        })
+        .await;
+        let rules = rules_with_pin("claude-opus-5", &[15, 17], true);
+        let (got, recs) = run_through_proxy(port, rules, br#"{"model":"claude-opus-5"}"#).await;
+        assert!(got.contains("200"), "{got}");
+        assert_eq!(
+            *seen.read().await,
+            vec!["claude-opus-5@ch15", "claude-opus-5@ch17", "claude-opus-5"]
+        );
+        assert_eq!(recs[0].fallback_from.as_deref(), Some("claude-opus-5@ch17"));
+        // 最终发的和原名一样，不算改写。
+        assert_eq!(recs[0].sent_model, None);
+    }
+
+    /// 没钉住的别名一切照旧：剥后缀、发一次。
+    #[tokio::test]
+    async fn unpinned_aliases_are_untouched() {
+        let (port, hits, seen) = spawn_kernel(|_| (503, "{}".into())).await;
+        let rules = rules_with_pin("grok-4.6", &[21], true);
+        let (got, _) = run_through_proxy(port, rules, br#"{"model":"claude-opus-5[1m]"}"#).await;
+        assert!(got.contains("503"), "{got}");
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        assert_eq!(*seen.read().await, vec!["claude-opus-5"]);
     }
 }

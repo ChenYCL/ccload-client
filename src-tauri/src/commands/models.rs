@@ -25,6 +25,7 @@ pub async fn model_import(
     prune: Option<bool>,
 ) -> AppResult<ImportResult> {
     let root = state.config_root().await?;
+    let compact_percent = state.settings.read().await.context_policy.percent();
     Ok(apply_import(
         &root,
         target,
@@ -32,6 +33,7 @@ pub async fn model_import(
         &unique_stamp(),
         &state.backups,
         prune.unwrap_or(false),
+        Some(compact_percent),
     )?)
 }
 

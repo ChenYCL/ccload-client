@@ -1,6 +1,7 @@
 import { useT } from "../../i18n";
 import { X } from "lucide-react";
 import { cn } from "../../lib/cn";
+import { displayModel } from "../../lib/pins";
 import type { LogEntry } from "../../types";
 import { Overlay } from "../Modal";
 import {
@@ -46,7 +47,7 @@ export function LogDetail({ log, onClose }: { log: LogEntry; onClose: () => void
               >
                 {log.status_code ?? "—"}
               </span>
-              <h2 className="t-title truncate">{log.model ?? t("（未知模型）")}</h2>
+              <h2 className="t-title truncate">{displayModel(log.model) ?? t("（未知模型）")}</h2>
             </div>
             <p className="mt-0.5 text-[11px] tabular-nums text-muted">
               #{log.id} · {new Date(log.time * 1000).toLocaleString("zh-CN", { hour12: false })}

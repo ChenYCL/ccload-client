@@ -1,5 +1,6 @@
 import { useT } from "../../i18n";
 import { cn } from "../../lib/cn";
+import { displayModel, splitPinned } from "../../lib/pins";
 import type { LogEntry } from "../../types";
 import {
   effectiveCost,
@@ -105,6 +106,7 @@ function LogRow({
   sessionTitles?: ReadonlyMap<string, string>;
   onOpenSession?: (sessionId: string) => void;
 }) {
+  const t = useT();
   const tone = statusTone(log.status_code);
   // 输入 token 里 cache_read 通常是大头，合并展示才有可比性；分项在详情里给。
   const tokensIn =
@@ -135,9 +137,15 @@ function LogRow({
         </span>
       </td>
       <td className="max-w-0 truncate px-2 py-1 font-mono text-xs" title={log.model}>
-        {log.model ?? "—"}
+        {/* 钉住的首选渠道走的是私有别名 grok-4.6@ch21，显示时剥回原名、标一个「首选」 */}
+        {displayModel(log.model) ?? "—"}
+        {log.model && splitPinned(log.model) && (
+          <span className="ml-1 rounded bg-accent/15 px-1 text-[10px] text-accent" title={log.model}>
+            {t("首选")}
+          </span>
+        )}
         {/* actual_model 是重定向后真正打到上游的模型，和请求的不一样时必须说清 */}
-        {log.actual_model && log.actual_model !== log.model && (
+        {log.actual_model && log.actual_model !== displayModel(log.model) && (
           <span className="ml-1 text-muted">→ {log.actual_model}</span>
         )}
       </td>

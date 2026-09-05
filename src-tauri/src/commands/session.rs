@@ -56,7 +56,8 @@ pub async fn session_compact(
         (s.kernel.base_url(), s.client_api_token.clone().unwrap_or_default())
     };
     // 按**分块大小**挑模型，不是按整段会话 —— 分块总结的每次请求只发一块。
-    let candidates = compact_candidates(&state, &model, chunk_tokens)?;
+    let policy = state.settings.read().await.context_policy.clone();
+    let candidates = compact_candidates(&state, &model, chunk_tokens, &policy)?;
     let mut last_err: Option<AppError> = None;
     let mut tried = Vec::new();
     for m in &candidates {
@@ -91,6 +92,7 @@ fn compact_candidates(
     state: &AppState,
     model: &str,
     chunk_tokens: u64,
+    policy: &crate::services::context_window::ContextPolicy,
 ) -> Result<Vec<String>, AppError> {
     let needed = chunk_tokens;
     let store = FallbackStore::load(&state.config_dir().join("fallback.json"))?;
@@ -100,7 +102,7 @@ fn compact_candidates(
         out.push(picked.to_string());
     }
     for chain in &store.chains {
-        for m in pick_compact_models(needed, &chain.hops) {
+        for m in pick_compact_models(needed, &chain.hops, policy) {
             if !out.iter().any(|s| s == &m) {
                 out.push(m);
             }

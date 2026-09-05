@@ -1103,4 +1103,56 @@ registerDict("en", {
   模型名声明: "declared in name",
   内置表: "built-in table",
   "磁盘上还是 {n}，点「写入」更新": "on disk it is still {n} \u2014 hit Apply to update",
+  // ---- 上下文分档 / 落点 ----
+  "按落点自动": "Auto (narrowest landing)",
+  "压缩触发": "Compact at",
+  手填: "manual",
+  内核渠道: "kernel channel",
+  模型本身: "the model itself",
+  "自定义…": "Custom…",
+  "按这个 CLI 的模型在内核里所有可能落到的上游取最窄（模型本身、模型链、强制路由、内核渠道里服务它的每一条），压缩阈值按百分比跟着窗口走。CLI 只在启动时读窗口，分流到窄模型那一刻没法再改，所以事先按最窄写：1M 的 claude 链上挂着 500k 的 grok，就按 500k 跑、450k 压缩。名字推不准的模型在下面的分档表里手填。":
+    "Takes the narrowest of every upstream this CLI's model can land on in the kernel (the model itself, chain hops, forced-route targets, every kernel channel serving the alias); the compaction threshold follows the window by percentage. CLIs read the window only at startup and cannot adjust when the kernel reroutes mid-session, so the narrowest wins up front: a 1M claude chain with a 500k grok hop runs at 500k and compacts at 450k. Models whose name says nothing useful get a manual tier below.",
+  "不管选了什么模型，五家 CLI 一律写这个数，压缩阈值按百分比算。":
+    "Every CLI gets this number regardless of the selected model; the compaction threshold is the percentage of it.",
+  "内核没连上，下面只按本地的模型链和强制路由算，可能偏宽；内核起来后会自动重算。":
+    "The kernel is unreachable, so the numbers below only count local chains and forced routes and may be too wide; they are recomputed once the kernel is back.",
+  "压缩 {n}": "compact at {n}",
+  "最窄：{what}": "narrowest: {what}",
+  已按上限夹: "capped",
+  落点: "lands on",
+  分档表: "Tier table",
+  "（{n} 条手填）": "({n} manual)",
+  "每个可能用到的模型一行。改窗口就是手填，盖过模型名后缀、models.dev 和内置表；本地模型、中转自起的别名靠这里给真实上限。压缩触发按上面的百分比算。":
+    "One row per model any CLI may use. Changing a window makes it manual, overriding the name suffix, models.dev and the built-in table; local models and relay-invented aliases get their real limit here. The compaction point uses the percentage above.",
+  窗口: "Window",
+  "用到它的 CLI": "Used by",
+  "模型名，如 qwen3.8-27b": "model name, e.g. qwen3.8-27b",
+  "（自动 {n}）": "(auto {n})",
+  恢复自动: "Back to auto",
+  "内核没连上，看不到「{alias}」在内核里的落点。": "Kernel unreachable; cannot show where “{alias}” lands.",
+  "内核里没有任何启用渠道服务「{alias}」—— 请求会 503。去内核后台或「模型链」给它挂一个上游。":
+    "No enabled kernel channel serves “{alias}” — requests will 503. Attach an upstream in the kernel admin or in Model chain.",
+  "内核落点（按优先级，第一条是默认去处）": "Kernel landing (by priority; the first row is the default)",
+  "⚠ 改写成了别家的模型": "⚠ rewritten to another vendor's model",
+  重新启用: "Re-enable",
+  停用这条: "Disable this one",
+  "你选的是 {alias}，但优先级最高的落点 {channel}（{prio}）会把它改写成 {upstream}。内核只按渠道优先级选路，这不是故障转移，是主路由。":
+    "You picked {alias}, but the top-priority landing {channel} ({prio}) rewrites it to {upstream}. The kernel routes by channel priority only, so this is the primary route, not a fallback.",
+  "首选渠道": "Preferred channel",
+  "不钉住（内核默认顺序）": "Not pinned (kernel default order)",
+  "首选不可用时退到内核默认顺序": "Fall back to the kernel default order when the preferred channel is unavailable",
+  "钉住只在 CLI 走本地代理时生效 —— 「CLI 走本地代理」现在是关的，请求仍按内核默认顺序走。":
+    "Pinning only takes effect when the CLI goes through the local proxy \u2014 \u201cRoute CLIs through the local proxy\u201d is currently off, so requests still follow the kernel default order.",
+  "请求先发 {alias} 的私有别名只落到 {channel}；它冷却 / 限流 / 5xx 时用原名重发，回到上面的默认顺序。":
+    "Requests first go out under a private alias of {alias} that only {channel} serves; when it is cooled, rate-limited or returns 5xx, the request is re-sent under the plain name and follows the default order above.",
+  "请求只落到 {channel}；它不可用时直接把错误交给 CLI，不退到别的渠道。":
+    "Requests land only on {channel}; when it is unavailable the error goes straight back to the CLI instead of falling back to another channel.",
+  "真正服务 {alias} 的 {channel}（{prio}）排在后面；把它设为首选渠道，或停用上面那条改写。":
+    "{channel} ({prio}), which actually serves {alias}, sits behind it; make it the preferred channel, or disable the rewrite above.",
+  添加: "Add",
+  会话: "Session",
+  "{channel}（渠道已不在内核里）": "{channel} (channel no longer exists in the kernel)",
+  "钉住的渠道已不在内核里：开着退让时每次请求都先白挨一个 503 再退回默认顺序，关着退让时请求会一直失败。换一个首选渠道或取消钉住。":
+    "The pinned channel no longer exists in the kernel: with fallback on every request first eats a 503 before falling back to the default order, with fallback off requests keep failing. Pick another preferred channel or unpin.",
+  "钉住按别名生效：所有发「{alias}」的 CLI 都一样。": "Pinning is per alias: every CLI that sends \u201c{alias}\u201d gets the same treatment.",
 });

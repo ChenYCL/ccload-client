@@ -21,6 +21,8 @@ pub async fn ensure_cli_proxy(state: &AppState) -> Result<(), crate::error::AppE
         let proxy = CliProxy::start(&cfg).await?;
         *state.cli_proxy.write().await = Some(proxy);
     }
+    // 钉住表随代理一起装上；文件坏了只记 warn —— 代理照常转发，只是没有钉住。
+    crate::commands::pins::refresh_proxy_pins(state).await;
     Ok(())
 }
 
@@ -270,6 +272,7 @@ mod usage_tests {
             status: 200,
             cost: None,
             output_tokens: None,
+            fallback_from: None,
         }
     }
 

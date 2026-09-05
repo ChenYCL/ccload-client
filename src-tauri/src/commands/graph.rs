@@ -123,5 +123,7 @@ pub async fn graph_apply(state: State<'_, AppState>, id: String) -> AppResult<Ve
          两家共用一个渠道时本来就不能各写一个优先级。"
             .into(),
     );
+    // 档位别名的落点变了，用这些别名的 CLI 窗口也得跟着按最窄的重算。
+    log.extend(crate::commands::cli::resync_windows(&state).await);
     Ok(log)
 }

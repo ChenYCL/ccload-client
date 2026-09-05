@@ -11,6 +11,10 @@ import type {
   CliTarget,
   ConfigFileView,
   ContextPolicy,
+  Pin,
+  PinOutcome,
+  RouteHit,
+  TierRow,
   WindowPreview,
   DiffBase,
   EnvKeyInfo,
@@ -144,6 +148,14 @@ export const api = {
     invoke<number>("context_policy_set", { policy }),
   /** 每家 CLI 按当前策略会写成多少 —— 和真正写入走同一条解析路径。 */
   contextWindowPreview: () => invoke<WindowPreview[]>("context_window_preview"),
+  /** 分档表：每个可能用到的模型一行，含「自动会算成多少」。 */
+  contextTiers: () => invoke<TierRow[]>("context_tiers"),
+  /** 某个别名在内核里会落到哪些渠道，按优先级从高到低。内核没连上会报错。 */
+  aliasRoutes: (alias: string) => invoke<RouteHit[]>("alias_routes", { alias }),
+  /** 首选渠道钉住：`pin_save` 会顺手把私有别名写进内核并刷代理，`pin_delete` 反之。 */
+  pinList: () => invoke<Pin[]>("pin_list"),
+  pinSave: (pin: Pin) => invoke<PinOutcome>("pin_save", { pin }),
+  pinDelete: (alias: string) => invoke<PinOutcome>("pin_delete", { alias }),
   cliApply: (target: CliTarget, options?: TakeoverOptions) =>
     invoke<TakeoverResult>("cli_apply", { target, options: options ?? null }),
   cliBackups: (target?: CliTarget) =>

@@ -11,6 +11,7 @@ import { Select, TextInput } from "../components/ui/Input";
 import { McpTargetList, type McpTargetRow } from "../components/models/McpTargetList";
 import type { CliTarget, ImageApi, ImportEntry, RefreshMode } from "../types";
 import { errText } from "../lib/err";
+import { splitPinned } from "../lib/pins";
 
 /// One-click model catalog import. The kernel can serve every alias that any
 /// channel exposes (`models[].model`), but each CLI needs the alias written
@@ -157,7 +158,8 @@ export function ModelsPage() {
     const set = new Set<string>();
     for (const ch of liveChannels) {
       for (const m of ch.models ?? []) {
-        if (m.model) set.add(m.model);
+        // 钉住写进内核的私有别名（grok-4.6@ch21）是代理内部的名字，不给 CLI 导入。
+        if (m.model && !splitPinned(m.model)) set.add(m.model);
       }
     }
     return [...set].sort();

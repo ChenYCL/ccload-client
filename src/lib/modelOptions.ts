@@ -1,4 +1,5 @@
 import type { Envelope } from "../types";
+import { splitPinned } from "./pins";
 
 /// 「填模型名」的候选来源。
 ///
@@ -40,12 +41,14 @@ export function upstreamModelsOf(channel: ChannelModels | undefined): string[] {
 /// **CLI 侧别名**：所有启用渠道对外提供的模型名的并集。
 ///
 /// 只看启用的渠道：停用的渠道内核根本不会选，把它的别名建议给用户等于给一堆
-/// 填了就 404 的名字（和模型导入页那条一样的理由）。
+/// 填了就 404 的名字（和模型导入页那条一样的理由）。首选渠道钉住写进内核的私有
+/// 别名（`grok-4.6@ch21`）也不列 —— 那是代理内部用的名字，CLI 配置里该写原名。
 export function kernelAliases(channels: ChannelModels[] | undefined): string[] {
   return dedupe(
     (channels ?? [])
       .filter((c) => c.enabled !== false)
-      .flatMap((c) => (c.models ?? []).filter((m) => !m.disabled).map((m) => m.model?.trim() || "")),
+      .flatMap((c) => (c.models ?? []).filter((m) => !m.disabled).map((m) => m.model?.trim() || ""))
+      .filter((name) => !splitPinned(name)),
   ).sort();
 }
 

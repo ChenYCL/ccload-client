@@ -6,24 +6,33 @@
 //! 去，从此死锁。
 //!
 //! 所以：
-//! * 应用模型链时，把链上**最窄**那一跳的窗口写进
-//!   `CLAUDE_CODE_MAX_CONTEXT_TOKENS`，让 CLI 的原生 compact 按真实天花板提前
-//!   动手；
+//! * 写进 CLI 的窗口取**这个别名在内核里所有可能落到的上游**里最窄的那个
+//!   （模型本身、模型链每一跳、强制路由每个目标、内核里服务这个别名的每个渠道），
+//!   见 [`crate::services::context_floor`]。CLI 的窗口是启动时读的静态值，没法在
+//!   内核把请求分流到窄模型的那一刻再改，只能事先按最窄的写；
+//! * 压缩触发点是窗口的一个百分比（默认 90%），窗口跟着落点变窄，阈值自然跟着降
+//!   （1M → 900k，500k → 450k）；
+//! * 名字推断不准的模型（本地 qwen、中转自起的别名）由用户在「分档」表里手填，
+//!   手填盖过名字后缀、models.dev 和内置猜测表；
 //! * 已经撑爆、原生 compact 自己也发不出去时，按链从前往后挑**窗口够的**那一
 //!   跳做分块总结。原生优先，撑不住再往后。
 
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use std::collections::BTreeMap;
 
-use crate::error::AppError;
-use crate::services::cli_backup::BackupStore;
-use crate::services::cli_config::current_endpoint;
-use crate::services::cli_io::{object_at, read_json, write_pretty_json};
-use crate::services::cli_types::{CliTarget, ConfigRoot};
+use serde::{Deserialize, Serialize};
+
 use crate::services::fallback::FallbackHop;
 
-/// 压缩请求本身也占上下文，顶着上限做不成任何事。给挑模型留的余量。
+/// 分块总结时给压缩请求自己留的余量：请求本身也占上下文，顶着上限做不成任何事。
 pub const COMPACT_HEADROOM: u64 = 80_000;
+
+/// 压缩触发点默认在窗口的 90%。用户口径就是「九成」；再往上留不出压缩请求
+/// 自己的空间，再往下白扔可用窗口。
+pub const DEFAULT_COMPACT_PERCENT: u8 = 90;
+
+/// Claude Code 的 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 官方接受区间。
+pub const CLAUDE_COMPACT_WINDOW_MIN: u64 = 100_000;
+pub const CLAUDE_COMPACT_WINDOW_MAX: u64 = 1_000_000;
 
 /// 上下文窗口总控的三档。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,7 +40,7 @@ pub const COMPACT_HEADROOM: u64 = 80_000;
 pub enum ContextMode {
     /// 一个字都不写，各 CLI 保持现状。老行为，给不想让我们碰这个键的人。
     Off,
-    /// 按当前选中的模型名推断（`parse_window`）。默认。
+    /// 按模型名推断，并对这个别名所有可能落到的上游取最窄。默认。
     Auto,
     /// 不管选了什么模型，一律写 `fixed_tokens`。
     Fixed,
@@ -45,7 +54,10 @@ pub enum ContextMode {
 /// 那条路会写，接管页换模型**不写**。于是出现这个症状：模型从 200k 的换成 1M
 /// 的，CLI 里还留着上次导入写下的 200k —— 界面显示 200k，实际能吃 1M，早压缩
 /// 五分之四的可用窗口。现在接管写入时按这里的策略一次落到所有支持的 CLI。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// 容器级 `#[serde(default)]`：老 settings.json 里没有 `compact_percent` /
+/// `overrides` 时要拿到 `Default` 里的 90 和空表，而不是字段类型的 0。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ContextPolicy {
     pub mode: ContextMode,
@@ -56,6 +68,13 @@ pub struct ContextPolicy {
     /// 给「模型名声称 1M、但我这条中转其实只给 500k」的人用 —— 按名字写 1M 会
     /// 让 CLI 一路撑到打不出去为止，那正是模块开头讲的死锁。
     pub cap_tokens: u64,
+    /// 自动压缩在窗口的百分之几触发。0 当作默认值。
+    pub compact_percent: u8,
+    /// 手动分档：模型名 → 窗口。盖过名字后缀、models.dev 和内置猜测表。
+    ///
+    /// 键按「去掉厂商前缀和 `[..]` 后缀、忽略大小写」匹配，所以填 `qwen3.8-27b`
+    /// 能对上 `local/Qwen3.8-27B[200k]`。
+    pub overrides: BTreeMap<String, u64>,
 }
 
 impl Default for ContextPolicy {
@@ -64,12 +83,57 @@ impl Default for ContextPolicy {
             mode: ContextMode::Auto,
             fixed_tokens: 1_000_000,
             cap_tokens: 0,
+            compact_percent: DEFAULT_COMPACT_PERCENT,
+            overrides: BTreeMap::new(),
         }
     }
 }
 
 impl ContextPolicy {
-    /// 这次接管该写多少。`None` = 不写（Off 档，或者 Auto 档但没有模型名）。
+    /// 生效的压缩百分比。0 和越界值都不该写进任何 CLI —— 0% 等于每条请求都压缩，
+    /// 100% 等于永远不压缩。
+    pub fn percent(&self) -> u8 {
+        // 100 = 永不压缩，和 0 一样不是一个能写进 CLI 的数。
+        if self.compact_percent == 0 || self.compact_percent >= 100 {
+            DEFAULT_COMPACT_PERCENT
+        } else {
+            self.compact_percent
+        }
+    }
+
+    /// 窗口 × 百分比 = 自动压缩触发点。
+    pub fn compact_tokens(&self, window: u64) -> u64 {
+        window.saturating_mul(u64::from(self.percent())) / 100
+    }
+
+    /// 用户在分档表里给这个名字填的窗口。
+    pub fn override_for(&self, name: &str) -> Option<u64> {
+        let want = tier_key(name);
+        if want.is_empty() {
+            return None;
+        }
+        self.overrides
+            .iter()
+            .find(|(k, v)| **v > 0 && tier_key(k) == want)
+            .map(|(_, v)| *v)
+    }
+
+    /// 这个名字的窗口：手填 → 名字后缀 → models.dev → 内置猜测表。
+    pub fn window_of(&self, name: &str) -> u64 {
+        self.override_for(name).unwrap_or_else(|| parse_window(name))
+    }
+
+    /// 这个窗口是哪来的，和 [`Self::window_of`] 同一套优先级。
+    pub fn source_of(&self, name: &str) -> WindowSource {
+        if self.override_for(name).is_some() {
+            WindowSource::Manual
+        } else {
+            window_source(name)
+        }
+    }
+
+    /// 只看**一个**模型名时该写多少。`None` = 不写（Off 档，或者 Auto 档但没有
+    /// 模型名）。多个落点取最窄是 [`crate::services::context_floor`] 的事。
     pub fn resolve(&self, model: &str) -> Option<u64> {
         match self.mode {
             ContextMode::Off => None,
@@ -79,25 +143,40 @@ impl ContextPolicy {
                 if m.is_empty() {
                     return None;
                 }
-                let w = parse_window(m);
-                Some(if self.cap_tokens > 0 {
-                    w.min(self.cap_tokens)
-                } else {
-                    w
-                })
+                Some(self.cap(self.window_of(m)))
             }
+        }
+    }
+
+    /// 上限夹子。只往下夹，不往上抬。
+    pub fn cap(&self, window: u64) -> u64 {
+        if self.cap_tokens > 0 {
+            window.min(self.cap_tokens)
+        } else {
+            window
         }
     }
 }
 
+/// 分档表键的归一化：去厂商前缀、去 `[..]` 后缀、小写。分档表和界面上的行都按
+/// 它去重 —— `claude-opus-5[1M]`、`anthropic/claude-opus-5` 和 `Claude-Opus-5` 是
+/// 同一档。
+pub fn tier_key(name: &str) -> String {
+    let bare = strip_vendor(name.trim());
+    let bare = match (bare.rfind('['), bare.ends_with(']')) {
+        (Some(i), true) => &bare[..i],
+        _ => bare,
+    };
+    bare.trim().to_ascii_lowercase()
+}
+
 /// Claude Code 的 auto-compact 窗口是个全局整数，官方区间 `[100000, 1000000]`。
-/// 给压缩请求本身留出余量；余量扣完低于官方下限就干脆不写这个键。
-pub fn auto_compact_window(context: i64) -> Option<i64> {
-    if context <= 0 {
-        return None;
-    }
-    let w = (context as u64).saturating_sub(COMPACT_HEADROOM);
-    (w >= 100_000).then_some(w.min(1_000_000) as i64)
+///
+/// 它是压缩阈值的**分母**，不是阈值本身 —— 百分比在 `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`
+/// 里另写。窄到官方下限以下的窗口写不进去，那就不写这个键，靠
+/// `CLAUDE_CODE_MAX_CONTEXT_TOKENS` + 百分比撑着。
+pub fn claude_auto_compact_window(context: u64) -> Option<u64> {
+    (context >= CLAUDE_COMPACT_WINDOW_MIN).then_some(context.min(CLAUDE_COMPACT_WINDOW_MAX))
 }
 
 /// 从模型名读窗口。
@@ -107,6 +186,9 @@ pub fn auto_compact_window(context: i64) -> Option<i64> {
 ///   2. **models.dev 目录**（[`crate::services::model_catalog`]）—— 第三方数据，
 ///      离线或查不到时才轮到下一档；
 ///   3. 家族猜测 —— 关键字匹配，兜底用。
+///
+/// 用户手填的分档不在这里，在 [`ContextPolicy::window_of`] —— 这个函数是「不看
+/// 设置、只看名字」的纯函数，给分档表显示「自动会算成多少」用。
 ///
 /// 为什么不只靠第 3 档：模型迭代比这张表快。拿 models.dev 的第一方数据对过一遍，
 /// 134 条里 64 条对不上 —— 低估只是浪费窗口（`claude-sonnet-4-5` 我们估 200k、
@@ -124,9 +206,11 @@ pub fn parse_window(name: &str) -> u64 {
 }
 
 /// 这个窗口是哪来的。界面上要能一眼看出「这数字是第三方查的还是我们猜的」。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WindowSource {
+    /// 用户在分档表里手填的。
+    Manual,
     /// 模型名自己带的 `[1m]` / `[500k]`。
     Suffix,
     /// models.dev。
@@ -255,19 +339,13 @@ fn family_window(name: &str) -> u64 {
     128_000
 }
 
-/// 链上每一跳的窗口。空跳跳过。
-pub fn hop_windows(hops: &[FallbackHop]) -> Vec<(String, u64)> {
+/// 链上每一跳的窗口（按总控里的分档算）。空跳跳过。
+pub fn hop_windows(hops: &[FallbackHop], policy: &ContextPolicy) -> Vec<(String, u64)> {
     hops.iter()
         .map(|h| h.upstream.trim())
         .filter(|s| !s.is_empty())
-        .map(|s| (s.to_string(), parse_window(s)))
+        .map(|s| (s.to_string(), policy.window_of(s)))
         .collect()
-}
-
-/// 链上最窄的那一跳。CLI 的全局窗口必须按这个写 —— 按最宽的写，落到窄的那一
-/// 跳照样死锁。
-pub fn chain_ceiling(hops: &[FallbackHop]) -> Option<u64> {
-    hop_windows(hops).into_iter().map(|(_, w)| w).min()
 }
 
 /// 已经撑爆时，按链从前往后挑窗口够的模型。原生（链头）优先。
@@ -275,10 +353,10 @@ pub fn chain_ceiling(hops: &[FallbackHop]) -> Option<u64> {
 /// `needed` 是会话当前真实上下文。候选是 hop 的 **upstream 名** —— 压缩请求
 /// 打这个名字，才不会再被别名路由到一条窗口不够的渠道上（上次 842k 打 grok
 /// 就是因为请求的还是 `claude-opus-5` 这个别名）。
-pub fn pick_compact_models(needed: u64, hops: &[FallbackHop]) -> Vec<String> {
+pub fn pick_compact_models(needed: u64, hops: &[FallbackHop], policy: &ContextPolicy) -> Vec<String> {
     let want = needed.saturating_add(COMPACT_HEADROOM);
     let mut out = Vec::new();
-    for (name, w) in hop_windows(hops) {
+    for (name, w) in hop_windows(hops, policy) {
         if w >= want && !out.iter().any(|s| s == &name) {
             out.push(name);
         }
@@ -286,58 +364,9 @@ pub fn pick_compact_models(needed: u64, hops: &[FallbackHop]) -> Vec<String> {
     out
 }
 
-/// 把真实天花板写进 Claude Code。
-///
-/// Claude Code 的窗口是**全局一个键**，不是 per-model。所以只能按这条链最窄
-/// 的那一跳写。没接管就跳过，不报错 —— 模型链本身不依赖 CLI 配置。
-pub fn inject_claude_window(
-    root: &ConfigRoot,
-    backups: &BackupStore,
-    stamp: &str,
-    tokens: u64,
-) -> Result<String, AppError> {
-    if tokens == 0 {
-        return Err(AppError::Config("窗口是 0，拒绝写入".into()));
-    }
-    if current_endpoint(root, CliTarget::ClaudeCode).is_none() {
-        return Ok("Claude Code 还未接管，跳过窗口注入".into());
-    }
-    let path = root.join(".claude/settings.json");
-    backups.snapshot(root, CliTarget::ClaudeCode, stamp, "inject-context-window")?;
-    let mut doc = read_json(&path)?;
-    {
-        let env = object_at(&mut doc, "env")?;
-        env.insert(
-            "CLAUDE_CODE_MAX_CONTEXT_TOKENS".into(),
-            Value::String(tokens.to_string()),
-        );
-        // auto-compact 阈值必须跟着一起改。接管那条路会写它（比如 1M 模型
-        // 写 920k），这里把天花板降到 500k 却不动它的话，阈值仍然高于新天花板
-        // —— 自动压缩永远不触发，正好是这个函数存在的理由的反面。
-        // 新天花板窄到给不出合法阈值时，把这个键删掉而不是留着旧值。
-        match auto_compact_window(tokens as i64) {
-            Some(w) => {
-                env.insert(
-                    "CLAUDE_CODE_AUTO_COMPACT_WINDOW".into(),
-                    Value::String(w.to_string()),
-                );
-            }
-            None => {
-                env.remove("CLAUDE_CODE_AUTO_COMPACT_WINDOW");
-            }
-        }
-    }
-    write_pretty_json(&path, &doc)?;
-    Ok(format!(
-        "已把 Claude Code 的窗口写成 {tokens}（CLAUDE_CODE_MAX_CONTEXT_TOKENS）。原生 /compact 会按这个数提前动手。"
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::cli_backup::BackupStore;
-    use crate::services::cli_types::ConfigRoot;
 
     #[test]
     fn suffix_1m_wins_over_family() {
@@ -467,7 +496,7 @@ mod tests {
         let fixed = ContextPolicy {
             mode: ContextMode::Fixed,
             fixed_tokens: 500_000,
-            cap_tokens: 0,
+            ..Default::default()
         };
         assert_eq!(fixed.resolve("claude-opus-5"), Some(500_000));
         assert_eq!(fixed.resolve(""), Some(500_000), "固定档不看模型名");
@@ -485,8 +514,8 @@ mod tests {
     fn the_cap_clamps_auto_but_never_inflates() {
         let capped = ContextPolicy {
             mode: ContextMode::Auto,
-            fixed_tokens: 0,
             cap_tokens: 500_000,
+            ..Default::default()
         };
         assert_eq!(capped.resolve("claude-opus-5[1m]"), Some(500_000));
         // 比夹子窄的不动 —— 夹子是上限，不是目标值。
@@ -499,22 +528,73 @@ mod tests {
         let fixed = ContextPolicy {
             mode: ContextMode::Fixed,
             fixed_tokens: 0,
-            cap_tokens: 0,
+            ..Default::default()
         };
         assert_eq!(fixed.resolve("claude-opus-5"), None);
     }
 
-    /// auto-compact 是 Claude Code 的全局整数，官方区间 [100k, 1M]，还要扣掉
-    /// 压缩请求自己的余量。扣完低于下限就不写这个键。
+    /// 手填的分档盖过一切 —— 包括名字上挂的 `[1m]`。本地 qwen 的名字什么都推不
+    /// 出来（128k 兜底），中转给的 `[1m]` 也可能是假的，用户亲手填的数才是他要的。
     #[test]
-    fn auto_compact_respects_the_official_floor_and_ceiling() {
-        assert_eq!(auto_compact_window(1_000_000), Some(920_000));
-        assert_eq!(auto_compact_window(200_000), Some(120_000));
-        // 180k - 80k = 100k，正好压在下限上，算够。
-        assert_eq!(auto_compact_window(180_000), Some(100_000));
-        // 再窄一点就没有余量可言了。
-        assert_eq!(auto_compact_window(179_000), None);
-        assert_eq!(auto_compact_window(0), None);
+    fn manual_overrides_beat_suffix_catalog_and_presets() {
+        crate::services::model_catalog::set_for_test(&[("mystery-model", 777_000)]);
+        let mut p = ContextPolicy::default();
+        p.overrides.insert("Qwen3.8-27B".into(), 200_000);
+        p.overrides.insert("mystery-model".into(), 300_000);
+        p.overrides.insert("claude-opus-5".into(), 500_000);
+
+        // 大小写、厂商前缀、后缀都不影响匹配。
+        assert_eq!(p.window_of("qwen3.8-27b"), 200_000);
+        assert_eq!(p.window_of("local/Qwen3.8-27B[1m]"), 200_000);
+        assert_eq!(p.source_of("qwen3.8-27b"), WindowSource::Manual);
+        // 盖过目录。
+        assert_eq!(p.window_of("mystery-model"), 300_000);
+        // 盖过名字后缀。
+        assert_eq!(p.window_of("claude-opus-5[1M]"), 500_000);
+        // 没填的照旧走自动。
+        assert_eq!(p.window_of("grok-4.6"), 500_000);
+        assert_eq!(p.source_of("grok-4.6"), WindowSource::Preset);
+        // 填 0 等于没填。
+        p.overrides.insert("grok-4.6".into(), 0);
+        assert_eq!(p.window_of("grok-4.6"), 500_000);
+        crate::services::model_catalog::clear_for_test();
+    }
+
+    /// 压缩触发点 = 窗口 × 百分比。用户说的「九成」就是这个数：1M → 900k，
+    /// 500k → 450k。0 和越界值退回默认，不能写出「每条都压缩」或「永不压缩」。
+    #[test]
+    fn compact_tokens_follow_the_percent() {
+        let p = ContextPolicy::default();
+        assert_eq!(p.percent(), 90);
+        assert_eq!(p.compact_tokens(1_000_000), 900_000);
+        assert_eq!(p.compact_tokens(500_000), 450_000);
+        let p = ContextPolicy { compact_percent: 80, ..Default::default() };
+        assert_eq!(p.compact_tokens(500_000), 400_000);
+        let p = ContextPolicy { compact_percent: 0, ..Default::default() };
+        assert_eq!(p.percent(), DEFAULT_COMPACT_PERCENT);
+        let p = ContextPolicy { compact_percent: 250, ..Default::default() };
+        assert_eq!(p.percent(), DEFAULT_COMPACT_PERCENT);
+    }
+
+    /// 老 settings.json 里没有新字段：要读成默认 90% 和空表，不能是 0% 。
+    #[test]
+    fn old_settings_without_the_new_fields_get_the_defaults() {
+        let p: ContextPolicy =
+            serde_json::from_str(r#"{"mode":"auto","fixed_tokens":1000000,"cap_tokens":0}"#).unwrap();
+        assert_eq!(p.compact_percent, DEFAULT_COMPACT_PERCENT);
+        assert!(p.overrides.is_empty());
+    }
+
+    /// auto-compact 窗口是 Claude Code 的全局整数，官方区间 [100k, 1M]。它是分母，
+    /// 阈值靠百分比另写；窄到下限以下就不写这个键。
+    #[test]
+    fn claude_auto_compact_window_respects_the_official_range() {
+        assert_eq!(claude_auto_compact_window(1_000_000), Some(1_000_000));
+        assert_eq!(claude_auto_compact_window(2_000_000), Some(1_000_000));
+        assert_eq!(claude_auto_compact_window(500_000), Some(500_000));
+        assert_eq!(claude_auto_compact_window(100_000), Some(100_000));
+        assert_eq!(claude_auto_compact_window(99_999), None);
+        assert_eq!(claude_auto_compact_window(0), None);
     }
 
     fn hop(up: &str) -> FallbackHop {
@@ -535,7 +615,7 @@ mod tests {
             hop("grok-4.6"),
             hop("deepseek-v4-flash"),
         ];
-        let got = pick_compact_models(842_000, &hops);
+        let got = pick_compact_models(842_000, &hops, &ContextPolicy::default());
         assert_eq!(got, vec!["glm-5.3[1m]", "deepseek-v4-flash"]);
     }
 
@@ -550,11 +630,12 @@ mod tests {
             hop("claude-haiku-4-5-20251001"), // 200k
             hop("grok-4.6"),                  // 500k
         ];
+        let p = ContextPolicy::default();
         // 整段口径：一个都挑不出来。
-        assert!(pick_compact_models(517_000, &hops).is_empty());
+        assert!(pick_compact_models(517_000, &hops, &p).is_empty());
         // 分块口径（120k + 80k 余量 = 200k）：两跳都够。
         assert_eq!(
-            pick_compact_models(120_000, &hops),
+            pick_compact_models(120_000, &hops, &p),
             vec!["claude-haiku-4-5-20251001", "grok-4.6"]
         );
     }
@@ -567,77 +648,17 @@ mod tests {
             hop("glm-5.3[1m]"),
             hop("grok-4.6"),
         ];
-        let got = pick_compact_models(400_000, &hops);
+        let got = pick_compact_models(400_000, &hops, &ContextPolicy::default());
         assert_eq!(got, vec!["glm-5.3[1m]", "grok-4.6"]);
     }
 
+    /// 挑压缩模型也要认分档表：用户说 grok 这条中转其实只有 300k，那 400k 的块
+    /// 就不该发给它。
     #[test]
-    fn chain_ceiling_is_the_narrowest_hop() {
-        let hops = vec![hop("glm-5.3[1m]"), hop("grok-4.6"), hop("deepseek-v4-flash")];
-        assert_eq!(chain_ceiling(&hops), Some(500_000));
-    }
-
-    /// 降天花板时 auto-compact 阈值必须跟着降。接管写过 1M 的 920k，模型链
-    /// 把天花板压到 500k 却不动阈值的话，自动压缩永远不触发 —— 正好是这个
-    /// 函数要防的那件事的反面。
-    #[test]
-    fn injecting_a_narrower_window_also_lowers_the_auto_compact_threshold() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = ConfigRoot::sandbox(dir.path().to_path_buf());
-        let bk = BackupStore::new(dir.path().join("bk"));
-        let path = root.join(".claude/settings.json");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(
-            &path,
-            r#"{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:15722","CLAUDE_CODE_MAX_CONTEXT_TOKENS":"1000000","CLAUDE_CODE_AUTO_COMPACT_WINDOW":"920000"}}"#,
-        )
-        .unwrap();
-
-        inject_claude_window(&root, &bk, "s1", 500_000).unwrap();
-        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(doc.pointer("/env/CLAUDE_CODE_MAX_CONTEXT_TOKENS").unwrap(), "500000");
-        assert_eq!(
-            doc.pointer("/env/CLAUDE_CODE_AUTO_COMPACT_WINDOW").unwrap(),
-            "420000",
-            "阈值还停在旧天花板上，自动压缩不会触发"
-        );
-
-        // 窄到给不出合法阈值（官方下限 100k）时，把键删掉而不是留旧值。
-        inject_claude_window(&root, &bk, "s2", 150_000).unwrap();
-        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert!(doc.pointer("/env/CLAUDE_CODE_AUTO_COMPACT_WINDOW").is_none());
-    }
-
-    #[test]
-    fn inject_skips_when_claude_is_not_taken_over() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = ConfigRoot::sandbox(dir.path().to_path_buf());
-        let bk = BackupStore::new(dir.path().join("bk"));
-        let msg = inject_claude_window(&root, &bk, "s1", 500_000).unwrap();
-        assert!(msg.contains("还未接管"), "{msg}");
-        assert!(!root.join(".claude/settings.json").exists());
-    }
-
-    #[test]
-    fn inject_writes_the_global_cap_and_snapshots() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = ConfigRoot::sandbox(dir.path().to_path_buf());
-        let bk = BackupStore::new(dir.path().join("bk"));
-        let path = root.join(".claude/settings.json");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(
-            &path,
-            r#"{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:15722","CLAUDE_CODE_MAX_CONTEXT_TOKENS":"1000000"}}"#,
-        )
-        .unwrap();
-
-        let msg = inject_claude_window(&root, &bk, "s1", 500_000).unwrap();
-        assert!(msg.contains("500000"), "{msg}");
-        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(
-            doc.pointer("/env/CLAUDE_CODE_MAX_CONTEXT_TOKENS").unwrap(),
-            "500000"
-        );
-        assert_eq!(bk.list(Some(CliTarget::ClaudeCode)).unwrap().len(), 1);
+    fn pick_honours_manual_overrides() {
+        let hops = vec![hop("glm-5.3[1m]"), hop("grok-4.6")];
+        let mut p = ContextPolicy::default();
+        p.overrides.insert("grok-4.6".into(), 300_000);
+        assert_eq!(pick_compact_models(400_000, &hops, &p), vec!["glm-5.3[1m]"]);
     }
 }

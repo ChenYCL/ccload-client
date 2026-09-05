@@ -11,7 +11,7 @@ use crate::services::forced_route::{
 };
 use crate::state::AppState;
 
-fn store_path(state: &AppState) -> std::path::PathBuf {
+pub(crate) fn store_path(state: &AppState) -> std::path::PathBuf {
     // 和 settings.json / fallback.json 同目录，清空 ~/.ccload-client 会一起带走。
     state.config_dir().join("forced_route.json")
 }
@@ -110,6 +110,9 @@ pub async fn forced_route_apply(
             tgt.model
         ));
     }
+    // 落点变了，窗口就变了：给别名多钉一个 500k 的目标，发这个别名的 CLI 就得按
+    // 500k 写，否则分流到那儿的那一刻直接 400 too long。
+    log.extend(crate::commands::cli::resync_windows(&state).await);
     Ok(log)
 }
 

@@ -150,10 +150,29 @@ export type ContextPolicy = {
   fixed_tokens: number;
   /** `auto` 推断结果的上限；0 = 不夹。 */
   cap_tokens: number;
+  /** 自动压缩在窗口的百分之几触发（默认 90）。 */
+  compact_percent: number;
+  /** 手动分档：模型名 → 窗口。盖过名字后缀、models.dev 和内置表。 */
+  overrides: Record<string, number>;
 };
 
 /// 每家 CLI 按当前策略**会写成多少**。显示和实际写入走的是同一条解析路径。
-export type WindowSource = "suffix" | "catalog" | "preset";
+export type WindowSource = "manual" | "suffix" | "catalog" | "preset";
+
+/** 一个落点是从哪条路算进来的。 */
+export type WindowVia = "model" | "pinned" | "chain" | "forced_route" | "kernel";
+
+/** 一个可能的落点和它的窗口。 */
+export type WindowCandidate = {
+  /** 真正会发给上游的模型名。 */
+  model: string;
+  via: WindowVia;
+  channel_name: string | null;
+  window: number;
+  source: WindowSource;
+  /** false = 这是个虚拟别名的兜底猜测，知道了真实落点后不参与取最窄。 */
+  counted: boolean;
+};
 
 export type WindowPreview = {
   target: CliTarget;
@@ -161,10 +180,73 @@ export type WindowPreview = {
   model: string | null;
   /** null = 这一家不写窗口。 */
   tokens: number | null;
-  /** 这个数是哪来的：模型名后缀 / models.dev / 内置猜测表。 */
+  /** 自动压缩触发点（tokens × 百分比）。 */
+  compact_tokens: number | null;
+  /** `model` 自己的窗口是哪来的：手填 / 模型名后缀 / models.dev / 内置猜测表。 */
   source: WindowSource | null;
   /** 磁盘上**现在**写着的数。和 tokens 不一致 = 还没写入，或者是存量旧值。 */
   on_disk: number | null;
+  /** 定下 tokens 的那个落点。固定档没有。 */
+  narrowest: WindowCandidate | null;
+  /** 全部可能的落点。 */
+  candidates: WindowCandidate[];
+  /** 上限夹子生效了。 */
+  capped: boolean;
+  /** false = 内核没连上，只按本地的链和路由算，可能偏宽。 */
+  kernel_checked: boolean;
+};
+
+/** 分档表的一行：五家 CLI 可能发到或落到的模型，加上用户手填的。 */
+export type TierRow = {
+  model: string;
+  /** 现在生效的窗口（手填优先）。 */
+  window: number;
+  source: WindowSource;
+  /** 不手填时自动会算成多少。 */
+  auto_window: number;
+  auto_source: WindowSource;
+  compact_tokens: number;
+  /** 哪几家 CLI 会用到它。空 = 只是用户手填的一行。 */
+  used_by: CliTarget[];
+};
+
+/** 内核里某个渠道对某个别名的一条服务记录，按优先级从高到低排。 */
+export type RouteHit = {
+  channel_id: number;
+  channel_name: string;
+  priority: number;
+  /** 渠道条目里原样写的别名；停用/启用拿它去打内核。 */
+  alias: string;
+  /** 真正发给上游的名字。 */
+  upstream: string;
+  /** 这条模型条目被停用了 —— 内核当它不存在。 */
+  disabled: boolean;
+};
+
+/** 首选渠道钉住的一个落点。 */
+export type PinTarget = {
+  channel_id: number;
+  /** 只为显示。 */
+  channel_name: string;
+  /** 私有别名在这个渠道上 redirect 到的真实模型名。 */
+  upstream: string;
+};
+
+/**
+ * 一条钉住规则：`alias` 默认只走 `targets` 里的渠道（本地代理把模型名换成该渠道的
+ * 私有别名 `alias@chNN` 发出去），首选没接住且 `fallback` 开着时再用原名发一次、
+ * 回到内核默认顺序。只在 CLI 走本地代理时生效。
+ */
+export type Pin = {
+  alias: string;
+  targets: PinTarget[];
+  fallback: boolean;
+};
+
+export type PinOutcome = {
+  pins: Pin[];
+  /** 人话日志：写了哪个渠道、窗口怎么变了。 */
+  log: string[];
 };
 
 export type ConfigFormat = "json" | "toml";
@@ -970,6 +1052,8 @@ export type ProxyRecord = {
   sent_model?: string;
   path: string;
   status: number;
+  /** 钉住的首选渠道没接住、退让到了下一个名字：被放弃的那个私有别名。 */
+  fallback_from?: string | null;
 };
 
 /// 一个会话 id 解析出来的可展示引用。

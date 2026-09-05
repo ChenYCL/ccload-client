@@ -62,6 +62,16 @@ pub async fn kernel_start(app: AppHandle, state: State<'_, AppState>) -> AppResu
     ensure_client_token(&state).await?;
     // (Re)target the iframe proxy at the now-live kernel origin.
     ensure_embed_proxy(&state).await?;
+    // 内核起来了才查得到「这个别名在内核里落到哪」。启动自愈那次多半赶在内核前面，
+    // 只按本地链和路由算过一遍、还刻意没拿它判漂移 —— 现在补上完整口径的那一次。
+    // 后台跑，不让「启动」按钮等它。
+    let h = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let s = h.state::<AppState>();
+        for line in crate::commands::cli::resync_windows(&s).await {
+            tracing::info!("context window after kernel start: {line}");
+        }
+    });
     Ok(state.kernel.status().await)
 }
 

@@ -37,11 +37,10 @@ use serde_json::Value;
 
 use crate::error::AppError;
 use crate::services::cli_backup::BackupStore;
-use crate::services::cli_config::{current_endpoint, current_token};
+use crate::services::cli_config::{current_endpoint, current_token, write_claude_window_env};
 use crate::services::cli_grok;
 use crate::services::cli_io::{object_at, read_json, write_atomic, write_pretty_json};
 use crate::services::cli_types::{CliTarget, ConfigRoot};
-use crate::services::context_window::auto_compact_window;
 use crate::services::model_caps::{claude_capabilities, reasoning_menu};
 
 /// One row of the import table.
@@ -129,6 +128,8 @@ pub fn apply_import(
     stamp: &str,
     backups: &BackupStore,
     prune: bool,
+    // 总控的压缩百分比，跟着窗口一起写进目录项。`None` 用默认。
+    compact_percent: Option<u8>,
 ) -> Result<ImportResult, AppError> {
     let entries: Vec<&ImportEntry> = entries
         .iter()
@@ -244,16 +245,7 @@ pub fn apply_import(
                     .and_then(|(_, e)| e.context_window)
                     .filter(|n| *n > 0)
                 {
-                    env.insert(
-                        "CLAUDE_CODE_MAX_CONTEXT_TOKENS".into(),
-                        Value::String(w.to_string()),
-                    );
-                    if let Some(compact) = auto_compact_window(w) {
-                        env.insert(
-                            "CLAUDE_CODE_AUTO_COMPACT_WINDOW".into(),
-                            Value::String(compact.to_string()),
-                        );
-                    }
+                    write_claude_window_env(env, w as u64, compact_percent);
                 }
                 // 第 6 个槽：一个没绑 tier 的别名，留给 /model 选择器。已有值
                 // 是用户的，不覆盖。
@@ -306,6 +298,11 @@ pub fn apply_import(
                 tbl["model"] = toml_edit::value(e.alias.as_str());
                 if let Some(w) = e.context_window.filter(|n| *n > 0) {
                     tbl["model_context_window"] = toml_edit::value(w);
+                    let pct = compact_percent
+                        .filter(|p| (1..=100).contains(p))
+                        .unwrap_or(crate::services::context_window::DEFAULT_COMPACT_PERCENT);
+                    tbl["model_auto_compact_token_limit"] =
+                        toml_edit::value(w.saturating_mul(i64::from(pct)) / 100);
                 }
                 if let Some(menu) = reasoning_menu(&e.alias) {
                     tbl["model_reasoning_effort"] = toml_edit::value(menu.default);
@@ -448,6 +445,7 @@ pub fn apply_import(
                     &endpoint,
                     &token,
                     e.context_window,
+                    compact_percent,
                 )?;
             }
             if prune {
@@ -497,6 +495,7 @@ mod tests {
             "s1",
             &bk,
             false,
+            None,
         )
         .unwrap_err();
         assert!(err.to_string().contains("model.name"), "{err}");
@@ -517,6 +516,7 @@ mod tests {
             "s1",
             &bk,
             false,
+            None,
         )
         .unwrap_err();
         assert!(err.to_string().contains("接管"));
@@ -562,6 +562,7 @@ mod tests {
             "s1",
             &bk,
             false,
+            None,
         )
         .unwrap();
         // 没绑 slot 的第一行进 CUSTOM_MODEL_OPTION，其余才算 skipped。
@@ -597,9 +598,14 @@ mod tests {
             doc.pointer("/env/CLAUDE_CODE_MAX_CONTEXT_TOKENS").unwrap(),
             "262144"
         );
+        // 分母就是窗口本身，百分比另写；导入没带百分比时用默认。
         assert_eq!(
             doc.pointer("/env/CLAUDE_CODE_AUTO_COMPACT_WINDOW").unwrap(),
-            "182144"
+            "262144"
+        );
+        assert_eq!(
+            doc.pointer("/env/CLAUDE_AUTOCOMPACT_PCT_OVERRIDE").unwrap(),
+            &crate::services::context_window::DEFAULT_COMPACT_PERCENT.to_string()
         );
     }
 
@@ -616,6 +622,7 @@ mod tests {
             "s1",
             &bk,
             false,
+            None,
         )
         .unwrap();
         let doc: Value =
@@ -644,6 +651,7 @@ mod tests {
             "s1",
             &bk,
             false,
+            None,
         )
         .unwrap_err();
         assert!(err.to_string().contains("只能绑一个模型"), "{err}");
@@ -667,6 +675,7 @@ mod tests {
             "s1",
             &bk,
             false,
+            None,
         )
         .unwrap_err();
         assert!(err.to_string().contains("Tier"), "{err}");
@@ -703,6 +712,7 @@ mod tests {
             "s1",
             &bk,
             false,
+            None,
         )
         .unwrap();
 
@@ -759,6 +769,7 @@ mod tests {
             "s1",
             &bk,
             false,
+            None,
         )
         .unwrap();
 
@@ -801,6 +812,7 @@ mod tests {
             "s1",
             &bk,
             false,
+            None,
         )
         .unwrap();
 
@@ -856,6 +868,7 @@ mod tests {
             "s1",
             &bk,
             false,
+            None,
         )
         .unwrap();
 
@@ -917,6 +930,7 @@ mod tests {
             "s1",
             &bk,
             true,
+            None,
         )
         .unwrap();
 
@@ -958,6 +972,7 @@ mod tests {
             "s1",
             &bk,
             true,
+            None,
         )
         .unwrap();
 
@@ -982,6 +997,7 @@ mod tests {
             "s1",
             &bk,
             false,
+            None,
         )
         .unwrap();
 
@@ -1003,6 +1019,7 @@ mod tests {
             "s1",
             &bk,
             true,
+            None,
         )
         .unwrap();
         assert!(!out.backup_id.is_empty(), "prune 必须留下可回滚的快照");
@@ -1039,6 +1056,7 @@ mod tests {
             "s1",
             &bk,
             false,
+            None,
         )
         .unwrap();
 
@@ -1095,6 +1113,7 @@ mod tests {
             "s1",
             &bk,
             true,
+            None,
         )
         .unwrap();
 

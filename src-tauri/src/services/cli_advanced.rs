@@ -166,6 +166,12 @@ pub struct TakeoverOptions {
     /// 传进来 —— 策略要看设置、要看模型链最窄的那一跳，这些在纯函数里都拿不到。
     /// `None` = 不写，各 CLI 保留现状。
     pub context_tokens: Option<i64>,
+    /// 自动压缩在窗口的百分之几触发，和 `context_tokens` 一起落盘。
+    ///
+    /// 也是总控算好的（`ContextPolicy::percent`）。`None` 时用默认的 90 ——
+    /// 不能不写：Claude Code 自己的默认阈值是按它认识的模型窗口算的，我们把窗口
+    /// 改成 500k 之后，阈值不跟着一起写就仍停在旧分母上。
+    pub compact_percent: Option<u8>,
 }
 
 /// Claude Code 有**两种**换模型的机制，配错格子的人都在同一个坑里：

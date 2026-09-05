@@ -155,10 +155,53 @@ python3 scripts/rescue-session.py <session.jsonl> --write  # 真的改
 
 先退出那个 Claude Code 窗口再动手 —— 进程里有内存态，会把你的修改盖回去。
 
-预防的办法是把真实上限告诉客户端，在「CLI 接管」页的环境变量里填：
-`CLAUDE_CODE_MAX_CONTEXT_TOKENS` 填中转的真实上限，
-`CLAUDE_CODE_AUTO_COMPACT_WINDOW` 填一个留足余量的值（压缩请求本身也要把整段
-对话发一遍，顶着上限做不成任何事）。
+预防靠「CLI 接管」页的**上下文窗口总控**（`services/context_window.rs` +
+`services/context_floor.rs`）：写进 CLI 的窗口取这个别名**所有可能落到的上游**里
+最窄的那个 —— 模型本身、模型链每一跳、强制路由每个目标、内核里服务这个别名的每个
+渠道（`GET /admin/channels`）—— 压缩阈值按百分比（默认 90%）跟着窗口走。Claude 是
+三个键一起写：`CLAUDE_CODE_MAX_CONTEXT_TOKENS`（天花板）、
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW`（压缩分母，官方区间 100k–1M）、
+`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`（分母的百分之几触发）；Codex 是
+`model_context_window` + `model_auto_compact_token_limit`；Grok 是目录表的
+`context_window` + `auto_compact_threshold_percent`。
+
+几条别改回去的判断：
+
+* 别名比较要忽略 `[1m]` 后缀和大小写。CLI 里写的是 `claude-opus-5[1M]`，链和
+  内核里叫 `claude-opus-5`；逐字比较时链的窄口从来没对上过。
+* CLI 发的名字常常是虚拟别名（`gb-review`、`Default (recommended)`），按家族猜
+  出来的 128k 兜底毫无意义 —— 知道了真实落点就不让它参与取最窄；名字后缀和
+  分档表手填是明确声明，照算。
+* 内核没连上那次算出来的值偏宽，启动自愈**不拿它判漂移**，否则内核每次没起来
+  都重写一遍、起来后再写回去。
+* 名字推不准的（本地 qwen、中转自起的别名）在分档表手填，手填盖过后缀、
+  models.dev 和内置表。
+
+### 「选了哪个渠道就默认走它」：首选渠道钉住
+
+内核选渠道只看**渠道级** `priority`，没有 per-model 优先级、没有「只当备胎」标记
+（`ModelEntry` 只有 `{model, redirect_model, disabled}`）。所以「claude 想 Z.ai 优先、
+grok 想 xAI 优先」在内核里表达不出来 —— 用户看到的就是 Grok Build 选了 grok-4.6
+却一直跑在高优先级渠道的 glm 改写上，那是主路由不是故障转移。
+
+解法在客户端两层（`services/pins.rs`、`commands/pins.rs`、`cli_proxy.rs`）：
+
+1. 在首选渠道上写一条**私有别名** `{alias}@ch{channel_id}` → 上游（走
+   `channel_writer::patch_channel`，和模型链同一条写入路径）。只有这个渠道认它。
+2. 本地 CLI 代理把请求的模型名换成私有别名先发；内核回 401/402/403/429/5xx
+   （照抄内核 `util/classifier.go` 的 Key 级 / 渠道级）就用原名重发一次，回到内核
+   默认顺序；`fallback=false` 则原样把错误交给 CLI。400/404/413 这类客户端级错误
+   绝不重发。
+
+几条别改回去的判断：
+
+* 顺序是**先写内核、再落盘、再刷代理**。内核写不进去就不落盘 —— 否则代理会拿一个
+  内核不认的名字先挨一个 503。
+* 钉住只在 `route_cli_through_proxy` 开着时生效；窗口口径也只在那时把钉住算进来，
+  且**不退让**时链 / 路由 / 内核那些落点根本到不了，不参与取最窄。
+* 内核日志里记的是私有别名，日志页显示时剥掉 `@chNN`（`lib/pins.ts`）；会话配对
+  用 `sent_model` 对得上，不用改。
+* 私有标记要插在内核 thinking 后缀 `(max)` 之前：`gpt-5.6@ch9(max)`。
 
 ---
 

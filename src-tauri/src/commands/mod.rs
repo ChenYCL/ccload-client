@@ -11,6 +11,7 @@ pub mod inject;
 pub mod kernel;
 pub mod models;
 pub mod node_services;
+pub mod pins;
 pub mod preset;
 pub mod session;
 pub mod settings;

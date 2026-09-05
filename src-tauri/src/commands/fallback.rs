@@ -4,8 +4,6 @@
 use tauri::State;
 
 use crate::error::{AppError, AppResult};
-use crate::services::cli_backup::unique_stamp;
-use crate::services::context_window::{chain_ceiling, inject_claude_window};
 use crate::services::fallback::{
     hop_priority, model_entry, validate_chain, FallbackChain, FallbackStore,
 };
@@ -215,32 +213,10 @@ pub async fn fallback_apply(
             hop.upstream, chain.alias, hop.upstream
         ));
     }
-    // 把链上最窄那一跳的窗口写进 Claude Code。原生 /compact 按这个数提前动手，
-    // 而不是按模型名上的 [1m] 估到一个不存在的分母上。没接管就跳过。
-    //
-    // 必须过一遍上下文窗口总控：用户选了「不写入」，这里就一个字都不能写；
-    // 选了「固定」，写固定值；「自动」才按链最窄那跳 —— 且还要过一遍上限夹子。
-    // 不然「CLI 接管」页刚关掉的开关被这一页悄悄绕过去，两处各说各话。
-    let policy = state.settings.read().await.context_policy;
-    let want = match policy.mode {
-        crate::services::context_window::ContextMode::Off => None,
-        crate::services::context_window::ContextMode::Fixed => policy.resolve(&chain.alias),
-        crate::services::context_window::ContextMode::Auto => chain_ceiling(&chain.hops).map(|c| {
-            if policy.cap_tokens > 0 {
-                c.min(policy.cap_tokens)
-            } else {
-                c
-            }
-        }),
-    };
-    if let Some(tokens) = want {
-        let root = state.config_root().await?;
-        match inject_claude_window(&root, &state.backups, &unique_stamp(), tokens) {
-            Ok(msg) => log.push(msg),
-            Err(e) => log.push(format!("窗口注入失败：{e}")),
-        }
-    } else if policy.mode == crate::services::context_window::ContextMode::Off {
-        log.push("上下文窗口总控为「不写入」，跳过 CLAUDE_CODE_MAX_CONTEXT_TOKENS".into());
-    }
+    // 链改了就是落点改了：每家已接管 CLI 的窗口按新的最窄落点重算。原生 /compact
+    // 按这个数提前动手，而不是按模型名上的 [1m] 估到一个不存在的分母上。总控里选
+    // 「不写入」时一个字都不写，「固定」照固定值 —— 都在 resync 里过一遍，这一页
+    // 不能悄悄绕开「CLI 接管」页刚关掉的开关。
+    log.extend(crate::commands::cli::resync_windows(&state).await);
     Ok(log)
 }

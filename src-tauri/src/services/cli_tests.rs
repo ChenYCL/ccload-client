@@ -1019,3 +1019,83 @@ fn every_cli_with_a_window_key_reads_back_what_it_wrote() {
     let (_keep, root, _bk) = sandbox();
     assert_eq!(current_context_tokens(&root, CliTarget::GeminiCli), None);
 }
+
+/// Claude Code 的窗口是三个键一起写：天花板、压缩分母、百分比。天花板从 1M 降到
+/// 500k 而分母不跟着降，自动压缩永远不触发；百分比不跟着写，用户以前为了在 1M 分母
+/// 上凑 grok 而手填的 48 会让 500k 在 240k 就压缩。
+#[test]
+fn narrowing_the_claude_window_moves_all_three_compaction_keys_together() {
+    let (_keep, root, bk) = sandbox();
+    write(
+        &root,
+        ".claude/settings.json",
+        r#"{"env":{"ANTHROPIC_BASE_URL":"http://old","CLAUDE_CODE_MAX_CONTEXT_TOKENS":"1000000","CLAUDE_CODE_AUTO_COMPACT_WINDOW":"1000000","CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"48"}}"#,
+    );
+    let opts = TakeoverOptions {
+        context_tokens: Some(500_000),
+        compact_percent: Some(90),
+        ..Default::default()
+    };
+    apply_takeover(&root, CliTarget::ClaudeCode, "http://127.0.0.1:15722", "tok", "w", &bk, opts).unwrap();
+    let doc: serde_json::Value = serde_json::from_str(&read(&root, ".claude/settings.json")).unwrap();
+    assert_eq!(doc.pointer("/env/CLAUDE_CODE_MAX_CONTEXT_TOKENS").unwrap(), "500000");
+    assert_eq!(doc.pointer("/env/CLAUDE_CODE_AUTO_COMPACT_WINDOW").unwrap(), "500000");
+    assert_eq!(doc.pointer("/env/CLAUDE_AUTOCOMPACT_PCT_OVERRIDE").unwrap(), "90");
+    assert_eq!(doc.pointer("/env/CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT").unwrap(), "1");
+
+    // 窄到官方下限（100k）以下：分母键写不进去就删掉，别留旧值；百分比照写。
+    let opts = TakeoverOptions {
+        context_tokens: Some(64_000),
+        compact_percent: Some(85),
+        ..Default::default()
+    };
+    apply_takeover(&root, CliTarget::ClaudeCode, "http://127.0.0.1:15722", "tok", "w2", &bk, opts).unwrap();
+    let doc: serde_json::Value = serde_json::from_str(&read(&root, ".claude/settings.json")).unwrap();
+    assert_eq!(doc.pointer("/env/CLAUDE_CODE_MAX_CONTEXT_TOKENS").unwrap(), "64000");
+    assert!(doc.pointer("/env/CLAUDE_CODE_AUTO_COMPACT_WINDOW").is_none());
+    assert_eq!(doc.pointer("/env/CLAUDE_AUTOCOMPACT_PCT_OVERRIDE").unwrap(), "85");
+}
+
+/// Codex 没有百分比键，只有绝对数：阈值 = 窗口 × 百分比，和窗口一起落盘。
+#[test]
+fn codex_auto_compact_limit_follows_the_window_and_percent() {
+    let (_keep, root, bk) = sandbox();
+    let opts = TakeoverOptions {
+        codex_model: Some("gpt-5.6".into()),
+        context_tokens: Some(400_000),
+        compact_percent: Some(90),
+        ..Default::default()
+    };
+    apply_takeover(&root, CliTarget::Codex, "http://127.0.0.1:15722", "tok", "w", &bk, opts).unwrap();
+    let doc: toml_edit::DocumentMut = read(&root, ".codex/config.toml").parse().unwrap();
+    assert_eq!(doc["model_context_window"].as_integer(), Some(400_000));
+    assert_eq!(doc["model_auto_compact_token_limit"].as_integer(), Some(360_000));
+    // 表单里显式填的窗口优先，阈值按它算。
+    let opts = TakeoverOptions {
+        codex_context_window: Some(200_000),
+        context_tokens: Some(400_000),
+        compact_percent: Some(80),
+        ..Default::default()
+    };
+    apply_takeover(&root, CliTarget::Codex, "http://127.0.0.1:15722", "tok", "w2", &bk, opts).unwrap();
+    let doc: toml_edit::DocumentMut = read(&root, ".codex/config.toml").parse().unwrap();
+    assert_eq!(doc["model_context_window"].as_integer(), Some(200_000));
+    assert_eq!(doc["model_auto_compact_token_limit"].as_integer(), Some(160_000));
+}
+
+/// Grok 的自动压缩看当前选中那张表的 `auto_compact_threshold_percent`；总控的百分比
+/// 要落在 profile 表上，不然停在 Grok 自己的 85%。
+#[test]
+fn grok_profile_gets_the_compact_percent_next_to_its_window() {
+    let (_keep, root, bk) = sandbox();
+    write(&root, ".grok/config.toml", "[models]\ndefault = \"grok-4.6\"\n");
+    let opts = TakeoverOptions {
+        context_tokens: Some(500_000),
+        compact_percent: Some(90),
+        ..Default::default()
+    };
+    apply_takeover(&root, CliTarget::GrokBuild, "http://127.0.0.1:15722", "tok", "w", &bk, opts).unwrap();
+    let doc: toml_edit::DocumentMut = read(&root, ".grok/config.toml").parse().unwrap();
+    assert_eq!(doc["model"]["ccload"]["context_window"].as_integer(), Some(500_000));
+    assert_eq!(doc["model"]["ccload"]["auto_compact_threshold_percent"].as_integer(), Some(90));
+}

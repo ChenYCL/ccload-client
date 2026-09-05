@@ -194,6 +194,54 @@ pub(crate) fn current_context_tokens(root: &ConfigRoot, target: CliTarget) -> Op
     }
 }
 
+/// Claude Code 的窗口三件套。窗口是**全局一个键**，不是 per-model —— 换模型不跟着
+/// 改，就会留着上次导入写的那个数（症状：明明换成了 1M 的模型，界面还显示 200k，
+/// 四分之一处就开始压缩）。
+///
+/// 三个键各管一件事，缺一个都不成立：
+/// * `CLAUDE_CODE_MAX_CONTEXT_TOKENS` —— 天花板；
+/// * `CLAUDE_CODE_AUTO_COMPACT_WINDOW` —— 自动压缩的**分母**（官方区间 100k–1M，
+///   窄到写不进去就删掉这个键，别留旧值）；
+/// * `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` —— 分母的百分之几触发。用户以前手填 48
+///   是为了在 1M 的分母上凑出 grok 的 450k；现在分母本身就是真实天花板，百分比
+///   要跟着总控走，不然 48% × 500k 会在 240k 就压缩。
+///
+/// 还有 `CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1`：网关别名不在官方
+/// 目录里，不解除强制校验的话天花板会被 Claude Code 按「未知模型」重新夹回去。
+pub(crate) fn write_claude_window_env(
+    env: &mut serde_json::Map<String, Value>,
+    window: u64,
+    compact_percent: Option<u8>,
+) {
+    use crate::services::context_window::{claude_auto_compact_window, DEFAULT_COMPACT_PERCENT};
+    env.insert(
+        "CLAUDE_CODE_MAX_CONTEXT_TOKENS".into(),
+        Value::String(window.to_string()),
+    );
+    env.insert(
+        "CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT".into(),
+        Value::String("1".into()),
+    );
+    match claude_auto_compact_window(window) {
+        Some(w) => {
+            env.insert(
+                "CLAUDE_CODE_AUTO_COMPACT_WINDOW".into(),
+                Value::String(w.to_string()),
+            );
+        }
+        None => {
+            env.remove("CLAUDE_CODE_AUTO_COMPACT_WINDOW");
+        }
+    }
+    let pct = compact_percent
+        .filter(|p| (1..=99).contains(p))
+        .unwrap_or(DEFAULT_COMPACT_PERCENT);
+    env.insert(
+        "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE".into(),
+        Value::String(pct.to_string()),
+    );
+}
+
 pub fn apply_takeover(
     root: &ConfigRoot,
     target: CliTarget,
@@ -238,22 +286,7 @@ pub fn apply_takeover(
                 // per-model —— 换模型不跟着改，就会留着上次导入写的那个数（症状：
                 // 明明换成了 1M 的模型，界面还显示 200k，四分之一处就开始压缩）。
                 if let Some(w) = opts.context_tokens.filter(|n| *n > 0) {
-                    env.insert(
-                        "CLAUDE_CODE_MAX_CONTEXT_TOKENS".into(),
-                        Value::String(w.to_string()),
-                    );
-                    // 网关别名不在官方目录里，不解除强制校验的话上面那个数会被
-                    // Claude Code 按「未知模型」重新夹回去。
-                    env.insert(
-                        "CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT".into(),
-                        Value::String("1".into()),
-                    );
-                    if let Some(compact) = crate::services::context_window::auto_compact_window(w) {
-                        env.insert(
-                            "CLAUDE_CODE_AUTO_COMPACT_WINDOW".into(),
-                            Value::String(compact.to_string()),
-                        );
-                    }
+                    write_claude_window_env(env, w as u64, opts.compact_percent);
                 }
                 // Free-form extra env (timeout, retry, telemetry flags, …).
                 // Same rules as every other CLI's merge: an emptied form field
@@ -386,6 +419,7 @@ pub fn apply_takeover(
                 api_token,
                 opts.grok_model.as_deref(),
                 opts.context_tokens,
+                opts.compact_percent,
             )?);
             if let Some(extra) = &opts.extra_env {
                 let path = root.join(".grok/config.toml");
@@ -467,6 +501,14 @@ fn write_codex(
         .or(opts.context_tokens.filter(|n| *n > 0))
     {
         doc["model_context_window"] = toml_edit::value(c);
+        // 自动压缩阈值跟着窗口走。Codex 没有百分比键，只有绝对 token 数 ——
+        // 只改窗口不改它，窗口从 1M 降到 500k 后阈值仍停在旧分母上，永远触发不了。
+        let pct = opts
+            .compact_percent
+            .filter(|p| (1..=99).contains(p))
+            .unwrap_or(crate::services::context_window::DEFAULT_COMPACT_PERCENT);
+        doc["model_auto_compact_token_limit"] =
+            toml_edit::value(c.saturating_mul(i64::from(pct)) / 100);
     }
     if let Some(extra) = &opts.extra_env {
         merge_extra_toml(&mut doc, extra, CliTarget::Codex)?;

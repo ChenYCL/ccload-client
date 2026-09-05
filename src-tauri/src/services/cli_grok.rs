@@ -70,7 +70,7 @@ pub fn apply(
     endpoint: &str,
     api_token: &str,
 ) -> Result<Vec<String>, AppError> {
-    apply_with_model(root, endpoint, api_token, None, None)
+    apply_with_model(root, endpoint, api_token, None, None, None)
 }
 
 /// `model` is the kernel alias the ccload profile should send. `None` keeps
@@ -82,6 +82,8 @@ pub fn apply_with_model(
     model: Option<&str>,
     // 总控算好的窗口。None 时退回按模型名推断（老行为）。
     context_tokens: Option<i64>,
+    // 总控的压缩百分比。None 用默认。
+    compact_percent: Option<u8>,
 ) -> Result<Vec<String>, AppError> {
     let path = root.join(".grok/config.toml");
     let raw = if path.exists() {
@@ -117,6 +119,12 @@ pub fn apply_with_model(
     if let Some(w) = context_tokens.filter(|n| *n > 0) {
         if let Some(t) = doc["model"][profile.as_str()].as_table_like_mut() {
             t.insert("context_window", toml_edit::value(w));
+            // 阈值和窗口一起写。Grok 官方模型默认 80%，自定义表不写时按会话级的
+            // 85% —— 都不是总控里用户定的那个数。
+            t.insert(
+                "auto_compact_threshold_percent",
+                toml_edit::value(i64::from(effective_percent(compact_percent))),
+            );
         }
     }
     if routed != profile {
@@ -129,7 +137,7 @@ pub fn apply_with_model(
             let w = context_tokens
                 .filter(|n| *n > 0)
                 .unwrap_or_else(|| crate::services::context_window::parse_window(&routed) as i64);
-            write_catalog_entry(&mut doc, &routed, endpoint, api_token, Some(w))?;
+            write_catalog_entry(&mut doc, &routed, endpoint, api_token, Some(w), compact_percent)?;
         }
     }
     if let Some(previous) = previous {
@@ -173,6 +181,11 @@ pub fn current_model(root: &ConfigRoot) -> Option<String> {
         return Some(m.to_string());
     }
     Some(default.to_string())
+}
+
+fn effective_percent(p: Option<u8>) -> u8 {
+    p.filter(|p| (1..=99).contains(p))
+        .unwrap_or(crate::services::context_window::DEFAULT_COMPACT_PERCENT)
 }
 
 fn is_grok_builtin(alias: &str) -> bool {
@@ -349,6 +362,7 @@ pub fn write_catalog_entry(
     endpoint: &str,
     api_token: &str,
     context_window: Option<i64>,
+    compact_percent: Option<u8>,
 ) -> Result<(), AppError> {
     if alias.trim().is_empty() {
         return Ok(());
@@ -383,11 +397,16 @@ pub fn write_catalog_entry(
     if let Some(w) = context_window.filter(|n| *n > 0) {
         entry.insert("context_window", toml_edit::value(w));
     }
-    // Official grok models compact at 80% of the window. Custom tables default
-    // to Grok's 200k if we omit context_window, and to the session 85% if we
-    // omit this — both wrong for a 1M glm/claude alias.
-    if created || entry.get("auto_compact_threshold_percent").is_none() {
-        entry.insert("auto_compact_threshold_percent", toml_edit::value(80));
+    // Custom tables default to Grok's 200k if we omit context_window, and to
+    // the session 85% if we omit the threshold — both wrong for a 1M glm/claude
+    // alias. 总控给了百分比就照写；没给的只在新建/缺键时补默认，不动用户手改的。
+    if let Some(p) = compact_percent.filter(|p| (1..=99).contains(p)) {
+        entry.insert("auto_compact_threshold_percent", toml_edit::value(i64::from(p)));
+    } else if created || entry.get("auto_compact_threshold_percent").is_none() {
+        entry.insert(
+            "auto_compact_threshold_percent",
+            toml_edit::value(i64::from(crate::services::context_window::DEFAULT_COMPACT_PERCENT)),
+        );
     }
     write_grok_effort_menu(entry, alias);
     Ok(())
@@ -718,6 +737,7 @@ mod tests {
             "https://proxy.test/v1",
             "tok",
             Some(1_000_000),
+            Some(85),
         )
         .unwrap();
         let e = &doc["model"]["glm-5.3-flash[1M]"];
@@ -725,7 +745,16 @@ mod tests {
         assert_eq!(e["api_backend"].as_str(), Some("chat_completions"));
         assert_eq!(e["context_window"].as_integer(), Some(1_000_000));
         assert_eq!(e["supports_reasoning_effort"].as_bool(), Some(true));
-        assert_eq!(e["auto_compact_threshold_percent"].as_integer(), Some(80));
+        assert_eq!(e["auto_compact_threshold_percent"].as_integer(), Some(85));
+        // 没给百分比时补默认，但不动已有的值。
+        write_catalog_entry(&mut doc, "glm-5.3-flash[1M]", "https://proxy.test/v1", "tok", None, None)
+            .unwrap();
+        assert_eq!(doc["model"]["glm-5.3-flash[1M]"]["auto_compact_threshold_percent"].as_integer(), Some(85));
+        write_catalog_entry(&mut doc, "fresh", "https://proxy.test/v1", "tok", None, None).unwrap();
+        assert_eq!(
+            doc["model"]["fresh"]["auto_compact_threshold_percent"].as_integer(),
+            Some(i64::from(crate::services::context_window::DEFAULT_COMPACT_PERCENT))
+        );
     }
 
     #[test]
@@ -733,7 +762,7 @@ mod tests {
         let mut doc = "[models]\ndefault = \"ccload\"\n"
             .parse::<toml_edit::DocumentMut>()
             .unwrap();
-        write_catalog_entry(&mut doc, "claude-opus-5", "https://proxy.test/v1", "tok", Some(1_000_000))
+        write_catalog_entry(&mut doc, "claude-opus-5", "https://proxy.test/v1", "tok", Some(1_000_000), None)
             .unwrap();
         assert_eq!(doc["models"]["default"].as_str(), Some("ccload"));
     }
