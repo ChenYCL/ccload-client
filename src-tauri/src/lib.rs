@@ -318,6 +318,8 @@ pub fn run() {
             commands::rescue::rescue_get,
             commands::rescue::rescue_set,
             commands::rescue::rescue_default_prompt,
+            commands::dynamic_inject::dynamic_inject_get,
+            commands::dynamic_inject::dynamic_inject_set,
             commands::models::model_import,
             commands::models::vision_mcp_set,
             commands::models::vision_mcp_state,

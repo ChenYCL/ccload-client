@@ -3,6 +3,7 @@ pub mod channel_usage;
 pub mod cli;
 pub mod cli_proxy;
 pub mod config_io;
+pub mod dynamic_inject;
 pub mod extensions;
 pub mod fallback;
 pub mod forced_route;

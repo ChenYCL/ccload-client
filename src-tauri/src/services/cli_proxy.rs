@@ -42,6 +42,7 @@ use tokio::sync::RwLock;
 
 use crate::error::AppError;
 use crate::services::context_floor::alias_key;
+use crate::services::dynamic_inject::{self, InjectConfig};
 use crate::services::kernel::{http_client_for_kernel, HttpClientOpts, KernelConfig};
 use crate::services::pins::PinRules;
 use crate::services::rescue::{self, RescueConfig};
@@ -171,15 +172,22 @@ fn upgrade_cache_ttl(v: &mut serde_json::Value) {
     }
 }
 
-pub struct CliProxy {
+
+/// 一条代理连接要用的全部共享状态。收进一个结构体而不是继续往 handle_conn
+/// 的参数表里堆 Arc —— 每加一个自动插件就多一个把柄，参数列表早晚会爆
+/// clippy 的 too_many_arguments；测试里也只需要 clone 一个东西。
+struct ProxyState {
     target: Arc<RwLock<String>>,
     rules: Arc<RwLock<ProxyRules>>,
-    /// 见 `upgrade_cache_ttl` —— 默认 false，实测多数场景开着更贵。
-    long_cache: Arc<std::sync::atomic::AtomicBool>,
-    /// 拒绝接管（`services::rescue`）。默认全关：开启后聊天响应改为整体缓冲。
-    rescue: Arc<RwLock<RescueConfig>>,
     records: Arc<RwLock<Vec<ProxyRecord>>>,
+    long_cache: Arc<std::sync::atomic::AtomicBool>,
+    rescue: Arc<RwLock<RescueConfig>>,
+    inject: Arc<RwLock<InjectConfig>>,
     http: Arc<RwLock<reqwest::Client>>,
+}
+
+pub struct CliProxy {
+    state: Arc<ProxyState>,
     handle: tokio::task::JoinHandle<()>,
 }
 
@@ -194,24 +202,21 @@ impl CliProxy {
                 ))
             })?;
 
-        let target = Arc::new(RwLock::new(cfg.base_url()));
-        let rules: Arc<RwLock<ProxyRules>> = Arc::new(RwLock::new(ProxyRules::default()));
-        let long_cache = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        // 代理先以「全关」状态起来，`ensure_cli_proxy` 随后会把磁盘上的配置推进来
-        // （和钉住表同一条路径）—— 这里不读文件，是 start() 不知道配置目录在哪。
-        let rescue: Arc<RwLock<RescueConfig>> = Arc::new(RwLock::new(RescueConfig::default()));
-        let records: Arc<RwLock<Vec<ProxyRecord>>> = Arc::new(RwLock::new(Vec::new()));
-        let http = Arc::new(RwLock::new(cli_proxy_client(cfg)?));
-
-        let (t, w, r, lc, rs, h) = (
-            Arc::clone(&target),
-            Arc::clone(&rules),
-            Arc::clone(&records),
-            Arc::clone(&long_cache),
-            Arc::clone(&rescue),
-            Arc::clone(&http),
-        );
-        let handle = tokio::spawn(async move {
+        let state = Arc::new(ProxyState {
+            target: Arc::new(RwLock::new(cfg.base_url())),
+            rules: Arc::new(RwLock::new(ProxyRules::default())),
+            long_cache: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            // 代理先以「全关」状态起来，`ensure_cli_proxy` 随后会把磁盘上的配置
+            // 推进来（和钉住表同一条路径）—— 这里不读文件，是 start() 不知道
+            // 配置目录在哪。
+            rescue: Arc::new(RwLock::new(RescueConfig::default())),
+            inject: Arc::new(RwLock::new(InjectConfig::default())),
+            records: Arc::new(RwLock::new(Vec::new())),
+            http: Arc::new(RwLock::new(cli_proxy_client(cfg)?)),
+        });
+        let handle = {
+            let st = Arc::clone(&state);
+            tokio::spawn(async move {
             loop {
                 // accept 出错**不能**退出循环：一次瞬时错误（并发一多就撞的
                 // EMFILE、客户端在握手中途走掉的 ECONNABORTED）就会让 listener
@@ -226,66 +231,58 @@ impl CliProxy {
                         continue;
                     }
                 };
-                let (t, w, r, lc, rs, h) = (
-                    Arc::clone(&t),
-                    Arc::clone(&w),
-                    Arc::clone(&r),
-                    Arc::clone(&lc),
-                    Arc::clone(&rs),
-                    Arc::clone(&h),
-                );
+                let st = Arc::clone(&st);
                 tokio::spawn(async move {
-                    let _ = handle_conn(stream, t, w, r, lc, rs, h).await;
+                    let _ = handle_conn(stream, st).await;
                 });
             }
-        });
+            })
+        };
 
-        Ok(Arc::new(Self {
-            target,
-            rules,
-            long_cache,
-            rescue,
-            records,
-            http,
-            handle,
-        }))
+        Ok(Arc::new(Self { state, handle }))
     }
 
     /// 内核地址变了（切换本地/远端、改端口）时重新指向，不用重启监听。
     pub async fn retarget(&self, cfg: &KernelConfig) -> Result<(), AppError> {
-        *self.target.write().await = cfg.base_url();
-        *self.http.write().await = cli_proxy_client(cfg)?;
+        *self.state.target.write().await = cfg.base_url();
+        *self.state.http.write().await = cli_proxy_client(cfg)?;
         Ok(())
     }
 
     /// 打开/关掉 1 小时缓存窗口。见 `upgrade_cache_ttl` 里的实测数据 ——
     /// 交互式会话开着通常更贵，这个开关是给长间隔的定时任务用的。
     pub fn long_cache_enabled(&self) -> bool {
-        self.long_cache.load(std::sync::atomic::Ordering::Relaxed)
+        self.state.long_cache.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn set_long_cache(&self, on: bool) {
-        self.long_cache
+        self.state
+            .long_cache
             .store(on, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub async fn set_rewrites(&self, rules: ModelRewrites) {
-        self.rules.write().await.rewrites = rules;
+        self.state.rules.write().await.rewrites = rules;
     }
 
     /// 换一整张钉住表。保存 / 删除钉住之后调用，不用重启代理。
     pub async fn set_pins(&self, pins: PinRules) {
-        self.rules.write().await.pins = pins;
+        self.state.rules.write().await.pins = pins;
     }
 
     /// 换拒绝接管配置。保存之后调用，不用重启代理。
     pub async fn set_rescue(&self, cfg: RescueConfig) {
-        *self.rescue.write().await = cfg.normalized();
+        *self.state.rescue.write().await = cfg.normalized();
+    }
+
+    /// 换动态注入配置。保存之后调用，不用重启代理。
+    pub async fn set_inject(&self, cfg: InjectConfig) {
+        *self.state.inject.write().await = cfg.normalized();
     }
 
     /// 最近的转发记录，最新的在前。
     pub async fn records(&self) -> Vec<ProxyRecord> {
-        let mut v = self.records.read().await.clone();
+        let mut v = self.state.records.read().await.clone();
         v.reverse();
         v
     }
@@ -554,15 +551,18 @@ async fn write_simple(client: &mut TcpStream, status: u16, msg: &str) -> std::io
     client.write_all(body.as_bytes()).await
 }
 
-async fn handle_conn(
-    mut client: TcpStream,
-    target: Arc<RwLock<String>>,
-    rules: Arc<RwLock<ProxyRules>>,
-    records: Arc<RwLock<Vec<ProxyRecord>>>,
-    long_cache: Arc<std::sync::atomic::AtomicBool>,
-    rescue_cfg: Arc<RwLock<RescueConfig>>,
-    http: Arc<RwLock<reqwest::Client>>,
-) -> std::io::Result<()> {
+async fn handle_conn(mut client: TcpStream, state: Arc<ProxyState>) -> std::io::Result<()> {
+    // 按调用方原来的名字解构，函数体保持原样 —— Arc 引用计数 +1 换来的
+    // 是「加插件不动参数表」。
+    let (target, rules, records, long_cache, rescue_cfg, inject_cfg, http) = (
+        Arc::clone(&state.target),
+        Arc::clone(&state.rules),
+        Arc::clone(&state.records),
+        Arc::clone(&state.long_cache),
+        Arc::clone(&state.rescue),
+        Arc::clone(&state.inject),
+        Arc::clone(&state.http),
+    );
     let mut buf: Vec<u8> = Vec::with_capacity(16 * 1024);
     let mut tmp = [0u8; 16 * 1024];
     // 打点在**收到请求**时，不是 send 返回之后 —— 内核日志的时间是
@@ -705,6 +705,16 @@ async fn handle_conn(
         None => model.clone(),
     };
     let out_body = rewritten.unwrap_or(body_bytes);
+    // 动态注入（自动插件第二条）是 body 进转发管线的第一步：后面的 fallback
+    // 序列、破甲重发全都基于注入后的 body —— 重发的每一跳带上注入内容，链路
+    // 才闭环。注入从不报错（不生效就原样过），这里不需要错误分支。
+    let out_body = {
+        let icfg = inject_cfg.read().await;
+        match dynamic_inject::apply(&icfg, &out_body, model.as_deref(), &cli, &path) {
+            Some(injected) => injected,
+            None => out_body,
+        }
+    };
     // 钉住序列：没钉就只有一个名字（等于 name_in_body）；没有 model 字段就空，原样发。
     let attempts: Vec<String> = model
         .as_deref()
@@ -1761,12 +1771,15 @@ mod e2e {
             let (stream, _) = front.accept().await.unwrap();
             handle_conn(
                 stream,
-                t,
-                w,
-                r,
-                Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                Arc::new(RwLock::new(RescueConfig::default())),
-                test_proxy_http(),
+                Arc::new(ProxyState {
+                    target: t,
+                    rules: w,
+                    records: r,
+                    long_cache: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    rescue: Arc::new(RwLock::new(RescueConfig::default())),
+                    inject: Arc::new(RwLock::new(InjectConfig::default())),
+                    http: test_proxy_http(),
+                }),
             )
             .await
             .unwrap();
@@ -1890,12 +1903,15 @@ mod sse {
             let (stream, _) = front.accept().await.unwrap();
             handle_conn(
                 stream,
-                target,
-                Arc::new(RwLock::new(ProxyRules::default())),
-                Arc::new(RwLock::new(Vec::new())),
-                Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                Arc::new(RwLock::new(RescueConfig::default())),
-                test_proxy_http(),
+                Arc::new(ProxyState {
+                    target,
+                    rules: Arc::new(RwLock::new(ProxyRules::default())),
+                    records: Arc::new(RwLock::new(Vec::new())),
+                    long_cache: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    rescue: Arc::new(RwLock::new(RescueConfig::default())),
+                    inject: Arc::new(RwLock::new(InjectConfig::default())),
+                    http: test_proxy_http(),
+                }),
             )
             .await
             .unwrap();
@@ -1986,12 +2002,15 @@ mod chunked_req {
             let (stream, _) = front.accept().await.unwrap();
             let _ = handle_conn(
                 stream,
-                target,
-                Arc::new(RwLock::new(ProxyRules::default())),
-                Arc::new(RwLock::new(Vec::new())),
-                Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                Arc::new(RwLock::new(RescueConfig::default())),
-                test_proxy_http(),
+                Arc::new(ProxyState {
+                    target,
+                    rules: Arc::new(RwLock::new(ProxyRules::default())),
+                    records: Arc::new(RwLock::new(Vec::new())),
+                    long_cache: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    rescue: Arc::new(RwLock::new(RescueConfig::default())),
+                    inject: Arc::new(RwLock::new(InjectConfig::default())),
+                    http: test_proxy_http(),
+                }),
             )
             .await;
         });
@@ -2226,12 +2245,15 @@ mod availability_tests {
             let (stream, _) = front.accept().await.unwrap();
             let _ = handle_conn(
                 stream,
-                t,
-                w,
-                r,
-                Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                Arc::new(RwLock::new(RescueConfig::default())),
-                test_proxy_http(),
+                Arc::new(ProxyState {
+                    target: t,
+                    rules: w,
+                    records: r,
+                    long_cache: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    rescue: Arc::new(RwLock::new(RescueConfig::default())),
+                    inject: Arc::new(RwLock::new(InjectConfig::default())),
+                    http: test_proxy_http(),
+                }),
             )
             .await;
         });
@@ -2272,12 +2294,15 @@ mod availability_tests {
             let (stream, _) = front.accept().await.unwrap();
             let _ = handle_conn(
                 stream,
-                t,
-                w,
-                r,
-                Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                Arc::new(RwLock::new(RescueConfig::default())),
-                test_proxy_http(),
+                Arc::new(ProxyState {
+                    target: t,
+                    rules: w,
+                    records: r,
+                    long_cache: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    rescue: Arc::new(RwLock::new(RescueConfig::default())),
+                    inject: Arc::new(RwLock::new(InjectConfig::default())),
+                    http: test_proxy_http(),
+                }),
             )
             .await;
         });
@@ -2440,12 +2465,15 @@ mod pin_tests {
             let (stream, _) = front.accept().await.unwrap();
             let _ = handle_conn(
                 stream,
-                t,
-                w,
-                r,
-                Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                Arc::new(RwLock::new(RescueConfig::default())),
-                test_proxy_http(),
+                Arc::new(ProxyState {
+                    target: t,
+                    rules: w,
+                    records: r,
+                    long_cache: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    rescue: Arc::new(RwLock::new(RescueConfig::default())),
+                    inject: Arc::new(RwLock::new(InjectConfig::default())),
+                    http: test_proxy_http(),
+                }),
             )
             .await;
         });
@@ -2657,12 +2685,15 @@ mod rescue_tests {
             let (stream, _) = front.accept().await.unwrap();
             let _ = handle_conn(
                 stream,
-                t,
-                w,
-                r,
-                Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                rs,
-                test_proxy_http(),
+                Arc::new(ProxyState {
+                    target: t,
+                    rules: w,
+                    records: r,
+                    long_cache: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    rescue: rs,
+                    inject: Arc::new(RwLock::new(InjectConfig::default())),
+                    http: test_proxy_http(),
+                }),
             )
             .await;
         });
@@ -2798,12 +2829,15 @@ mod ws_tunnel {
             let (stream, _) = front.accept().await.unwrap();
             let _ = handle_conn(
                 stream,
-                t,
-                Arc::new(RwLock::new(ProxyRules::default())),
-                r,
-                Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                Arc::new(RwLock::new(RescueConfig::default())),
-                test_proxy_http(),
+                Arc::new(ProxyState {
+                    target: t,
+                    rules: Arc::new(RwLock::new(ProxyRules::default())),
+                    records: r,
+                    long_cache: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    rescue: Arc::new(RwLock::new(RescueConfig::default())),
+                    inject: Arc::new(RwLock::new(InjectConfig::default())),
+                    http: test_proxy_http(),
+                }),
             )
             .await;
         });
@@ -2876,12 +2910,15 @@ mod ws_tunnel {
             let (stream, _) = front.accept().await.unwrap();
             let _ = handle_conn(
                 stream,
-                t,
-                Arc::new(RwLock::new(ProxyRules::default())),
-                r,
-                Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                Arc::new(RwLock::new(RescueConfig::default())),
-                test_proxy_http(),
+                Arc::new(ProxyState {
+                    target: t,
+                    rules: Arc::new(RwLock::new(ProxyRules::default())),
+                    records: r,
+                    long_cache: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    rescue: Arc::new(RwLock::new(RescueConfig::default())),
+                    inject: Arc::new(RwLock::new(InjectConfig::default())),
+                    http: test_proxy_http(),
+                }),
             )
             .await;
         });
@@ -3117,12 +3154,15 @@ mod ws_tunnel {
             let (stream, _) = front.accept().await.unwrap();
             let _ = handle_conn(
                 stream,
-                t,
-                Arc::new(RwLock::new(ProxyRules::default())),
-                r,
-                Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                Arc::new(RwLock::new(RescueConfig::default())),
-                test_proxy_http(),
+                Arc::new(ProxyState {
+                    target: t,
+                    rules: Arc::new(RwLock::new(ProxyRules::default())),
+                    records: r,
+                    long_cache: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    rescue: Arc::new(RwLock::new(RescueConfig::default())),
+                    inject: Arc::new(RwLock::new(InjectConfig::default())),
+                    http: test_proxy_http(),
+                }),
             )
             .await;
         });
@@ -3181,12 +3221,15 @@ mod ws_tunnel {
             let (stream, _) = front.accept().await.unwrap();
             let _ = handle_conn(
                 stream,
-                t,
-                Arc::new(RwLock::new(ProxyRules::default())),
-                r,
-                Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                Arc::new(RwLock::new(RescueConfig::default())),
-                test_proxy_http(),
+                Arc::new(ProxyState {
+                    target: t,
+                    rules: Arc::new(RwLock::new(ProxyRules::default())),
+                    records: r,
+                    long_cache: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    rescue: Arc::new(RwLock::new(RescueConfig::default())),
+                    inject: Arc::new(RwLock::new(InjectConfig::default())),
+                    http: test_proxy_http(),
+                }),
             )
             .await;
         });
@@ -3246,12 +3289,15 @@ mod ws_tunnel {
             let (stream, _) = front.accept().await.unwrap();
             let _ = handle_conn(
                 stream,
-                t,
-                Arc::new(RwLock::new(ProxyRules::default())),
-                r,
-                Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                Arc::new(RwLock::new(RescueConfig::default())),
-                test_proxy_http(),
+                Arc::new(ProxyState {
+                    target: t,
+                    rules: Arc::new(RwLock::new(ProxyRules::default())),
+                    records: r,
+                    long_cache: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    rescue: Arc::new(RwLock::new(RescueConfig::default())),
+                    inject: Arc::new(RwLock::new(InjectConfig::default())),
+                    http: test_proxy_http(),
+                }),
             )
             .await;
         });

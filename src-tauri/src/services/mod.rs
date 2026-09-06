@@ -13,6 +13,7 @@ pub mod cli_proxy;
 pub mod cli_types;
 pub mod context_floor;
 pub mod context_window;
+pub mod dynamic_inject;
 pub mod embed_proxy;
 pub mod fallback;
 pub mod forced_route;
