@@ -23,6 +23,8 @@ pub async fn ensure_cli_proxy(state: &AppState) -> Result<(), crate::error::AppE
     }
     // 钉住表随代理一起装上；文件坏了只记 warn —— 代理照常转发，只是没有钉住。
     crate::commands::pins::refresh_proxy_pins(state).await;
+    // 拒绝接管配置同一条路径：代理先以全关状态起，这里把磁盘上的开关推进来。
+    crate::commands::rescue::refresh_proxy_rescue(state).await;
     Ok(())
 }
 
@@ -273,6 +275,7 @@ mod usage_tests {
             cost: None,
             output_tokens: None,
             fallback_from: None,
+            rescued: 0,
         }
     }
 

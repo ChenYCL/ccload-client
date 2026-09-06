@@ -25,6 +25,7 @@ pub mod model_catalog;
 pub mod model_import;
 pub mod node_services;
 pub mod pins;
+pub mod rescue;
 pub mod session_preset;
 pub mod session_rescue;
 pub mod system_inject;

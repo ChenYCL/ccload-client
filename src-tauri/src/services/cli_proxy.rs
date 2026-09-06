@@ -17,6 +17,15 @@
 //! （见 [`is_fallback_status`]）再用原别名重发，退回内核自己的顺序。内核只按渠道
 //! 优先级选路，「选了哪个渠道就默认走它」只能在这一层做。
 //!
+//! 第四件事是**拒绝接管**（`services::rescue`，默认关）：聊天类响应整体缓冲后判
+//! 拒绝，命中就丢弃它（不进 CLI 上下文）并把破甲提示词追加进请求重发内核。判定、
+//! 抽取、对上游的可见性分析都在那个模块里，这里只管数据面。
+//!
+//! 另外内核还给 Codex / pi 开了一条 WebSocket 低延迟通道（`GET /v1/responses` +
+//! Upgrade）：这一层对它做**裸透传**（转发握手 + 101 后双向字节拷贝），不做拒绝
+//! 接管 —— 那需要攒 WS 帧到 `response.completed` 再判、在同一 socket 上重发，留待
+//! 下一步。
+//!
 //! 和 `embed_proxy` 的分工：那个是给 admin iframe 剥 `X-Frame-Options` 的，
 //! 只服务我们自己的窗口；这个是数据面，要扛 CLI 的长连接和 SSE。两者都手写
 //! HTTP/1.1 但目标不同，共用一份会把「安全边界」和「转发性能」搅在一起。
@@ -35,6 +44,7 @@ use crate::error::AppError;
 use crate::services::context_floor::alias_key;
 use crate::services::kernel::{http_client_for_kernel, HttpClientOpts, KernelConfig};
 use crate::services::pins::PinRules;
+use crate::services::rescue::{self, RescueConfig};
 
 /// 固定端口。CLI 配置里写死的就是它，换端口等于所有接管配置失效，所以不
 /// 像 embed_proxy 那样在一个区间里试探 —— 端口被占就是硬错误，得让用户看见。
@@ -47,6 +57,9 @@ const MAX_RECORDS: usize = 2000;
 /// 从 `syscall.Exec` 自重启里回来、也够隧道抖一下；再长就该把错误交给 CLI 了。
 const CONNECT_RETRIES: u32 = 3;
 const CONNECT_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_millis(200);
+/// WebSocket 握手里等上游回话的上限。上游接了 TCP 却不回响应时不能无限挂着：
+/// 客户端早就放弃了，这个任务和两条连接却会一直留着。
+const WS_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// 请求**还没送达内核**就失败了——这类可以安全重试。
 ///
@@ -96,6 +109,9 @@ pub struct ProxyRecord {
     /// None = 第一发就成了（或根本没钉住）。
     #[serde(default)]
     pub fallback_from: Option<String>,
+    /// 拒绝接管命中次数：这条转发里丢掉了几次拒绝、重发了几次。0 = 没接管（或关着）。
+    #[serde(default)]
+    pub rescued: u32,
 }
 
 /// 模型名改写规则：CLI 发的名字 -> 内核认的名字。
@@ -160,6 +176,8 @@ pub struct CliProxy {
     rules: Arc<RwLock<ProxyRules>>,
     /// 见 `upgrade_cache_ttl` —— 默认 false，实测多数场景开着更贵。
     long_cache: Arc<std::sync::atomic::AtomicBool>,
+    /// 拒绝接管（`services::rescue`）。默认全关：开启后聊天响应改为整体缓冲。
+    rescue: Arc<RwLock<RescueConfig>>,
     records: Arc<RwLock<Vec<ProxyRecord>>>,
     http: Arc<RwLock<reqwest::Client>>,
     handle: tokio::task::JoinHandle<()>,
@@ -179,14 +197,18 @@ impl CliProxy {
         let target = Arc::new(RwLock::new(cfg.base_url()));
         let rules: Arc<RwLock<ProxyRules>> = Arc::new(RwLock::new(ProxyRules::default()));
         let long_cache = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // 代理先以「全关」状态起来，`ensure_cli_proxy` 随后会把磁盘上的配置推进来
+        // （和钉住表同一条路径）—— 这里不读文件，是 start() 不知道配置目录在哪。
+        let rescue: Arc<RwLock<RescueConfig>> = Arc::new(RwLock::new(RescueConfig::default()));
         let records: Arc<RwLock<Vec<ProxyRecord>>> = Arc::new(RwLock::new(Vec::new()));
         let http = Arc::new(RwLock::new(cli_proxy_client(cfg)?));
 
-        let (t, w, r, lc, h) = (
+        let (t, w, r, lc, rs, h) = (
             Arc::clone(&target),
             Arc::clone(&rules),
             Arc::clone(&records),
             Arc::clone(&long_cache),
+            Arc::clone(&rescue),
             Arc::clone(&http),
         );
         let handle = tokio::spawn(async move {
@@ -204,15 +226,16 @@ impl CliProxy {
                         continue;
                     }
                 };
-                let (t, w, r, lc, h) = (
+                let (t, w, r, lc, rs, h) = (
                     Arc::clone(&t),
                     Arc::clone(&w),
                     Arc::clone(&r),
                     Arc::clone(&lc),
+                    Arc::clone(&rs),
                     Arc::clone(&h),
                 );
                 tokio::spawn(async move {
-                    let _ = handle_conn(stream, t, w, r, lc, h).await;
+                    let _ = handle_conn(stream, t, w, r, lc, rs, h).await;
                 });
             }
         });
@@ -221,6 +244,7 @@ impl CliProxy {
             target,
             rules,
             long_cache,
+            rescue,
             records,
             http,
             handle,
@@ -252,6 +276,11 @@ impl CliProxy {
     /// 换一整张钉住表。保存 / 删除钉住之后调用，不用重启代理。
     pub async fn set_pins(&self, pins: PinRules) {
         self.rules.write().await.pins = pins;
+    }
+
+    /// 换拒绝接管配置。保存之后调用，不用重启代理。
+    pub async fn set_rescue(&self, cfg: RescueConfig) {
+        *self.rescue.write().await = cfg.normalized();
     }
 
     /// 最近的转发记录，最新的在前。
@@ -531,6 +560,7 @@ async fn handle_conn(
     rules: Arc<RwLock<ProxyRules>>,
     records: Arc<RwLock<Vec<ProxyRecord>>>,
     long_cache: Arc<std::sync::atomic::AtomicBool>,
+    rescue_cfg: Arc<RwLock<RescueConfig>>,
     http: Arc<RwLock<reqwest::Client>>,
 ) -> std::io::Result<()> {
     let mut buf: Vec<u8> = Vec::with_capacity(16 * 1024);
@@ -603,6 +633,38 @@ async fn handle_conn(
         return write_simple(&mut client, 413, "request body too large").await;
     }
 
+    let upstream = target.read().await.clone();
+    let cli = detect_cli(&fwd);
+    let session_id = detect_session(&fwd);
+
+    // WebSocket 升级（Codex / pi 的低延迟通道，`GET /v1/responses` + Upgrade）：
+    // 握手原样转发，101 之后整个连接归透传管。升级请求没有 body，所以必须在
+    // 读 body 之前分走。
+    let ws_upgrade = fwd.iter().any(|(k, v)| {
+        k.eq_ignore_ascii_case("upgrade")
+            && v
+                .split(',')
+                .any(|t| t.trim().eq_ignore_ascii_case("websocket"))
+    });
+    if ws_upgrade {
+        // 升级请求没有 body，但 CLI 可能把请求头和抢跑的首批帧放在同一个包里发来
+        // （低延迟客户端常见且合法）。`buf[header_end..]` 里这批字节属于
+        // client→upstream 的字节流，必须一并交给隧道转发上去，否则首帧丢。
+        return tunnel_ws(
+            &mut client,
+            ClientHead {
+                head: &buf[..header_end],
+                leftover: &buf[header_end..],
+            },
+            &upstream,
+            &records,
+            &cli,
+            &session_id,
+            &path,
+        )
+        .await;
+    }
+
     // RFC 9112：chunked 和 Content-Length 同时出现时以 chunked 为准。
     let leftover = buf[header_end..].to_vec();
     let body_bytes: Vec<u8> = if chunked {
@@ -629,8 +691,6 @@ async fn handle_conn(
         Vec::new()
     };
 
-    let cli = detect_cli(&fwd);
-    let session_id = detect_session(&fwd);
     let rules = rules.read().await.clone();
     let (model, rewritten) = rewrite_body(
         &body_bytes,
@@ -651,30 +711,37 @@ async fn handle_conn(
         .map(|m| alias_sequence(m, &rules))
         .unwrap_or_default();
 
-    let upstream = target.read().await.clone();
     let url = format!("{upstream}{path}");
     let Ok(method_parsed) = method.parse::<reqwest::Method>() else {
         return write_simple(&mut client, 400, "bad method").await;
     };
     let http = http.read().await.clone();
+    let call = KernelCall {
+        method: &method_parsed,
+        url: &url,
+        fwd: &fwd,
+    };
 
     // 依次试每个名字。首选（私有别名）被内核以「没接住」类状态拒了，就换下一个；
     // 其它状态（成功、或客户端级错误）当场定案。连内核都连不上时换名字没意义，直接
     // 502。每次重发用的都是同一份已缓冲的 body，只换 model 字段。
     let mut sent_model: Option<String> = None;
     let mut fallback_from: Option<String> = None;
+    // 定案那一次发出的 body —— 拒绝接管要基于它追加破甲提示词重发（名字、工具、
+    // 上下文都跟实际送达内核的那份一致）。
+    let mut last_body: Vec<u8> = out_body.clone();
     let mut outcome: Option<Result<reqwest::Response, reqwest::Error>> = None;
     if attempts.is_empty() {
-        outcome = Some(send_to_kernel(&http, &method_parsed, &url, &fwd, &out_body).await);
+        outcome = Some(send_to_kernel(&http, &call, &out_body).await);
     } else {
         let total = attempts.len();
         for (idx, alias) in attempts.iter().enumerate() {
-            let body = if name_in_body.as_deref() == Some(alias.as_str()) {
+            last_body = if name_in_body.as_deref() == Some(alias.as_str()) {
                 out_body.clone()
             } else {
                 with_model(&out_body, alias)
             };
-            let r = send_to_kernel(&http, &method_parsed, &url, &fwd, &body).await;
+            let r = send_to_kernel(&http, &call, &last_body).await;
             sent_model = Some(alias.clone());
             match &r {
                 Ok(resp) if idx + 1 < total && is_fallback_status(resp.status().as_u16()) => {
@@ -696,8 +763,17 @@ async fn handle_conn(
     // 和 CLI 原名一样就不算改写；记录里 None 表示「没改」。
     let sent_model = sent_model.filter(|n| Some(n.as_str()) != model.as_deref());
 
-    let resp = match outcome.expect("at least one attempt is always made") {
-        Ok(r) => r,
+    // 拒绝接管（默认关）：聊天类响应整体缓冲查拒绝；命中就丢弃它（不进 CLI 上下文），
+    // 把破甲提示词追加进请求重发内核。关着、非聊天路径、或声明长度大到离谱时不缓冲
+    // —— 下面那条流式路径原样照走。判定与重发循环见 `rescue_loop`。
+    // 用 Stage 枚举而不是 Option<(buf)> + resp：resp 要么被 rescue_loop 消费、要么
+    // 留在流式路径，借用检查器才认得出「恰好用一次」。
+    enum Stage {
+        Stream(reqwest::Response),
+        Buf(reqwest::StatusCode, reqwest::header::HeaderMap, Vec<u8>),
+    }
+    let mut rescued = 0u32;
+    let stage: Stage = match outcome.expect("at least one attempt is always made") {
         Err(e) => {
             push_record(
                 &records,
@@ -712,6 +788,7 @@ async fn handle_conn(
                     cost: None,
                     output_tokens: None,
                     fallback_from,
+                    rescued: 0,
                 },
             )
             .await;
@@ -722,9 +799,62 @@ async fn handle_conn(
             )
             .await;
         }
+        Ok(resp) => {
+            let cfg = rescue_cfg.read().await;
+            let huge = resp
+                .headers()
+                .get(reqwest::header::CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok().and_then(|s| s.parse::<usize>().ok()))
+                .is_some_and(|n| n > 32 * 1024 * 1024);
+            if cfg.enabled
+                && method_parsed == reqwest::Method::POST
+                && rescue::family(&path).is_some()
+                && !huge
+            {
+                match rescue_loop(&http, &call, &last_body, resp, &cfg, &path).await {
+                    Ok((st, hd, bytes, hits)) => {
+                        rescued = hits;
+                        Stage::Buf(st, hd, bytes)
+                    }
+                    Err(e) => {
+                        // 响应没读完（上游中途断了）：不能伪造一个完整响应，把错误交给 CLI。
+                        tracing::warn!("cli proxy: rescue buffer broke: {e}");
+                        push_record(
+                            &records,
+                            ProxyRecord {
+                                time: started,
+                                cli,
+                                session_id,
+                                model,
+                                sent_model,
+                                path,
+                                status: 502,
+                                cost: None,
+                                output_tokens: None,
+                                fallback_from,
+                                rescued,
+                            },
+                        )
+                        .await;
+                        return write_simple(
+                            &mut client,
+                            502,
+                            "response stream broke before completion",
+                        )
+                        .await;
+                    }
+                }
+            } else {
+                Stage::Stream(resp)
+            }
+        }
     };
 
-    let status = resp.status();
+    let (status, headers) = match &stage {
+        Stage::Buf(s, h, _) => (*s, h.clone()),
+        Stage::Stream(r) => (r.status(), r.headers().clone()),
+    };
+
     push_record(
         &records,
         ProxyRecord {
@@ -738,16 +868,13 @@ async fn handle_conn(
             cost: None,
             output_tokens: None,
             fallback_from,
+            rescued,
         },
     )
     .await;
 
-    let has_len = resp
-        .headers()
-        .get(reqwest::header::CONTENT_LENGTH)
-        .is_some();
     let mut head = format!("HTTP/1.1 {status}\r\n");
-    for (name, value) in resp.headers() {
+    for (name, value) in &headers {
         let lower = name.as_str().to_ascii_lowercase();
         if lower == "transfer-encoding" || lower == "connection" {
             continue;
@@ -756,6 +883,19 @@ async fn handle_conn(
             head.push_str(&format!("{name}: {vs}\r\n"));
         }
     }
+    if let Stage::Buf(_, _, bytes) = &stage {
+        // 整份响应：长度已知，直接挂 Content-Length 一次写完，不重分块。
+        head.push_str(&format!("content-length: {}\r\n", bytes.len()));
+        head.push_str("Connection: close\r\n\r\n");
+        client.write_all(head.as_bytes()).await?;
+        client.write_all(bytes).await?;
+        return client.flush().await;
+    }
+    let resp = match stage {
+        Stage::Buf(..) => unreachable!("buffered stage returned above"),
+        Stage::Stream(resp) => resp,
+    };
+    let has_len = headers.get(reqwest::header::CONTENT_LENGTH).is_some();
     if !has_len {
         head.push_str("Transfer-Encoding: chunked\r\n");
     }
@@ -811,17 +951,22 @@ async fn handle_conn(
 /// 只重试**请求还没发出去**就失败的情况（连不上、握手失败）：请求体已经进
 /// 了内核就不能再发第二遍——那是内核自己的故障转移在管的事，重放会让一次
 /// 请求变两次账单。
+/// 一次内核调用的固定部分：fallback 序列、rescue 重发改的只有 body。
+struct KernelCall<'a> {
+    method: &'a reqwest::Method,
+    url: &'a str,
+    fwd: &'a [(String, String)],
+}
+
 async fn send_to_kernel(
     http: &reqwest::Client,
-    method: &reqwest::Method,
-    url: &str,
-    fwd: &[(String, String)],
+    call: &KernelCall<'_>,
     body: &[u8],
 ) -> Result<reqwest::Response, reqwest::Error> {
     let mut attempt = 0u32;
     loop {
-        let mut r = http.request(method.clone(), url);
-        for (name, value) in fwd {
+        let mut r = http.request(call.method.clone(), call.url);
+        for (name, value) in call.fwd {
             if let Ok(hv) = reqwest::header::HeaderValue::from_str(value) {
                 r = r.header(name.as_str(), hv);
             }
@@ -840,6 +985,525 @@ async fn send_to_kernel(
             Err(e) => return Err(e),
         }
     }
+}
+
+/// 拒绝接管：把第一个响应读到结尾，判成拒绝就丢弃，把破甲提示词追加进**原请求**
+/// 重发内核。循环到不再拒绝或达到重试上限。返回最终响应的
+/// （状态、头、字节、命中次数）。
+///
+/// 重发本身失败（非 2xx 或连接断）：保留原拒绝 —— CLI 看见「某个东西」好过
+/// 什么都没有，而且此时原拒绝已经读完，丢弃它反而让这轮彻底没结果。
+/// 判定、抽取、追加的形状与理由都在 `services::rescue`。
+async fn rescue_loop(
+    http: &reqwest::Client,
+    call: &KernelCall<'_>,
+    last_body: &[u8],
+    first: reqwest::Response,
+    cfg: &RescueConfig,
+    path: &str,
+) -> Result<(reqwest::StatusCode, reqwest::header::HeaderMap, Vec<u8>, u32), reqwest::Error> {
+    let mut status = first.status();
+    let mut headers = first.headers().clone();
+    let mut bytes = first.bytes().await?.to_vec();
+    let max = cfg.max_retries.clamp(1, 5);
+    let mut hits = 0u32;
+    for _ in 0..max {
+        if !status.is_success() {
+            break;
+        }
+        let Some(text) = rescue::extract_text(path, &bytes) else {
+            break;
+        };
+        if text.trim().is_empty() || !rescue::looks_like_refusal(&text, &cfg.markers) {
+            break;
+        }
+        let Some(next_body) = rescue::append_user_turn(path, last_body, cfg.effective_prompt())
+        else {
+            break;
+        };
+        tracing::info!("cli proxy: refusal detected, re-sending with the armor prompt (hit {hits})");
+        let r = send_to_kernel(http, call, &next_body).await?;
+        let st = r.status();
+        if !st.is_success() {
+            tracing::warn!("cli proxy: rescue re-send answered {st}, keeping the original refusal");
+            break;
+        }
+        status = st;
+        headers = r.headers().clone();
+        bytes = r.bytes().await?.to_vec();
+        hits += 1;
+    }
+    Ok((status, headers, bytes, hits))
+}
+
+/// WS 透传的上游端：明文 TCP 或自开的 TLS。手写的委托实现 —— tokio 没有
+/// 现成的「读+写」复合对象类型，而 `copy_bidirectional` 需要两个完整端点。
+enum WsUpstream {
+    Plain(TcpStream),
+    // Box：TlsStream 里装着整个 rustls 会话，裸放会让每条 WS 透传多占一 KiB。
+    Tls(Box<tokio_rustls::client::TlsStream<TcpStream>>),
+}
+
+impl tokio::io::AsyncRead for WsUpstream {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            WsUpstream::Plain(s) => {
+                tokio::io::AsyncRead::poll_read(std::pin::Pin::new(s), cx, buf)
+            }
+            WsUpstream::Tls(s) => {
+                tokio::io::AsyncRead::poll_read(std::pin::Pin::new(&mut **s), cx, buf)
+            }
+        }
+    }
+}
+
+impl tokio::io::AsyncWrite for WsUpstream {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        match self.get_mut() {
+            WsUpstream::Plain(s) => {
+                tokio::io::AsyncWrite::poll_write(std::pin::Pin::new(s), cx, buf)
+            }
+            WsUpstream::Tls(s) => {
+                tokio::io::AsyncWrite::poll_write(std::pin::Pin::new(&mut **s), cx, buf)
+            }
+        }
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            WsUpstream::Plain(s) => {
+                tokio::io::AsyncWrite::poll_flush(std::pin::Pin::new(s), cx)
+            }
+            WsUpstream::Tls(s) => {
+                tokio::io::AsyncWrite::poll_flush(std::pin::Pin::new(&mut **s), cx)
+            }
+        }
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            WsUpstream::Plain(s) => {
+                tokio::io::AsyncWrite::poll_shutdown(std::pin::Pin::new(s), cx)
+            }
+            WsUpstream::Tls(s) => {
+                tokio::io::AsyncWrite::poll_shutdown(std::pin::Pin::new(&mut **s), cx)
+            }
+        }
+    }
+}
+
+/// WebSocket 升级的裸透传：握手原样转发，上游回 101 之后两端字节流互拷到断开。
+///
+/// 只对 WS 连接做「接两截」：不解析帧、不做拒绝接管 —— WS Responses 协议上的
+/// 接管要把帧攒到 `response.completed` 再判、还要在同一 socket 上发新的
+/// `response.create` 重发，是协议级的活，先保证「能用」。
+///
+/// `req_head` 是 CLI 发来的请求头原始字节，只重写 Host（目标可能是远端内核），
+/// 其余原样 —— 令牌照旧让上游鉴权。已知边界：远端内核配了出口代理（socks/http）
+/// 时隧道不走那个代理，是裸连接；连不直就 502，不做静默黑洞。
+/// 拒绝接管对 WS 不可用的说明见模块头注释。
+/// 非 101 响应的 body 分帧（RFC 7230 §3.3.3）。三种要分开对待：按错一种，轻则
+/// 客户端挂着等尾巴，重则把截断当成完整。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BodyFraming {
+    /// 1xx / 204 / 304：按状态码就没有 body，头后面什么都别等。
+    Empty,
+    /// Content-Length：读够声明的字节数。
+    Length(usize),
+    /// Transfer-Encoding 以 chunked 结尾：按块边界找到终止块。
+    Chunked,
+    /// 两种分帧头都没有（或 Transfer-Encoding 不是 chunked）：读到上游关闭为止。
+    UntilClose,
+}
+
+fn response_framing(status: u16, head_lc: &str) -> BodyFraming {
+    if (100..200).contains(&status) || status == 204 || status == 304 {
+        return BodyFraming::Empty;
+    }
+    // Transfer-Encoding 在场时 Content-Length 作废（§3.3.3 第 3 条）。
+    if let Some(te) = header_value(head_lc, "transfer-encoding") {
+        return if te.rsplit(',').next().is_some_and(|t| t.trim() == "chunked") {
+            BodyFraming::Chunked
+        } else {
+            BodyFraming::UntilClose
+        };
+    }
+    match header_value(head_lc, "content-length").map(|v| v.parse::<usize>()) {
+        Some(Ok(n)) => BodyFraming::Length(n),
+        // 写了个解析不了的 Content-Length：不能当已知长度，只能读到关闭。
+        Some(Err(_)) | None => BodyFraming::UntilClose,
+    }
+}
+
+/// 头块（已转小写）里某个字段的值，只取第一处。字段名必须顶着行首，
+/// 免得 `x-content-length:` 之类误中。
+fn header_value<'a>(head_lc: &'a str, name: &str) -> Option<&'a str> {
+    head_lc.split("\r\n").skip(1).find_map(|line| {
+        let value = line.strip_prefix(name)?.strip_prefix(':')?;
+        Some(value.trim())
+    })
+}
+
+/// 把响应头里的 Connection 改成 close。非 101 的连接在本条响应之后一定会关，
+/// 上游写的 keep-alive 在这里是假话；两种分帧头都没有时它同时是「读到关闭为止」
+/// 的明示。分帧头（Content-Length / Transfer-Encoding）原样保留。
+fn force_connection_close(head: &[u8]) -> Vec<u8> {
+    let text = String::from_utf8_lossy(head);
+    let mut out = String::with_capacity(text.len() + 24);
+    for line in text.trim_end_matches("\r\n").split("\r\n") {
+        let is_connection = line
+            .get(..11)
+            .is_some_and(|p| p.eq_ignore_ascii_case("connection:"));
+        if is_connection {
+            continue;
+        }
+        out.push_str(line);
+        out.push_str("\r\n");
+    }
+    out.push_str("Connection: close\r\n\r\n");
+    out.into_bytes()
+}
+
+/// chunked 消息体的增量扫描器。字节本身原样转发（透传不解码），扫描只为找到
+/// 这条消息在字节流里的结束位置；块长度行、块尾 CRLF、终止块和 trailer 的边界
+/// 落在哪次读里都无所谓。
+#[derive(Default)]
+struct ChunkedScanner {
+    state: ChunkState,
+    /// 正在积累的那一行（块长度行 / 块尾 CRLF / trailer 行），不含换行。
+    line: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum ChunkState {
+    /// 在读块长度行。
+    #[default]
+    Size,
+    /// 在块数据里，还剩这么多字节。
+    Data(usize),
+    /// 块数据读完了，等它后面那对 CRLF。
+    DataEnd,
+    /// 终止块之后：读 trailer 行，直到空行。
+    Trailers,
+    Done,
+    /// 格式不对，找不到结尾了。
+    Broken,
+}
+
+impl ChunkedScanner {
+    /// 单行上限：正常的块长度行只有几个字节，超过这个数一定不是 chunked。
+    const MAX_LINE: usize = 8 * 1024;
+
+    /// 喂进一段字节，返回其中属于本条消息的字节数（含终止序列）。没结束时就是
+    /// 全部；结束后多出来的不属于这条响应。
+    fn feed(&mut self, buf: &[u8]) -> usize {
+        let mut i = 0;
+        while i < buf.len() {
+            match self.state {
+                ChunkState::Done | ChunkState::Broken => break,
+                ChunkState::Data(remaining) => {
+                    let take = remaining.min(buf.len() - i);
+                    i += take;
+                    self.state = if take == remaining {
+                        ChunkState::DataEnd
+                    } else {
+                        ChunkState::Data(remaining - take)
+                    };
+                }
+                ChunkState::Size | ChunkState::DataEnd | ChunkState::Trailers => {
+                    let b = buf[i];
+                    i += 1;
+                    if b != b'\n' {
+                        if self.line.len() >= Self::MAX_LINE {
+                            self.state = ChunkState::Broken;
+                            break;
+                        }
+                        self.line.push(b);
+                        continue;
+                    }
+                    if self.line.last() == Some(&b'\r') {
+                        self.line.pop();
+                    }
+                    let line = std::mem::take(&mut self.line);
+                    self.state = match self.state {
+                        ChunkState::Size => {
+                            // 块长度是十六进制，后面可以带 `;ext=val` 扩展。
+                            let hex = line.split(|&c| c == b';').next().unwrap_or(&[]);
+                            match std::str::from_utf8(hex)
+                                .ok()
+                                .and_then(|h| usize::from_str_radix(h.trim(), 16).ok())
+                            {
+                                Some(0) => ChunkState::Trailers,
+                                Some(n) => ChunkState::Data(n),
+                                None => ChunkState::Broken,
+                            }
+                        }
+                        ChunkState::DataEnd if line.is_empty() => ChunkState::Size,
+                        ChunkState::DataEnd => ChunkState::Broken,
+                        _ if line.is_empty() => ChunkState::Done,
+                        _ => ChunkState::Trailers,
+                    };
+                }
+            }
+        }
+        i
+    }
+
+    fn is_done(&self) -> bool {
+        self.state == ChunkState::Done
+    }
+
+    fn is_broken(&self) -> bool {
+        self.state == ChunkState::Broken
+    }
+}
+
+/// CLI 发来的升级请求：原始请求头，加上读头时一并读进来的、位于头之后的字节
+/// （管线化的抢跑帧）。后者属于 client→upstream 流，握手转发后要立刻补给上游。
+struct ClientHead<'a> {
+    head: &'a [u8],
+    leftover: &'a [u8],
+}
+
+async fn tunnel_ws(
+    client: &mut TcpStream,
+    req: ClientHead<'_>,
+    upstream: &str,
+    records: &Arc<RwLock<Vec<ProxyRecord>>>,
+    cli: &str,
+    session_id: &Option<String>,
+    path: &str,
+) -> std::io::Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let url = reqwest::Url::parse(upstream)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "no host in target"))?
+        .to_string();
+    let port = url.port_or_known_default().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "no port in target")
+    })?;
+    let is_tls = url.scheme() == "https";
+
+    // 和 send_to_kernel 同一个重试口径：连接级失败才重试。
+    let mut attempt = 0u32;
+    let mut up = loop {
+        let attempt_res = async {
+            let conn = TcpStream::connect((host.as_str(), port)).await?;
+            if !is_tls {
+                return Ok(WsUpstream::Plain(conn));
+            }
+            // SNI 必须带上（远端内核常挂在共享证书前面）：域名直接参与握手。
+            let name = rustls::pki_types::ServerName::try_from(host.clone())
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+            let mut roots = rustls::RootCertStore::empty();
+            roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            let cfg = rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+            let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(cfg));
+            // 握手在这里就驱动完：证书不信任、握手被掐，都算连接失败进同一个重试，
+            // 而不是留一个半成品 future 给后面的透传突然爆掉。
+            Ok::<WsUpstream, std::io::Error>(WsUpstream::Tls(Box::new(
+                connector.connect(name, conn).await?,
+            )))
+        };
+        let ws = match attempt_res.await {
+            Ok(ws) => ws,
+            Err(e) if attempt < CONNECT_RETRIES => {
+                attempt += 1;
+                tracing::debug!("cli proxy: ws connect failed, retry {attempt}: {e}");
+                tokio::time::sleep(CONNECT_RETRY_BACKOFF * attempt).await;
+                continue;
+            }
+            Err(e) => {
+                return write_simple(
+                    client,
+                    502,
+                    &format!("kernel unreachable ({upstream}): {e}"),
+                )
+                .await;
+            }
+        };
+        break ws;
+    };
+
+    // Host 按上游重算：逐行、只认字段名顶格的 Host。子串找 "host:" 会撞上
+    // `Origin: http://localhost:15777` 这类值 —— 改错行、真正的 Host 还指着代理，
+    // 远端内核前面的反代按 Host 分流就会 404。其余头原样、顺序不动；客户端没带
+    // Host（RFC 上允许但 CLI 都会带）时等于补一条。
+    let head = String::from_utf8_lossy(req.head);
+    let mut lines = head.trim_end_matches("\r\n").split("\r\n");
+    let mut fwd_head = String::with_capacity(head.len() + 48);
+    fwd_head.push_str(lines.next().unwrap_or_default());
+    fwd_head.push_str(&format!("\r\nHost: {host}:{port}\r\n"));
+    for line in lines {
+        let is_host = line
+            .get(..5)
+            .is_some_and(|name| name.eq_ignore_ascii_case("host:"));
+        if is_host {
+            continue;
+        }
+        fwd_head.push_str(line);
+        fwd_head.push_str("\r\n");
+    }
+    fwd_head.push_str("\r\n");
+    up.write_all(fwd_head.as_bytes()).await?;
+    // 抢跑的客户端字节紧跟在请求头之后补给上游 —— 它们是同一条 client→upstream
+    // 字节流的一部分，漏掉就是首帧丢失。
+    if !req.leftover.is_empty() {
+        up.write_all(req.leftover).await?;
+    }
+    up.flush().await?;
+
+    // 读上游对握手的回答。101 = 升级成功，进透传；其它 = 把这个回答当普通响应
+    // 原样交给 CLI（通常是 401/404，CLI 自己能看懂）。
+    let mut rbuf: Vec<u8> = Vec::with_capacity(8 * 1024);
+    let mut rtmp = [0u8; 8 * 1024];
+    let handshake_deadline = tokio::time::Instant::now() + WS_HANDSHAKE_TIMEOUT;
+    let head_end = loop {
+        let n = match tokio::time::timeout_at(handshake_deadline, up.read(&mut rtmp)).await {
+            Ok(read) => read?,
+            Err(_) => {
+                return write_simple(
+                    client,
+                    504,
+                    "kernel did not answer the websocket handshake in time",
+                )
+                .await;
+            }
+        };
+        if n == 0 {
+            return write_simple(
+                client,
+                502,
+                "kernel closed the connection during the websocket handshake",
+            )
+            .await;
+        }
+        rbuf.extend_from_slice(&rtmp[..n]);
+        if let Some(p) = find_header_end(&rbuf) {
+            break p;
+        }
+        if rbuf.len() > 128 * 1024 {
+            return write_simple(client, 502, "upstream headers too large").await;
+        }
+    };
+    let status_line = {
+        let e = rbuf.windows(2).position(|w| w == b"\r\n").unwrap_or(rbuf.len());
+        String::from_utf8_lossy(&rbuf[..e]).to_string()
+    };
+    let status: u16 = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(502);
+    let started = now_secs();
+    let record = |status: u16| ProxyRecord {
+        time: started,
+        cli: cli.to_string(),
+        session_id: session_id.clone(),
+        model: None,
+        sent_model: None,
+        path: path.to_string(),
+        status,
+        cost: None,
+        output_tokens: None,
+        fallback_from: None,
+        rescued: 0,
+    };
+
+    if status != 101 {
+        // 非 101：整条当普通响应转给 CLI，然后结束这条连接。头原样转发，保住上游
+        // 自己的分帧头，只把 Connection 改成 close —— 这条连接确实会在本条响应后
+        // 关掉。body 按 RFC 7230 §3.3.3 分三路补全：只按 Content-Length 补会让
+        // chunked 响应挂到上游空闲超时（Go 的 net/http 默认 keep-alive，响应完了
+        // 不关连接），也会把两种分帧头都没有的 close-delimited 响应当成已经完整。
+        let head_lc = String::from_utf8_lossy(&rbuf[..head_end]).to_ascii_lowercase();
+        let framing = response_framing(status, &head_lc);
+        client.write_all(&force_connection_close(&rbuf[..head_end])).await?;
+        match framing {
+            BodyFraming::Empty => {}
+            // 有 Content-Length：按声明长度把 body 补全再转，多读到的字节截掉不外泄，
+            // 缺的继续读，绝不留半截。
+            BodyFraming::Length(total) => {
+                let buffered = &rbuf[head_end..];
+                let take = buffered.len().min(total);
+                client.write_all(&buffered[..take]).await?;
+                let mut have = take;
+                while have < total {
+                    let n = up.read(&mut rtmp).await?;
+                    if n == 0 {
+                        break; // 上游提前断，客户端会看到截断而不是无限等待
+                    }
+                    let want = (total - have).min(n);
+                    client.write_all(&rtmp[..want]).await?;
+                    have += want;
+                }
+            }
+            // chunked：字节原样透传，只扫块边界找终止块；到了就收尾，不等上游关。
+            BodyFraming::Chunked => {
+                let mut scan = ChunkedScanner::default();
+                let mut pending: &[u8] = &rbuf[head_end..];
+                loop {
+                    let take = scan.feed(pending);
+                    client.write_all(&pending[..take]).await?;
+                    if scan.is_done() {
+                        break;
+                    }
+                    if scan.is_broken() {
+                        // 分块格式坏了就找不到结尾：剩下的当 close-delimited 直通，
+                        // 客户端会用同一套规则自己报错。
+                        client.write_all(&pending[take..]).await?;
+                        tokio::io::copy(&mut up, client).await?;
+                        break;
+                    }
+                    let n = up.read(&mut rtmp).await?;
+                    if n == 0 {
+                        break;
+                    }
+                    pending = &rtmp[..n];
+                }
+            }
+            // 两种分帧头都没有：close-delimited，直通到上游关闭；头里已经明示
+            // Connection: close，客户端也按「读到关闭为止」理解。
+            BodyFraming::UntilClose => {
+                client.write_all(&rbuf[head_end..]).await?;
+                tokio::io::copy(&mut up, client).await?;
+            }
+        }
+        push_record(records, record(status)).await;
+        return client.flush().await;
+    }
+
+    // 101：上游的握手响应**原样**转给客户端 —— Sec-WebSocket-Accept 客户端库会校验，
+    // 缺了直接判握手失败；Sec-WebSocket-Extensions / -Protocol 是协商结果，丢了
+    // 客户端就会拿「没压缩」的预期去解上游的压缩帧。写死一行 101 这些全没了。
+    // 读头时连着读进来的上游抢跑首帧（`rbuf[head_end..]`）也在这一笔里一起给出去，
+    // 否则这批字节留在缓冲里再也发不出去。
+    client.write_all(&rbuf).await?;
+    client.flush().await?;
+    push_record(records, record(101)).await;
+    let res = tokio::io::copy_bidirectional(client, &mut up).await;
+    // 透传结束后把连接关掉（101 之后没有 HTTP 语义，留着是死连接）。
+    let _ = client.shutdown().await;
+    res.map(|_| ())
 }
 
 async fn push_record(records: &Arc<RwLock<Vec<ProxyRecord>>>, rec: ProxyRecord) {
@@ -1095,9 +1759,17 @@ mod e2e {
         );
         tokio::spawn(async move {
             let (stream, _) = front.accept().await.unwrap();
-            handle_conn(stream, t, w, r, Arc::new(std::sync::atomic::AtomicBool::new(false)), test_proxy_http())
-                .await
-                .unwrap();
+            handle_conn(
+                stream,
+                t,
+                w,
+                r,
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                Arc::new(RwLock::new(RescueConfig::default())),
+                test_proxy_http(),
+            )
+            .await
+            .unwrap();
         });
 
         // 扮成 Claude Code：带会话头，模型名挂 [1m] 后缀。
@@ -1222,6 +1894,7 @@ mod sse {
                 Arc::new(RwLock::new(ProxyRules::default())),
                 Arc::new(RwLock::new(Vec::new())),
                 Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                Arc::new(RwLock::new(RescueConfig::default())),
                 test_proxy_http(),
             )
             .await
@@ -1317,6 +1990,7 @@ mod chunked_req {
                 Arc::new(RwLock::new(ProxyRules::default())),
                 Arc::new(RwLock::new(Vec::new())),
                 Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                Arc::new(RwLock::new(RescueConfig::default())),
                 test_proxy_http(),
             )
             .await;
@@ -1556,6 +2230,7 @@ mod availability_tests {
                 w,
                 r,
                 Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                Arc::new(RwLock::new(RescueConfig::default())),
                 test_proxy_http(),
             )
             .await;
@@ -1601,6 +2276,7 @@ mod availability_tests {
                 w,
                 r,
                 Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                Arc::new(RwLock::new(RescueConfig::default())),
                 test_proxy_http(),
             )
             .await;
@@ -1768,6 +2444,7 @@ mod pin_tests {
                 w,
                 r,
                 Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                Arc::new(RwLock::new(RescueConfig::default())),
                 test_proxy_http(),
             )
             .await;
@@ -1886,5 +2563,723 @@ mod pin_tests {
         assert!(got.contains("503"), "{got}");
         assert_eq!(hits.load(Ordering::SeqCst), 1);
         assert_eq!(*seen.read().await, vec!["claude-opus-5"]);
+    }
+}
+
+#[cfg(test)]
+mod rescue_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// 假内核：第一发回 `first`，之后只有请求体里带 `marker` 才回 `second`
+    /// （验证重发真的把破甲提示词带进了请求），否则继续回 `first`。
+    async fn spawn_json_kernel(first: &str, second: &str, marker: &str) -> (u16, Arc<AtomicUsize>) {
+        let up = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = up.local_addr().unwrap().port();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let (first, second, marker) =
+            (first.to_string(), second.to_string(), marker.to_string());
+        let h = Arc::clone(&hits);
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut s, _)) = up.accept().await else { break };
+                let (h, first, second, marker) = (
+                    Arc::clone(&h),
+                    first.clone(),
+                    second.clone(),
+                    marker.clone(),
+                );
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut tmp = [0u8; 8192];
+                    let body_start = loop {
+                        let n = s.read(&mut tmp).await.unwrap_or(0);
+                        if n == 0 {
+                            return;
+                        }
+                        buf.extend_from_slice(&tmp[..n]);
+                        if let Some(p) = find_header_end(&buf) {
+                            break p;
+                        }
+                    };
+                    let head = String::from_utf8_lossy(&buf[..body_start]).to_ascii_lowercase();
+                    let len: usize = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:"))
+                        .and_then(|v| v.trim().parse().ok())
+                        .unwrap_or(0);
+                    while buf.len() < body_start + len {
+                        let n = s.read(&mut tmp).await.unwrap_or(0);
+                        if n == 0 {
+                            break;
+                        }
+                        buf.extend_from_slice(&tmp[..n]);
+                    }
+                    let body = String::from_utf8_lossy(&buf[body_start..]).to_string();
+                    let n = h.fetch_add(1, Ordering::SeqCst);
+                    let out = if n == 0 {
+                        first.clone()
+                    } else if body.contains(&marker) {
+                        second.clone()
+                    } else {
+                        first.clone()
+                    };
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{out}",
+                        out.len()
+                    );
+                    let _ = s.write_all(resp.as_bytes()).await;
+                    let _ = s.flush().await;
+                });
+            }
+        });
+        (port, hits)
+    }
+
+    async fn run_rescue(
+        kernel_port: u16,
+        rescue_cfg: RescueConfig,
+        body: &[u8],
+    ) -> (String, Vec<ProxyRecord>) {
+        let target = Arc::new(RwLock::new(format!("http://127.0.0.1:{kernel_port}")));
+        let rules = Arc::new(RwLock::new(ProxyRules::default()));
+        let records = Arc::new(RwLock::new(Vec::new()));
+        let rescue = Arc::new(RwLock::new(rescue_cfg));
+        let front = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let front_port = front.local_addr().unwrap().port();
+        let (t, w, r, rs) = (
+            Arc::clone(&target),
+            Arc::clone(&rules),
+            Arc::clone(&records),
+            Arc::clone(&rescue),
+        );
+        tokio::spawn(async move {
+            let (stream, _) = front.accept().await.unwrap();
+            let _ = handle_conn(
+                stream,
+                t,
+                w,
+                r,
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                rs,
+                test_proxy_http(),
+            )
+            .await;
+        });
+        let mut c = TcpStream::connect(("127.0.0.1", front_port)).await.unwrap();
+        c.write_all(
+            format!(
+                "POST /v1/messages HTTP/1.1\r\nHost: x\r\ncontent-length: {}\r\n\r\n",
+                body.len()
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+        c.write_all(body).await.unwrap();
+        let mut got = Vec::new();
+        let _ =
+            tokio::time::timeout(std::time::Duration::from_secs(5), c.read_to_end(&mut got)).await;
+        let recs = records.read().await.clone();
+        (String::from_utf8_lossy(&got).to_string(), recs)
+    }
+
+    /// 主线：拒绝被丢掉（CLI 一个字节都看不到），破甲提示词被追加进重发请求，
+    /// 第二次拿到正常回答；记录里写明命中了一次。
+    #[tokio::test]
+    async fn a_refusal_is_dropped_and_resent_with_the_armor_prompt() {
+        let refusal = r#"{"content":[{"type":"text","text":"I cannot assist with that request. As an AI, I must decline."}]}"#;
+        let answer = r#"{"content":[{"type":"text","text":"Here is the code you asked for."}]}"#;
+        let (port, hits) = spawn_json_kernel(refusal, answer, "ARMOR-MARKER").await;
+        let cfg = RescueConfig {
+            enabled: true,
+            armor_prompt: "ARMOR-MARKER".into(),
+            markers: Vec::new(),
+            max_retries: 3,
+        };
+        let (got, recs) = run_rescue(
+            port,
+            cfg,
+            br#"{"model":"m","messages":[{"role":"user","content":"do the task"}]}"#,
+        )
+        .await;
+        assert!(got.contains("Here is the code"), "{got}");
+        assert!(
+            !got.contains("I cannot assist"),
+            "拒绝必须到不了 CLI：{got}"
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].rescued, 1);
+        assert_eq!(recs[0].status, 200);
+    }
+
+    /// 正常回答不触发：只发一次，记录里 rescued 是 0。
+    #[tokio::test]
+    async fn a_normal_answer_passes_through_without_resend() {
+        let answer = r#"{"content":[{"type":"text","text":"Done: the fix is in src/lib.rs."}]}"#;
+        let (port, hits) = spawn_json_kernel(answer, answer, "M").await;
+        let cfg = RescueConfig {
+            enabled: true,
+            armor_prompt: "M".into(),
+            markers: Vec::new(),
+            max_retries: 3,
+        };
+        let (got, recs) = run_rescue(port, cfg, br#"{"model":"m","messages":[{"role":"user","content":"fix it"}]}"#).await;
+        assert!(got.contains("Done: the fix"), "{got}");
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        assert_eq!(recs[0].rescued, 0);
+    }
+
+    /// 流式（SSE）响应也要判得出拒绝：CLI 实际发的是 stream:true。
+    #[tokio::test]
+    async fn a_refusal_in_an_sse_stream_is_also_rescued() {
+        let refusal = "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"抱歉，我无法提供该信息，这违反安全策略。\"}}\n\n";
+        let answer = "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"好的，以下是你要的内容。\"}}\n\n";
+        let (port, hits) = spawn_json_kernel(refusal, answer, "ARMOR-MARKER").await;
+        let cfg = RescueConfig {
+            enabled: true,
+            armor_prompt: "ARMOR-MARKER".into(),
+            markers: Vec::new(),
+            max_retries: 3,
+        };
+        let (got, recs) = run_rescue(
+            port,
+            cfg,
+            br#"{"model":"m","stream":true,"messages":[{"role":"user","content":"task"}]}"#,
+        )
+        .await;
+        assert!(got.contains("好的，以下是"), "{got}");
+        assert!(!got.contains("无法提供"), "{got}");
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+        assert_eq!(recs[0].rescued, 1);
+    }
+}
+
+#[cfg(test)]
+mod ws_tunnel {
+    use super::*;
+
+    /// WebSocket 升级要透传：101 握手原样转，之后裸字节双向通；记录里是 101。
+    #[tokio::test]
+    async fn a_websocket_upgrade_is_tunneled() {
+        // 假上游：回 101，握手后回显第一帧再断开。
+        let up = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let up_port = up.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut s, _) = up.accept().await.unwrap();
+            let mut buf = vec![0u8; 8192];
+            let n = s.read(&mut buf).await.unwrap();
+            let req = String::from_utf8_lossy(&buf[..n]).to_string();
+            assert!(req.to_lowercase().contains("upgrade: websocket"), "{req}");
+            s.write_all(
+                b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
+                  Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\
+                  Sec-WebSocket-Extensions: permessage-deflate\r\n\r\n",
+            )
+            .await
+            .unwrap();
+            s.flush().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let mut f = [0u8; 64];
+            let m = s.read(&mut f).await.unwrap();
+            let echo = format!("echo:{}", String::from_utf8_lossy(&f[..m]));
+            s.write_all(echo.as_bytes()).await.unwrap();
+            s.flush().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        });
+
+        let target = Arc::new(RwLock::new(format!("http://127.0.0.1:{up_port}")));
+        let records = Arc::new(RwLock::new(Vec::new()));
+        let front = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let front_port = front.local_addr().unwrap().port();
+        let (t, r) = (Arc::clone(&target), Arc::clone(&records));
+        tokio::spawn(async move {
+            let (stream, _) = front.accept().await.unwrap();
+            let _ = handle_conn(
+                stream,
+                t,
+                Arc::new(RwLock::new(ProxyRules::default())),
+                r,
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                Arc::new(RwLock::new(RescueConfig::default())),
+                test_proxy_http(),
+            )
+            .await;
+        });
+
+        let mut c = TcpStream::connect(("127.0.0.1", front_port)).await.unwrap();
+        c.write_all(
+            b"GET /v1/responses HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n\
+             Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+             Sec-WebSocket-Version: 13\r\n\r\n",
+        )
+        .await
+        .unwrap();
+
+        // 读到 101。
+        let mut got = Vec::new();
+        let mut tmp = [0u8; 8192];
+        loop {
+            let n = c.read(&mut tmp).await.unwrap();
+            if n == 0 {
+                break;
+            }
+            got.extend_from_slice(&tmp[..n]);
+            if String::from_utf8_lossy(&got).contains("101 Switching") {
+                break;
+            }
+        }
+        let head = String::from_utf8_lossy(&got).to_string();
+        assert!(head.starts_with("HTTP/1.1 101"), "{head:?}");
+        // 握手响应要原样到客户端：Accept 是客户端库必校验的，Extensions 是协商结果。
+        // 以前写死一行 101，这两个头都被吞掉。
+        assert!(head.contains("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo="), "{head:?}");
+        assert!(head.contains("Sec-WebSocket-Extensions: permessage-deflate"), "{head:?}");
+        assert_eq!(head.matches("HTTP/1.1").count(), 1, "只能有上游那一条状态行：{head:?}");
+
+        // 升级之后裸字节直通。
+        c.write_all(b"hello-ws").await.unwrap();
+        c.flush().await.unwrap();
+        let mut ws = String::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !ws.contains("echo:hello-ws") && std::time::Instant::now() < deadline {
+            let n = c.read(&mut tmp).await.unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            ws.push_str(&String::from_utf8_lossy(&tmp[..n]));
+        }
+        assert!(ws.contains("echo:hello-ws"), "{ws:?}");
+        // 主动关掉客户端侧，让透传收尾、记录落地。
+        let _ = c.shutdown().await;
+
+        let recs = records.read().await;
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].status, 101);
+        assert_eq!(recs[0].path, "/v1/responses");
+    }
+
+    /// 升级请求的固定写法，给下面几条测试共用。
+    const UPGRADE_REQ: &[u8] = b"GET /v1/responses HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n\
+        Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+        Sec-WebSocket-Version: 13\r\n\r\n";
+
+    /// 起一个前端监听，把第一条连接交给 handle_conn；返回端口和记录表。
+    async fn spawn_front(up_port: u16) -> (u16, Arc<RwLock<Vec<ProxyRecord>>>) {
+        let target = Arc::new(RwLock::new(format!("http://127.0.0.1:{up_port}")));
+        let records = Arc::new(RwLock::new(Vec::new()));
+        let front = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let front_port = front.local_addr().unwrap().port();
+        let (t, r) = (Arc::clone(&target), Arc::clone(&records));
+        tokio::spawn(async move {
+            let (stream, _) = front.accept().await.unwrap();
+            let _ = handle_conn(
+                stream,
+                t,
+                Arc::new(RwLock::new(ProxyRules::default())),
+                r,
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                Arc::new(RwLock::new(RescueConfig::default())),
+                test_proxy_http(),
+            )
+            .await;
+        });
+        (front_port, records)
+    }
+
+    /// 发一个升级请求，把整条响应读到连接关闭；超过 5s 还没关就是代理挂住了。
+    async fn upgrade_and_read_to_eof(front_port: u16, why: &str) -> String {
+        let mut c = TcpStream::connect(("127.0.0.1", front_port)).await.unwrap();
+        c.write_all(UPGRADE_REQ).await.unwrap();
+        let mut got = Vec::new();
+        tokio::time::timeout(std::time::Duration::from_secs(5), c.read_to_end(&mut got))
+            .await
+            .expect(why)
+            .unwrap();
+        String::from_utf8_lossy(&got).into_owned()
+    }
+
+    /// chunked 的非 101 响应：按终止块认结尾，然后**主动收尾**。上游（Go 的
+    /// net/http 默认 keep-alive）在 chunked 响应之后不关连接，「读到关闭为止」会让
+    /// 这条任务和两条连接一直挂到上游空闲超时。
+    #[tokio::test]
+    async fn a_chunked_non_101_response_ends_at_the_last_chunk() {
+        let up = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let up_port = up.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut s, _) = up.accept().await.unwrap();
+            let mut tmp = [0u8; 8192];
+            let _ = s.read(&mut tmp).await.unwrap();
+            // 三次写，边界故意落在块数据中间和终止块中间。
+            s.write_all(
+                b"HTTP/1.1 429 Too Many Requests\r\ncontent-type: application/json\r\n\
+                  transfer-encoding: chunked\r\n\r\n5\r\n{\"e\"",
+            )
+            .await
+            .unwrap();
+            s.flush().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+            s.write_all(b":\r\n4\r\n\"x\"}\r\n0\r\n").await.unwrap();
+            s.flush().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+            s.write_all(b"\r\n").await.unwrap();
+            s.flush().await.unwrap();
+            // keep-alive：故意不关，代理必须自己认出响应已经结束。
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        });
+
+        let (front_port, records) = spawn_front(up_port).await;
+        let got = upgrade_and_read_to_eof(front_port, "终止块到了就该收尾，不能等上游关连接").await;
+        let (head, body) = got.split_once("\r\n\r\n").expect("a full header block");
+        assert!(head.starts_with("HTTP/1.1 429"), "{head}");
+        assert!(head.contains("transfer-encoding: chunked"), "分帧头要原样保留：{head}");
+        assert!(head.ends_with("Connection: close"), "{head}");
+        assert_eq!(body, "5\r\n{\"e\":\r\n4\r\n\"x\"}\r\n0\r\n\r\n", "chunked 字节要原样透传到终止块");
+        assert_eq!(records.read().await[0].status, 429);
+    }
+
+    /// 两种分帧头都没有的非 101 响应是 close-delimited：流式转发到上游关闭，并把
+    /// Connection 明示成 close（上游写的 keep-alive 在这条专开连接上是假话）。
+    #[tokio::test]
+    async fn a_close_delimited_non_101_response_streams_until_upstream_closes() {
+        let up = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let up_port = up.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut s, _) = up.accept().await.unwrap();
+            let mut tmp = [0u8; 8192];
+            let _ = s.read(&mut tmp).await.unwrap();
+            s.write_all(
+                b"HTTP/1.1 502 Bad Gateway\r\ncontent-type: text/plain\r\n\
+                  Connection: keep-alive\r\n\r\nupstream ",
+            )
+            .await
+            .unwrap();
+            s.flush().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+            s.write_all(b"exploded").await.unwrap();
+            s.flush().await.unwrap();
+            // 关闭即结束 —— 这就是 close-delimited 的全部语义。
+        });
+
+        let (front_port, records) = spawn_front(up_port).await;
+        let got = upgrade_and_read_to_eof(front_port, "上游关了代理就该关").await;
+        let (head, body) = got.split_once("\r\n\r\n").expect("a full header block");
+        assert!(head.starts_with("HTTP/1.1 502"), "{head}");
+        assert!(!head.to_ascii_lowercase().contains("keep-alive"), "{head}");
+        assert!(head.ends_with("Connection: close"), "{head}");
+        assert_eq!(body, "upstream exploded");
+        assert_eq!(records.read().await[0].status, 502);
+    }
+
+    /// 扫描器只认边界不看内容：整段喂和逐字节喂必须停在同一个位置，块扩展和
+    /// trailer 都要认，终止序列之后的字节不属于这条消息。
+    #[test]
+    fn chunked_scanner_finds_the_end_regardless_of_read_boundaries() {
+        let msg = b"4;ext=1\r\nWiki\r\n5\r\npedia\r\n0\r\nX-Trailer: a\r\n\r\n";
+        let stream = [&msg[..], b"NEXT"].concat();
+
+        let mut whole = ChunkedScanner::default();
+        assert_eq!(whole.feed(&stream), msg.len());
+        assert!(whole.is_done());
+
+        let mut bytewise = ChunkedScanner::default();
+        let mut consumed = 0;
+        for b in &stream {
+            consumed += bytewise.feed(std::slice::from_ref(b));
+            if bytewise.is_done() {
+                break;
+            }
+        }
+        assert_eq!(consumed, msg.len());
+    }
+
+    #[test]
+    fn chunked_scanner_gives_up_on_garbage() {
+        let mut s = ChunkedScanner::default();
+        s.feed(b"zz\r\n");
+        assert!(s.is_broken(), "块长度不是十六进制");
+        let mut s = ChunkedScanner::default();
+        s.feed(b"4\r\nWikiXX\r\n");
+        assert!(s.is_broken(), "块数据后面不是 CRLF");
+    }
+
+    /// 分帧判定按 RFC 7230 §3.3.3：无 body 的状态码优先，Transfer-Encoding 压过
+    /// Content-Length，字段名必须顶格，两者都没有就是读到关闭。
+    #[test]
+    fn response_framing_follows_rfc_7230() {
+        let f = |status, tail: &str| response_framing(status, &format!("http/1.1 {status} x\r\n{tail}\r\n"));
+        assert_eq!(f(204, "content-length: 5\r\n"), BodyFraming::Empty);
+        assert_eq!(f(304, ""), BodyFraming::Empty);
+        assert_eq!(f(401, "transfer-encoding: chunked\r\ncontent-length: 20\r\n"), BodyFraming::Chunked);
+        assert_eq!(f(401, "transfer-encoding: gzip, chunked\r\n"), BodyFraming::Chunked);
+        assert_eq!(f(401, "transfer-encoding: gzip\r\n"), BodyFraming::UntilClose);
+        assert_eq!(f(401, "content-length: 20\r\n"), BodyFraming::Length(20));
+        assert_eq!(f(401, "content-length: abc\r\n"), BodyFraming::UntilClose);
+        assert_eq!(f(401, "x-content-length: 20\r\n"), BodyFraming::UntilClose);
+        assert_eq!(f(502, ""), BodyFraming::UntilClose);
+    }
+
+    /// Host 重写只能动 Host 这一行：值里带 "host:" 的头（Origin 的 localhost）不能
+    /// 被改，原 Host 要拿掉，新 Host 指向上游，其余头原样。
+    #[tokio::test]
+    async fn host_rewrite_only_touches_the_host_header() {
+        let up = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let up_port = up.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut s, _) = up.accept().await.unwrap();
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 8192];
+            let head_end = loop {
+                let n = s.read(&mut tmp).await.unwrap();
+                buf.extend_from_slice(&tmp[..n]);
+                if let Some(p) = find_header_end(&buf) {
+                    break p;
+                }
+            };
+            // 把收到的请求头当 body 回给客户端（close-delimited），测试在客户端侧检查。
+            s.write_all(b"HTTP/1.1 426 Upgrade Required\r\n\r\n").await.unwrap();
+            s.write_all(&buf[..head_end]).await.unwrap();
+            s.flush().await.unwrap();
+        });
+
+        let (front_port, _records) = spawn_front(up_port).await;
+        let mut c = TcpStream::connect(("127.0.0.1", front_port)).await.unwrap();
+        // Origin 故意放在 Host 前面，值里有 "localhost:"。
+        c.write_all(
+            b"GET /v1/responses HTTP/1.1\r\nOrigin: http://localhost:15777\r\n\
+              Host: localhost:15777\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
+              Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+        )
+        .await
+        .unwrap();
+        let mut got = Vec::new();
+        tokio::time::timeout(std::time::Duration::from_secs(5), c.read_to_end(&mut got))
+            .await
+            .expect("upstream closed, so the proxy must close too")
+            .unwrap();
+        let got = String::from_utf8_lossy(&got);
+        let (_, seen_by_upstream) = got.split_once("\r\n\r\n").expect("a header block");
+        assert!(seen_by_upstream.starts_with("GET /v1/responses HTTP/1.1\r\n"), "{seen_by_upstream:?}");
+        assert!(
+            seen_by_upstream.contains("\r\nOrigin: http://localhost:15777\r\n"),
+            "Origin 被改了：{seen_by_upstream:?}"
+        );
+        let hosts: Vec<&str> = seen_by_upstream
+            .split("\r\n")
+            .filter(|l| l.to_ascii_lowercase().starts_with("host:"))
+            .collect();
+        assert_eq!(hosts, vec![format!("Host: 127.0.0.1:{up_port}").as_str()], "{seen_by_upstream:?}");
+        assert!(seen_by_upstream.contains("Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"));
+    }
+
+    /// 抢跑帧不能丢：CLI 把升级请求头和第一帧放在同一个包里发来，上游必须原样
+    /// 收到那一帧。以前只把 `buf[..header_end]` 交给隧道，`header_end` 之后的字节
+    /// 被丢，上游永远看不到首帧。
+    #[tokio::test]
+    async fn a_pipelined_first_frame_is_not_dropped() {
+        // 假上游：回 101，然后把它**收到的**全部字节里 header 之后那截回显出来。
+        let up = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let up_port = up.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut s, _) = up.accept().await.unwrap();
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 8192];
+            // 读到请求头结束。
+            let head_end = loop {
+                let n = s.read(&mut tmp).await.unwrap();
+                if n == 0 {
+                    return;
+                }
+                buf.extend_from_slice(&tmp[..n]);
+                if let Some(p) = find_header_end(&buf) {
+                    break p;
+                }
+            };
+            // 抢跑帧可能和头一起到，也可能紧跟着到；补读一次凑齐。
+            if buf.len() == head_end {
+                let n = s.read(&mut tmp).await.unwrap();
+                buf.extend_from_slice(&tmp[..n]);
+            }
+            let pipelined = String::from_utf8_lossy(&buf[head_end..]).to_string();
+            s.write_all(b"HTTP/1.1 101 Switching Protocols\r\n\r\n").await.unwrap();
+            s.write_all(format!("saw:{pipelined}").as_bytes()).await.unwrap();
+            s.flush().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        });
+
+        let target = Arc::new(RwLock::new(format!("http://127.0.0.1:{up_port}")));
+        let records = Arc::new(RwLock::new(Vec::new()));
+        let front = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let front_port = front.local_addr().unwrap().port();
+        let (t, r) = (Arc::clone(&target), Arc::clone(&records));
+        tokio::spawn(async move {
+            let (stream, _) = front.accept().await.unwrap();
+            let _ = handle_conn(
+                stream,
+                t,
+                Arc::new(RwLock::new(ProxyRules::default())),
+                r,
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                Arc::new(RwLock::new(RescueConfig::default())),
+                test_proxy_http(),
+            )
+            .await;
+        });
+
+        // 请求头和首帧塞进同一次 write —— 复现管线化到达。
+        let mut c = TcpStream::connect(("127.0.0.1", front_port)).await.unwrap();
+        c.write_all(
+            b"GET /v1/responses HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n\
+             Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+             Sec-WebSocket-Version: 13\r\n\r\nFRAME1",
+        )
+        .await
+        .unwrap();
+        c.flush().await.unwrap();
+
+        let mut got = String::new();
+        let mut tmp = [0u8; 8192];
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !got.contains("saw:FRAME1") && std::time::Instant::now() < deadline {
+            let n = c.read(&mut tmp).await.unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            got.push_str(&String::from_utf8_lossy(&tmp[..n]));
+        }
+        assert!(got.contains("HTTP/1.1 101"), "{got:?}");
+        assert!(got.contains("saw:FRAME1"), "上游没收到抢跑的首帧：{got:?}");
+    }
+
+    /// 上游在 101 之前抢跑发来的字节不能丢：读握手响应时和头一起读进缓冲的那截
+    /// 帧数据，要在双向透传起步前先补给客户端。
+    #[tokio::test]
+    async fn upstream_bytes_buffered_with_the_101_reach_the_client() {
+        // 假上游：把 101 和第一帧塞进同一次 write，逼代理把帧和头一起读进缓冲。
+        let up = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let up_port = up.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut s, _) = up.accept().await.unwrap();
+            let mut tmp = [0u8; 8192];
+            let _ = s.read(&mut tmp).await.unwrap();
+            s.write_all(
+                b"HTTP/1.1 101 Switching Protocols\r\n\r\nHELLO-EARLY",
+            )
+            .await
+            .unwrap();
+            s.flush().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        });
+
+        let target = Arc::new(RwLock::new(format!("http://127.0.0.1:{up_port}")));
+        let records = Arc::new(RwLock::new(Vec::new()));
+        let front = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let front_port = front.local_addr().unwrap().port();
+        let (t, r) = (Arc::clone(&target), Arc::clone(&records));
+        tokio::spawn(async move {
+            let (stream, _) = front.accept().await.unwrap();
+            let _ = handle_conn(
+                stream,
+                t,
+                Arc::new(RwLock::new(ProxyRules::default())),
+                r,
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                Arc::new(RwLock::new(RescueConfig::default())),
+                test_proxy_http(),
+            )
+            .await;
+        });
+
+        let mut c = TcpStream::connect(("127.0.0.1", front_port)).await.unwrap();
+        c.write_all(
+            b"GET /v1/responses HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n\
+             Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+             Sec-WebSocket-Version: 13\r\n\r\n",
+        )
+        .await
+        .unwrap();
+
+        let mut got = String::new();
+        let mut tmp = [0u8; 8192];
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !got.contains("HELLO-EARLY") && std::time::Instant::now() < deadline {
+            let n = c.read(&mut tmp).await.unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            got.push_str(&String::from_utf8_lossy(&tmp[..n]));
+        }
+        assert!(got.contains("HTTP/1.1 101"), "{got:?}");
+        assert!(got.contains("HELLO-EARLY"), "101 前抢跑的上游字节丢了：{got:?}");
+    }
+
+    /// 非 101 的错误响应带 Content-Length 且 body 分多次到达时，代理要把 body
+    /// 读全再收尾 —— 只发首轮那截会让客户端按声明长度一直等，界面卡死。
+    #[tokio::test]
+    async fn a_non_101_response_body_is_forwarded_in_full() {
+        let up = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let up_port = up.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut s, _) = up.accept().await.unwrap();
+            let mut tmp = [0u8; 8192];
+            let _ = s.read(&mut tmp).await.unwrap();
+            // 头 + 前半段 body 先发，后半段隔一会再发 —— 逼代理不能只转首轮。
+            // body 声明 20 字节，先发 10 再隔一会发 10 —— 逼代理不能只转首轮。
+            s.write_all(
+                b"HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\ncontent-length: 20\r\n\r\n{\"error\":\"",
+            )
+            .await
+            .unwrap();
+            s.flush().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+            s.write_all(b"denied\"}!!").await.unwrap(); // 10 + 10 = 20
+            s.flush().await.unwrap();
+        });
+
+        let target = Arc::new(RwLock::new(format!("http://127.0.0.1:{up_port}")));
+        let records = Arc::new(RwLock::new(Vec::new()));
+        let front = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let front_port = front.local_addr().unwrap().port();
+        let (t, r) = (Arc::clone(&target), Arc::clone(&records));
+        tokio::spawn(async move {
+            let (stream, _) = front.accept().await.unwrap();
+            let _ = handle_conn(
+                stream,
+                t,
+                Arc::new(RwLock::new(ProxyRules::default())),
+                r,
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                Arc::new(RwLock::new(RescueConfig::default())),
+                test_proxy_http(),
+            )
+            .await;
+        });
+
+        let mut c = TcpStream::connect(("127.0.0.1", front_port)).await.unwrap();
+        c.write_all(
+            b"GET /v1/responses HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n\
+             Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+             Sec-WebSocket-Version: 13\r\n\r\n",
+        )
+        .await
+        .unwrap();
+
+        // 读到 EOF：body 20 字节全到了连接才关。
+        let mut got = Vec::new();
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            c.read_to_end(&mut got),
+        )
+        .await
+        .expect("客户端应当在 body 收全后看到连接关闭，而不是一直等");
+        let got = String::from_utf8_lossy(&got);
+        assert!(got.contains("401 Unauthorized"), "{got}");
+        let body = got.split("\r\n\r\n").nth(1).unwrap_or("");
+        assert_eq!(body.len(), 20, "body 没转全：{body:?}");
+        assert_eq!(body, "{\"error\":\"denied\"}!!", "{body:?}");
+
+        let recs = records.read().await;
+        assert_eq!(recs[0].status, 401);
     }
 }

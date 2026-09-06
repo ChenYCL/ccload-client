@@ -26,6 +26,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 tokio = { version = "1", features = ["process", "time", "io-util", "sync", "rt-multi-thread", "macros"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "socks"] }
+# WS 透传要自己开一条裸 TLS 连接（reqwest 不交出已建立的 socket），根证书集
+# 与 reqwest 的默认一致。
+rustls = "0.23"
+tokio-rustls = "0.26"
+webpki-roots = "1"
 futures-util = "0.3"
 thiserror = "2"
 toml_edit = "0.22"
