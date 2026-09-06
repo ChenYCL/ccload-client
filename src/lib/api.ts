@@ -49,6 +49,7 @@ import type {
   NodeServiceStatus,
   CliUsageReport,
   ProxyRecord,
+  RescueConfig,
   RefreshMode,
   UsageProbeReport,
   RefreshResult,
@@ -95,6 +96,12 @@ export const api = {
 
   /** 今日按 CLI / 会话的消耗聚合（代理记录 × 内核日志配对）。 */
   cliProxyUsage: () => invoke<CliUsageReport>("cli_proxy_usage"),
+
+  /** 自动破甲（拒绝接管）的开关与参数。保存即生效，不用重启代理。 */
+  rescueGet: () => invoke<RescueConfig>("rescue_get"),
+  rescueSet: (cfg: RescueConfig) => invoke<RescueConfig>("rescue_set", { cfg }),
+  rescueDefaultPrompt: () => invoke<string>("rescue_default_prompt"),
+
   /** Open (or focus) the standalone admin window on a web page. */
   openAdminWindow: (page?: string) =>
     invoke<void>("open_admin_window", { page: page ?? null }),

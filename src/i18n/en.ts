@@ -1155,4 +1155,24 @@ registerDict("en", {
   "钉住的渠道已不在内核里：开着退让时每次请求都先白挨一个 503 再退回默认顺序，关着退让时请求会一直失败。换一个首选渠道或取消钉住。":
     "The pinned channel no longer exists in the kernel: with fallback on every request first eats a 503 before falling back to the default order, with fallback off requests keep failing. Pick another preferred channel or unpin.",
   "钉住按别名生效：所有发「{alias}」的 CLI 都一样。": "Pinning is per alias: every CLI that sends \u201c{alias}\u201d gets the same treatment.",
+
+  // 自动插件
+  "自动插件": "Automation",
+  "壳体不依赖内核就能完成的自动化能力，逐个开关。":
+    "Automations the shell can do without the kernel, each with its own switch.",
+  "自动破甲": "Auto armor-break",
+  "检测到开场拒绝就丢弃原回答，追加破甲提示词重发。":
+    "Detects an opening refusal, drops the original answer and re-sends with an armor-break prompt appended.",
+  "开启自动破甲": "Enable auto armor-break",
+  "聊天响应会被整体缓冲下来判断是不是拒绝，不再流式 —— 首字延迟变大，长回答尤其明显。命中就丢弃原回答，按下面这条提示词续写一轮重发。":
+    "Chat responses are buffered in full to check for a refusal — no more streaming; first-token latency grows, most visibly on long answers. On a hit the original answer is dropped and one more turn is re-sent with the prompt below.",
+  "关着时一切原样直通，代理不读响应内容。":
+    "When off, everything passes through untouched; the proxy never reads response bodies.",
+  "单次请求最多重发": "Max re-sends per request",
+  "自定义拒绝标记（一行一个，命中即一票判为拒绝）":
+    "Custom refusal markers (one per line; any hit is decisive)",
+  "每行一条，例如：我无法协助": "One per line, e.g. I cannot help with",
+  "破甲提示词（留空用内置默认）": "Armor-break prompt (empty = built-in default)",
+  "把内置默认提示词填进来": "Fill in the built-in default prompt",
+  "恢复默认": "Restore default",
 });

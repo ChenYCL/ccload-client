@@ -23,6 +23,7 @@ import {
   GitBranch,
   PackagePlus,
   Workflow,
+  Zap,
 } from "lucide-react";
 import { useClientVersion, useUpdateCheck } from "../hooks/useUpdate";
 import { api } from "../lib/api";
@@ -60,6 +61,7 @@ const GROUPS: { title: string; items: { id: Page; label: string; icon: typeof Ac
       { id: "models", label: "模型导入", icon: PackagePlus },
       { id: "inject", label: "系统注入", icon: FileCode },
       { id: "unlock", label: "破禁", icon: Unlock },
+      { id: "automation", label: "自动插件", icon: Zap },
       { id: "extensions", label: "扩展管理", icon: Blocks },
       { id: "node-services", label: "Node 服务", icon: Server },
     ],
