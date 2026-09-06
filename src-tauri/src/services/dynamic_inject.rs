@@ -60,9 +60,9 @@ impl Default for InjectRule {
 }
 
 impl InjectConfig {
-    /// 落盘前的归一化：去空白、丢掉空文本的规则（没有内容的注入没有意义）。
+    /// 落盘前的归一化：去空白。空文本规则**保留** —— 那是用户写到一半的草稿，
+    /// 静默丢掉等于吞输入；`apply` 会跳过它们，文本攒完自然生效。
     pub fn normalized(mut self) -> Self {
-        self.rules.retain(|r| !r.text.trim().is_empty());
         for r in &mut self.rules {
             r.name = r.name.trim().to_string();
             r.cli = r.cli.trim().to_string();
@@ -109,7 +109,8 @@ pub fn apply(
     let rules: Vec<&InjectRule> = cfg
         .rules
         .iter()
-        .filter(|r| r.enabled && rule_matches(r, model, cli))
+        // 空文本的草稿规则在这里跳过（normalized 不再替它把关）。
+        .filter(|r| r.enabled && !r.text.trim().is_empty() && rule_matches(r, model, cli))
         .collect();
     if rules.is_empty() {
         return None;
@@ -126,7 +127,8 @@ pub fn apply(
 }
 
 fn rule_matches(rule: &InjectRule, model: Option<&str>, cli: &str) -> bool {
-    if !rule.cli.is_empty() && rule.cli != cli {
+    // 不分大小写：detect_cli 产出的是小写，配置文件可能是手写的。
+    if !rule.cli.is_empty() && !rule.cli.eq_ignore_ascii_case(cli) {
         return false;
     }
     if !rule.model.is_empty() {
@@ -369,19 +371,30 @@ mod tests {
         assert!(apply(&c, b"[1,2]", Some("m"), "claude-code", "/v1/messages").is_none());
     }
 
-    /// 归一化：空文本规则被丢掉、字段去空白；保存后的 reload 结果一致。
+    /// 归一化：字段去空白；空文本的草稿规则**保留**（静默丢掉等于吞输入），
+    /// 由 apply 跳过。
     #[test]
-    fn normalized_drops_empty_rules_and_trims() {
+    fn normalized_keeps_empty_drafts_and_trims() {
         let mut r = rule(" claude-code ", "", "  注入  ");
         r.name = " 名字 ".into();
+        let draft = InjectRule::default();
         let c = InjectConfig {
             enabled: true,
-            rules: vec![r, InjectRule::default()],
+            rules: vec![r, draft],
         }
         .normalized();
-        assert_eq!(c.rules.len(), 1);
+        assert_eq!(c.rules.len(), 2);
         assert_eq!(c.rules[0].cli, "claude-code");
         assert_eq!(c.rules[0].text, "注入");
         assert_eq!(c.rules[0].name, "名字");
+        // 草稿留着，但注入时被跳过 —— 单独放一条草稿规则，别让正常规则混进来。
+        let only_draft = InjectConfig {
+            enabled: true,
+            rules: vec![InjectRule::default()],
+        }
+        .normalized();
+        assert!(
+            apply(&only_draft, br#"{"messages":[]}"#, Some("m"), "claude-code", "/v1/messages").is_none()
+        );
     }
 }

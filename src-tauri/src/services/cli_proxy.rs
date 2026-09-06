@@ -2599,8 +2599,9 @@ mod rescue_tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// 假内核：第一发回 `first`，之后只有请求体里带 `marker` 才回 `second`
-    /// （验证重发真的把破甲提示词带进了请求），否则继续回 `first`。
+    /// 假内核：请求体里带 `marker` 就回 `second`，否则回 `first`。
+    /// （ rescue 流程的第一发不带 marker，注入流程的第一发带 —— 分支只看
+    /// marker，不看请求序号，两类测试共用。）
     async fn spawn_json_kernel(first: &str, second: &str, marker: &str) -> (u16, Arc<AtomicUsize>) {
         let up = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let port = up.local_addr().unwrap().port();
@@ -2644,10 +2645,8 @@ mod rescue_tests {
                         buf.extend_from_slice(&tmp[..n]);
                     }
                     let body = String::from_utf8_lossy(&buf[body_start..]).to_string();
-                    let n = h.fetch_add(1, Ordering::SeqCst);
-                    let out = if n == 0 {
-                        first.clone()
-                    } else if body.contains(&marker) {
+                    let _ = h.fetch_add(1, Ordering::SeqCst);
+                    let out = if body.contains(&marker) {
                         second.clone()
                     } else {
                         first.clone()
@@ -2747,8 +2746,7 @@ mod rescue_tests {
 
     /// 正常回答不触发：只发一次，记录里 rescued 是 0。
     #[tokio::test]
-    async fn a_normal_answer_passes_through_without_resend() {
-        let answer = r#"{"content":[{"type":"text","text":"Done: the fix is in src/lib.rs."}]}"#;
+    async fn a_normal_answer_passes_through_without_resend() {        let answer = r#"{"content":[{"type":"text","text":"Done: the fix is in src/lib.rs."}]}"#;
         let (port, hits) = spawn_json_kernel(answer, answer, "M").await;
         let cfg = RescueConfig {
             enabled: true,
@@ -2784,6 +2782,58 @@ mod rescue_tests {
         assert!(!got.contains("无法提供"), "{got}");
         assert_eq!(hits.load(Ordering::SeqCst), 2);
         assert_eq!(recs[0].rescued, 1);
+    }
+
+    /// 动态注入真的进了发往内核的请求体：假内核只在 body 带 marker 时回
+    /// second，而 marker 只能来自注入 —— CLI 的原始 body 里没有它。
+    #[tokio::test]
+    async fn injected_text_rides_the_forwarded_request() {
+        let first = r#"{"content":[{"type":"text","text":"first"}]}"#;
+        let second = r#"{"content":[{"type":"text","text":"second"}]}"#;
+        let (port, hits) = spawn_json_kernel(first, second, "INJECT-MARKER").await;
+        let records = Arc::new(RwLock::new(Vec::new()));
+        let state = Arc::new(ProxyState {
+            target: Arc::new(RwLock::new(format!("http://127.0.0.1:{port}"))),
+            rules: Arc::new(RwLock::new(ProxyRules::default())),
+            records: Arc::clone(&records),
+            long_cache: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            rescue: Arc::new(RwLock::new(RescueConfig::default())),
+            inject: Arc::new(RwLock::new(InjectConfig {
+                enabled: true,
+                rules: vec![crate::services::dynamic_inject::InjectRule {
+                    enabled: true,
+                    cli: "claude-code".into(),
+                    text: "INJECT-MARKER".into(),
+                    ..Default::default()
+                }],
+            })),
+            http: test_proxy_http(),
+        });
+        let front = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let front_port = front.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (stream, _) = front.accept().await.unwrap();
+            let _ = handle_conn(stream, state).await;
+        });
+        // 带 UA：cli 匹配也一起被验证（rule.cli = claude-code）。
+        let body = br#"{"model":"m","messages":[{"role":"user","content":"task"}]}"#;
+        let mut c = TcpStream::connect(("127.0.0.1", front_port)).await.unwrap();
+        c.write_all(
+            format!(
+                "POST /v1/messages HTTP/1.1\r\nHost: x\r\nUser-Agent: claude-cli/1.0\r\ncontent-length: {}\r\n\r\n",
+                body.len()
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+        c.write_all(body).await.unwrap();
+        let mut got = Vec::new();
+        let _ =
+            tokio::time::timeout(std::time::Duration::from_secs(5), c.read_to_end(&mut got)).await;
+        let got = String::from_utf8_lossy(&got).to_string();
+        assert!(got.contains("second"), "注入的 marker 必须进了内核请求体：{got}");
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
     }
 }
 
