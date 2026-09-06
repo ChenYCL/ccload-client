@@ -1175,4 +1175,33 @@ registerDict("en", {
   "破甲提示词（留空用内置默认）": "Armor-break prompt (empty = built-in default)",
   "把内置默认提示词填进来": "Fill in the built-in default prompt",
   "恢复默认": "Restore default",
+
+  // 自动插件 · 命中记录
+  "命中记录": "Hit log",
+  "原回答被判成拒绝丢弃、追加破甲提示词重发的请求。记录随代理日志环形滚动，只显示还留着的。":
+    "Requests whose original answer was judged a refusal, dropped and re-sent with the armor-break prompt appended. Records scroll through the proxy's ring buffer, so only the ones still retained show up here.",
+  "还没有命中记录。": "No hits yet.",
+  "{n} 次重发": "{n} re-sends",
+
+  // 自动插件 · 动态注入
+  "动态注入": "Dynamic injection",
+  "命中条件就把一段文本追加进请求的 system 层 —— 对已经开着的会话也生效。":
+    "When the conditions match, a piece of text is appended to the request's system layer — it also applies to sessions that are already open.",
+  "开启动态注入": "Enable dynamic injection",
+  "命中的聊天请求在转发前会把文本追加进 system 层末尾。内容和位置逐请求一致，prompt cache 前缀不会被打散。":
+    "Matching chat requests get text appended to the end of the system layer before being forwarded. Content and position are identical across requests, so the prompt cache prefix stays intact.",
+  "关着时请求原样直通。": "When off, requests pass through untouched.",
+  "规则名称": "Rule name",
+  "删这条规则": "Delete this rule",
+  "仅对以下 CLI 生效（留空 = 任意）": "Applies to this CLI only (empty = any)",
+  "任意 CLI": "Any CLI",
+  "匹配 CLI": "Match CLI",
+  "仅对以下模型生效（留空 = 任意）":
+    "Applies to this model alias only (empty = any)",
+  "例如 claude-opus-5": "e.g. claude-opus-5",
+  "匹配模型": "Match model",
+  "追加进 system 层的文本": "Text appended to the system layer",
+  "+ 加一条规则": "+ Add a rule",
+  "还没有规则。点「+ 加一条规则」写第一条。":
+    "No rules yet. Click \u201c+ Add a rule\u201d to write the first one.",
 });

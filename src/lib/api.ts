@@ -50,6 +50,7 @@ import type {
   CliUsageReport,
   ProxyRecord,
   RescueConfig,
+  InjectConfig,
   RefreshMode,
   UsageProbeReport,
   RefreshResult,
@@ -101,6 +102,11 @@ export const api = {
   rescueGet: () => invoke<RescueConfig>("rescue_get"),
   rescueSet: (cfg: RescueConfig) => invoke<RescueConfig>("rescue_set", { cfg }),
   rescueDefaultPrompt: () => invoke<string>("rescue_default_prompt"),
+
+  /** 动态注入：请求经代理时往 system 层追加文本。保存即生效。 */
+  dynamicInjectGet: () => invoke<InjectConfig>("dynamic_inject_get"),
+  dynamicInjectSet: (cfg: InjectConfig) =>
+    invoke<InjectConfig>("dynamic_inject_set", { cfg }),
 
   /** Open (or focus) the standalone admin window on a web page. */
   openAdminWindow: (page?: string) =>

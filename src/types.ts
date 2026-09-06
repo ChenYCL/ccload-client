@@ -376,6 +376,28 @@ export type RescueConfig = {
 };
 
 /* ---------------------------------------------------------------------------
+   动态注入：请求经过本地代理时往 system 层追加文本。字段对照
+   src-tauri/src/services/dynamic_inject.rs。
+--------------------------------------------------------------------------- */
+
+export type InjectRule = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  /** 匹配的 CLI；空 = 任意。 */
+  cli: string;
+  /** 匹配的模型别名；空 = 任意。忽略大小写和 [1m] / (max) 后缀。 */
+  model: string;
+  /** 追加进 system 层的文本。 */
+  text: string;
+};
+
+export type InjectConfig = {
+  enabled: boolean;
+  rules: InjectRule[];
+};
+
+/* ---------------------------------------------------------------------------
    强制路由：CLI 请求某个模型名，就把它钉到你选的渠道 + 上游模型。
 
    和「模型链」（FallbackChain）是两个概念：模型链讲优雅降级、要校验上游；
@@ -1072,6 +1094,8 @@ export type ProxyRecord = {
   status: number;
   /** 钉住的首选渠道没接住、退让到了下一个名字：被放弃的那个私有别名。 */
   fallback_from?: string | null;
+  /** 自动破甲命中并重发的轮数；0 = 正常直通。 */
+  rescued: number;
 };
 
 /// 一个会话 id 解析出来的可展示引用。

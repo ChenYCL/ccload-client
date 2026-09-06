@@ -1,11 +1,14 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { RotateCcw } from "lucide-react";
+import { RotateCcw, ShieldAlert, Trash2 } from "lucide-react";
 import { api } from "../lib/api";
 import { errText } from "../lib/err";
 import { useT } from "../i18n";
-import { Select, TextArea } from "../components/ui/Input";
-import type { RescueConfig } from "../types";
+import { displayModel } from "../lib/pins";
+import { ALL_TARGETS, TARGET_LABELS } from "../lib/targets";
+import { fmtClock } from "../components/formatters";
+import { Select, TextArea, TextInput } from "../components/ui/Input";
+import type { CliTarget, InjectConfig, InjectRule, RescueConfig } from "../types";
 
 /// 自动插件：壳体不依赖内核、由本地代理在转发路上自己完成的自动化能力。
 /// tab 往下加，每条一个开关；第一条是自动破甲（拒绝接管），机制见
@@ -16,6 +19,11 @@ const KIND_TABS = [
     id: "rescue",
     label: "自动破甲",
     hint: "检测到开场拒绝就丢弃原回答，追加破甲提示词重发。",
+  },
+  {
+    id: "inject",
+    label: "动态注入",
+    hint: "命中条件就把一段文本追加进请求的 system 层 —— 对已经开着的会话也生效。",
   },
 ] as const;
 
@@ -55,7 +63,15 @@ export function AutomationPage() {
         {t(KIND_TABS.find((x) => x.id === kind)?.hint ?? "")}
       </p>
 
-      <div className="mt-4">{kind === "rescue" && <RescuePanel />}</div>
+      <div className="mt-4">
+        {kind === "rescue" && (
+          <div className="space-y-4">
+            <RescuePanel />
+            <RescueHits />
+          </div>
+        )}
+        {kind === "inject" && <InjectPanel />}
+      </div>
     </div>
   );
 }
@@ -172,6 +188,240 @@ function RescuePanel() {
           onChange={(e) => setDraft({ ...draft, armor_prompt: e.target.value })}
         />
       </label>
+
+      <div className="flex items-center gap-3">
+        <button
+          onClick={() => save.mutate(draft)}
+          disabled={save.isPending}
+          className="rounded-lg bg-accent px-3.5 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-accent/90 disabled:opacity-40"
+        >
+          {save.isPending ? t("保存中…") : t("保存")}
+        </button>
+        {message && <p className="text-sm text-accent">{message}</p>}
+      </div>
+    </div>
+  );
+}
+
+/// 命中记录：代理记录里 rescued > 0 的那部分。代理侧是环形缓冲（全量滚动、
+/// 上限 MAX_RECORDS），命中条目会随流量被挤掉 —— 这里只显示「当前还留着」的。
+function RescueHits() {  const t = useT();
+  const hits = useQuery({
+    queryKey: ["rescue-hits"],
+    queryFn: api.cliProxyRecords,
+    select: (rs) => rs.filter((r) => r.rescued > 0),
+    refetchInterval: 8000,
+  });
+
+  return (
+    <div className="card max-w-3xl p-4">
+      <div className="flex items-center gap-2 text-sm font-medium">
+        <ShieldAlert className="h-4 w-4 text-accent" />
+        {t("命中记录")}
+      </div>
+      <p className="mt-1 text-xs leading-relaxed text-muted">
+        {t(
+          "原回答被判成拒绝丢弃、追加破甲提示词重发的请求。记录随代理日志环形滚动，只显示还留着的。",
+        )}
+      </p>
+      <ul className="mt-3 space-y-1.5">
+        {hits.data && hits.data.length === 0 && (
+          <li className="rounded-lg border border-dashed border-border px-3 py-3 text-center text-xs text-muted">
+            {t("还没有命中记录。")}
+          </li>
+        )}
+        {(hits.data ?? []).map((r, i) => (
+          <li
+            key={`${r.time}-${i}`}
+            className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-border px-2.5 py-1.5 text-xs"
+          >
+            <span className="font-mono text-muted">{fmtClock(r.time)}</span>
+            <span className="font-medium">{TARGET_LABELS[r.cli as CliTarget] ?? r.cli}</span>
+            <span className="font-mono">{displayModel(r.model ?? r.sent_model) ?? "—"}</span>
+            {r.sent_model && r.sent_model !== r.model && (
+              <span className="text-muted">→ {displayModel(r.sent_model)}</span>
+            )}
+            <span
+              className={
+                r.status >= 400
+                  ? "rounded bg-red-500/10 px-1.5 py-0.5 font-mono text-red-600"
+                  : "rounded bg-surface-2 px-1.5 py-0.5 font-mono text-muted"
+              }
+            >
+              {r.status}
+            </span>
+            <span className="ml-auto rounded bg-accent/10 px-1.5 py-0.5 text-accent">
+              {t("{n} 次重发", { n: r.rescued })}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/// 动态注入面板：规则列表整体编辑、保存时一把交给后端归一化。
+function InjectPanel() {
+  const t = useT();
+  const qc = useQueryClient();
+  const [draft, setDraft] = useState<InjectConfig | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+
+  const cfg = useQuery({
+    queryKey: ["dynamic-inject"],
+    queryFn: api.dynamicInjectGet,
+  });
+  useEffect(() => {
+    if (cfg.data) setDraft(cfg.data);
+  }, [cfg.data]);
+
+  const save = useMutation({
+    mutationFn: (c: InjectConfig) => api.dynamicInjectSet(c),
+    onSuccess: (saved) => {
+      qc.setQueryData(["dynamic-inject"], saved);
+      setDraft(saved);
+      setMessage(t("已保存"));
+    },
+    onError: (e) => setMessage(errText(e)),
+  });
+
+  if (!draft) {
+    return cfg.isLoading ? (
+      <p className="text-sm text-muted">{t("读取中…")}</p>
+    ) : (
+      <p className="text-sm text-muted">{errText(cfg.error)}</p>
+    );
+  }
+
+  const setRule = (i: number, patch: Partial<InjectRule>) => {
+    const rules = [...draft.rules];
+    rules[i] = { ...rules[i], ...patch };
+    setDraft({ ...draft, rules });
+  };
+
+  return (
+    <div className="max-w-3xl space-y-4">
+      <div className="card space-y-2 p-4">
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={draft.enabled}
+            onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })}
+          />
+          {t("开启动态注入")}
+        </label>
+        <p className="pl-6 text-xs leading-relaxed text-muted">
+          {draft.enabled
+            ? t(
+                "命中的聊天请求在转发前会把文本追加进 system 层末尾。内容和位置逐请求一致，prompt cache 前缀不会被打散。",
+              )
+            : t("关着时请求原样直通。")}
+        </p>
+      </div>
+
+      {draft.rules.length === 0 && (
+        <p className="rounded-lg border border-dashed border-border px-3 py-4 text-center text-xs text-muted">
+          {t("还没有规则。点「+ 加一条规则」写第一条。")}
+        </p>
+      )}
+
+      {draft.rules.map((rule, i) => (
+        <div key={rule.id || i} className="card space-y-3 p-4">
+          <div className="flex items-center gap-2">
+            <TextInput
+              className="flex-1"
+              value={rule.name}
+              onChange={(e) => setRule(i, { name: e.target.value })}
+              placeholder={t("规则名称")}
+              aria-label={t("规则名称")}
+            />
+            <label className="flex shrink-0 items-center gap-1.5 text-xs text-muted">
+              <input
+                type="checkbox"
+                checked={rule.enabled}
+                onChange={(e) => setRule(i, { enabled: e.target.checked })}
+              />
+              {t("启用")}
+            </label>
+            <button
+              type="button"
+              onClick={() =>
+                setDraft({ ...draft, rules: draft.rules.filter((_, j) => j !== i) })
+              }
+              aria-label={t("删这条规则")}
+              title={t("删这条规则")}
+              className="shrink-0 text-muted hover:text-red-600"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <label className="block text-xs">
+              <span className="mb-1 block text-muted">
+                {t("仅对以下 CLI 生效（留空 = 任意）")}
+              </span>
+              <Select
+                small
+                value={rule.cli}
+                onChange={(e) => setRule(i, { cli: e.target.value })}
+                aria-label={t("匹配 CLI")}
+              >
+                <option value="">{t("任意 CLI")}</option>
+                {ALL_TARGETS.map((id) => (
+                  <option key={id} value={id}>
+                    {TARGET_LABELS[id]}
+                  </option>
+                ))}
+              </Select>
+            </label>
+            <label className="block text-xs">
+              <span className="mb-1 block text-muted">
+                {t("仅对以下模型生效（留空 = 任意）")}
+              </span>
+              <TextInput
+                mono
+                value={rule.model}
+                onChange={(e) => setRule(i, { model: e.target.value })}
+                placeholder={t("例如 claude-opus-5")}
+                aria-label={t("匹配模型")}
+              />
+            </label>
+          </div>
+          <label className="block text-xs">
+            <span className="mb-1 block text-muted">
+              {t("追加进 system 层的文本")}
+            </span>
+            <TextArea
+              rows={5}
+              value={rule.text}
+              onChange={(e) => setRule(i, { text: e.target.value })}
+            />
+          </label>
+        </div>
+      ))}
+
+      <button
+        type="button"
+        onClick={() =>
+          setDraft({
+            ...draft,
+            rules: [
+              ...draft.rules,
+              {
+                id: crypto.randomUUID(),
+                name: "",
+                enabled: true,
+                cli: "",
+                model: "",
+                text: "",
+              },
+            ],
+          })
+        }
+        className="text-xs text-accent hover:underline"
+      >
+        {t("+ 加一条规则")}
+      </button>
 
       <div className="flex items-center gap-3">
         <button
