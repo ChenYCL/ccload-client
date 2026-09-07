@@ -1,6 +1,7 @@
 import { useT } from "../../i18n";
 import { X } from "lucide-react";
 import { cn } from "../../lib/cn";
+import type { LogOrigin } from "../../lib/logOrigin";
 import { displayModel } from "../../lib/pins";
 import type { LogEntry } from "../../types";
 import { Overlay } from "../Modal";
@@ -17,8 +18,25 @@ import {
 /// 错误体（配额、模型不存在、鉴权失败……），是排查里最有用的一段文本，而它在表格
 /// 里放不下。其余字段按「排查时会一起看」分组，不按数据库列顺序排。
 
-export function LogDetail({ log, onClose }: { log: LogEntry; onClose: () => void }) {
+export function LogDetail({
+  log,
+  origin,
+  onClose,
+}: {
+  log: LogEntry;
+  origin?: LogOrigin;
+  onClose: () => void;
+}) {
   const t = useT();
+  // 调用方：内核日志本身答不了这个问题，是代理记录配对出来的，见 logOrigin。
+  const originText =
+    origin?.kind === "local-cli"
+      ? `${t("本机")} · ${origin.who ?? t("未知 CLI")}`
+      : origin?.kind === "local-direct"
+        ? t("本机直连")
+        : origin?.kind === "remote"
+          ? `${t("另一台机器")}${origin.who ? ` · ${origin.who}` : ""}`
+          : t("未知");
   // Esc 关闭：这是个覆盖层，键盘必须能退出。
   const tone = statusTone(log.status_code);
   const failed = tone === "warn" || tone === "bad";
@@ -113,10 +131,11 @@ export function LogDetail({ log, onClose }: { log: LogEntry; onClose: () => void
                 <Row k={t("渠道倍率")} v={`× ${log.cost_multiplier}`} />
               </>
             )}
+            <Row k={t("调用方")} v={originText} />
             <Row k={t("令牌")} v={log.auth_token_description ?? "—"} />
             <Row k="API Key" v={log.api_key_used ?? "—"} mono />
             <Row k={t("客户端 IP")} v={log.client_ip ?? "—"} mono />
-            <Row k={t("来源")} v={log.log_source ?? "—"} />
+            <Row k={t("日志来源")} v={log.log_source ?? "—"} />
           </Group>
         </div>
       </aside>

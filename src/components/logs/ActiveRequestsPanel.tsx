@@ -1,6 +1,7 @@
 import { useT } from "../../i18n";
 import { useEffect, useState } from "react";
 import { Radio } from "lucide-react";
+import { activeOrigin } from "../../lib/logOrigin";
 import type { ActiveRequest } from "../../types";
 import { fmtCompact, fmtDuration } from "../formatters";
 
@@ -21,7 +22,14 @@ function useTick(active: boolean) {
   }, [active]);
 }
 
-export function ActiveRequestsPanel({ items }: { items: ActiveRequest[] }) {
+export function ActiveRequestsPanel({
+  items,
+  localIps,
+}: {
+  items: ActiveRequest[];
+  /** 已确认属于本机的出口 IP，由历史日志那边学出来（见 logOrigin）。 */
+  localIps?: ReadonlySet<string>;
+}) {
   const t = useT();
   useTick(items.length > 0);
 
@@ -73,6 +81,16 @@ export function ActiveRequestsPanel({ items }: { items: ActiveRequest[] }) {
                     ws
                   </span>
                 )}
+                {/* 内存态里没有令牌描述，也来不及和代理记录配对，所以这里只回答
+                    「本机还是别人」；具体是哪个 CLI 等它落进历史日志再看。 */}
+                {activeOrigin(r.client_ip, localIps ?? new Set()) === "remote" && (
+                  <span
+                    title={`${t("另一台机器")} · ${r.client_ip}`}
+                    className="rounded bg-amber-500/15 px-1.5 py-px text-[10px] text-amber-700"
+                  >
+                    {t("远端")}
+                  </span>
+                )}
               </div>
               <div className="mt-0.5 flex flex-wrap gap-x-3 text-[11px] tabular-nums text-muted">
                 {/* bytes_received 是快照值：它在涨说明上游还在吐，停住说明可能卡了。 */}
@@ -80,7 +98,11 @@ export function ActiveRequestsPanel({ items }: { items: ActiveRequest[] }) {
                 {r.client_first_byte_time != null && r.client_first_byte_time > 0 && (
                   <span>{t("首字节")} {fmtDuration(r.client_first_byte_time)}</span>
                 )}
-                {r.upstream_protocol && <span>{r.upstream_protocol}</span>}
+                {/* 上游协议 —— 内核用哪种 API 跟上游说话（anthropic / codex …），
+                    不是发起请求的 CLI 名字。 */}
+                {r.upstream_protocol && (
+                  <span title={t("上游协议")}>{r.upstream_protocol}</span>
+                )}
               </div>
             </div>
 

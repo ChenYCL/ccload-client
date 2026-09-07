@@ -13,23 +13,27 @@ import type { LogEntry, ProxyRecord } from "../types";
 ///     两者差的是整个请求耗时，所以窗口要能容下最慢的那次调用。
 ///
 /// 匹配不上就不显示，宁可空着也不要标错会话。
+///
+/// 配对结果还被「来源」列复用（见 logOrigin.ts）：配上代理记录就说明这条是本机
+/// 某个 CLI 发的。所以这里对**所有**代理记录配对，不只是带会话 id 的那些 —— 一条
+/// 没带会话头的请求也占着它自己那条日志，把它排除掉会让旁边那条别的会话被错认
+/// 领走。
 
 /// 代理打点在请求开始、内核记录在请求结束，差值最大就是一次调用的耗时。
 /// 实测最慢的流式回答跑到 80 多秒，留 180s 才不会把长回答漏掉。
 const MAX_SKEW_SECONDS = 180;
 
-/// 一条日志对应的会话 id，匹配不上就是 undefined。
-export function matchSessions(
+/// 一条日志对应的代理记录，匹配不上就没有这个 key。
+export function matchRecords(
   logs: LogEntry[],
   records: ProxyRecord[],
-): Map<number, string> {
-  const out = new Map<number, string>();
+): Map<number, ProxyRecord> {
+  const out = new Map<number, ProxyRecord>();
   if (records.length === 0) return out;
 
   // 同一个会话会连着发很多请求，按模型分桶能把候选集缩到很小。
   const byModel = new Map<string, ProxyRecord[]>();
   for (const r of records) {
-    if (!r.session_id) continue;
     for (const name of [r.model, r.sent_model]) {
       if (!name) continue;
       const bucket = byModel.get(name);
@@ -61,10 +65,23 @@ export function matchSessions(
       }
     }
 
-    if (best?.session_id) {
+    if (best) {
       claimed.add(best);
-      out.set(log.id, best.session_id);
+      out.set(log.id, best);
     }
+  }
+  return out;
+}
+
+/// 会话归因：`matchRecords` 的结果里取会话 id。没带会话头的记录配上了也没有
+/// 会话可显示，这一行就空着。
+export function matchSessions(
+  logs: LogEntry[],
+  records: ProxyRecord[],
+): Map<number, string> {
+  const out = new Map<number, string>();
+  for (const [id, rec] of matchRecords(logs, records)) {
+    if (rec.session_id) out.set(id, rec.session_id);
   }
   return out;
 }

@@ -1,5 +1,5 @@
 import { useT } from "../i18n";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowUp, Pause, RefreshCw, Radio } from "lucide-react";
 import { api } from "../lib/api";
@@ -11,7 +11,8 @@ import { EMPTY_FILTERS, LogFilters, type LogFilterState } from "../components/lo
 import { LogTable } from "../components/logs/LogTable";
 import { LogDetail } from "../components/logs/LogDetail";
 import { useLogFeed } from "../components/logs/useLogFeed";
-import { matchSessions } from "../lib/sessionMatch";
+import { classifyOrigins } from "../lib/logOrigin";
+import { matchRecords } from "../lib/sessionMatch";
 import { fmtInt } from "../components/formatters";
 
 /// 实时日志页。
@@ -110,10 +111,27 @@ export function LogsPage({ onNavigate }: { onNavigate?: (page: "session-manage")
     refetchInterval: polling ? LOGS_POLL_MS : false,
     placeholderData: (prev) => prev,
   });
-  const sessions = useMemo(
-    () => matchSessions(visible, proxyRecords.data ?? []),
+  const matched = useMemo(
+    () => matchRecords(visible, proxyRecords.data ?? []),
     [visible, proxyRecords.data],
   );
+  const sessions = useMemo(() => {
+    const out = new Map<number, string>();
+    for (const [id, rec] of matched) {
+      if (rec.session_id) out.set(id, rec.session_id);
+    }
+    return out;
+  }, [matched]);
+
+  // 来源归因。本机出口 IP 是从「配对上代理记录」的日志里学来的，攒在 ref 里
+  // 跨轮询累积：只看当前这一页的话，一旦筛成「只看错误」或翻到全是别人请求的
+  // 一页，就会退化成全部未知。集合只增不减，理由见 logOrigin 的注释。
+  const localIps = useRef<Set<string>>(new Set());
+  const origins = useMemo(() => {
+    const r = classifyOrigins(visible, matched, localIps.current);
+    localIps.current = r.localIps;
+    return r.origins;
+  }, [visible, matched]);
   // 标题要读磁盘上的会话文件，按 id 逐个解析并缓存 —— 同一个会话会占很多行，
   // 逐行去查会把同一个文件读上几十遍。
   const sessionIds = useMemo(
@@ -195,7 +213,7 @@ export function LogsPage({ onNavigate }: { onNavigate?: (page: "session-manage")
               emptyText=""
               skeletonLines={2}
             >
-              <ActiveRequestsPanel items={activeItems} />
+              <ActiveRequestsPanel items={activeItems} localIps={localIps.current} />
             </AsyncBlock>
           </Panel>
 
@@ -240,6 +258,7 @@ export function LogsPage({ onNavigate }: { onNavigate?: (page: "session-manage")
                       onSelect={setSelected}
                       sessions={sessions}
                       sessionTitles={titles.data}
+                      origins={origins}
                       onOpenSession={(id) => {
                         // 会话管理页自己按 id 定位，这里只负责把 id 交出去
                         // 再切页 —— 用 sessionStorage 而不是 URL，是因为这个
@@ -266,7 +285,13 @@ export function LogsPage({ onNavigate }: { onNavigate?: (page: "session-manage")
         </>
       )}
 
-      {selected && <LogDetail log={selected} onClose={() => setSelected(null)} />}
+      {selected && (
+        <LogDetail
+          log={selected}
+          origin={origins.get(selected.id)}
+          onClose={() => setSelected(null)}
+        />
+      )}
     </div>
   );
 }

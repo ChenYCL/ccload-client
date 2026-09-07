@@ -1,5 +1,6 @@
 import { useT } from "../../i18n";
 import { cn } from "../../lib/cn";
+import type { LogOrigin } from "../../lib/logOrigin";
 import { displayModel, splitPinned } from "../../lib/pins";
 import type { LogEntry } from "../../types";
 import {
@@ -26,6 +27,7 @@ export function LogTable({
   onSelect,
   sessions,
   sessionTitles,
+  origins,
   onOpenSession,
 }: {
   logs: LogEntry[];
@@ -36,6 +38,8 @@ export function LogTable({
   sessions?: ReadonlyMap<number, string>;
   /** 会话 id -> 标题，异步解析出来的；没解析到就退回显示短 id。 */
   sessionTitles?: ReadonlyMap<string, string>;
+  /** 日志 id -> 调用来源，由 classifyOrigins 算出来。 */
+  origins?: ReadonlyMap<number, LogOrigin>;
   onOpenSession?: (sessionId: string) => void;
 }) {
   const t = useT();
@@ -43,7 +47,7 @@ export function LogTable({
   return (
     // table-fixed：列宽由表头决定，不再随内容抖动。轮询每 2.5s 换一批行，
     // auto 布局会让整张表在每次刷新时重新算列宽，视觉上就是「闪一下」。
-    <table className="w-full min-w-[52rem] table-fixed text-sm">
+    <table className="w-full min-w-[56rem] table-fixed text-sm">
       <thead className="sticky top-0 z-10">
         <tr className="material-chrome text-left text-[11px] text-muted">
           <Th className="w-[5.5rem]">{t("时间")}</Th>
@@ -53,6 +57,8 @@ export function LogTable({
           <Th className="w-[22rem]">{t("模型")}</Th>
           {/* 会话列只在代理有记录时出现：没代理就一列空白，白占宽度。 */}
           {showSessions && <Th className="w-40">{t("会话")}</Th>}
+          {/* 来源：本机哪个 CLI，还是另一台机器。归因靠代理记录，见 logOrigin。 */}
+          <Th className="w-28">{t("来源")}</Th>
           <Th className="w-32">{t("渠道")}</Th>
           <Th className="w-[4.5rem] text-right">{t("耗时")}</Th>
           <Th className="w-[4.5rem] text-right">{t("首字节")}</Th>
@@ -71,6 +77,7 @@ export function LogTable({
             showSession={showSessions}
             sessionId={sessions?.get(log.id)}
             sessionTitles={sessionTitles}
+            origin={origins?.get(log.id)}
             onOpenSession={onOpenSession}
           />
         ))}
@@ -95,6 +102,7 @@ function LogRow({
   showSession,
   sessionId,
   sessionTitles,
+  origin,
   onOpenSession,
 }: {
   log: LogEntry;
@@ -104,6 +112,7 @@ function LogRow({
   showSession: boolean;
   sessionId?: string;
   sessionTitles?: ReadonlyMap<string, string>;
+  origin?: LogOrigin;
   onOpenSession?: (sessionId: string) => void;
 }) {
   const t = useT();
@@ -169,6 +178,9 @@ function LogRow({
           )}
         </td>
       )}
+      <td className="px-2 py-1">
+        <OriginCell origin={origin} />
+      </td>
       <td className="truncate px-2 py-1 text-xs text-muted" title={log.channel_name}>
         {log.channel_name ?? "—"}
       </td>
@@ -195,5 +207,47 @@ function LogRow({
         {fmtCost(effectiveCost(log))}
       </td>
     </tr>
+  );
+}
+
+/// 来源格。三种确定结论各有自己的颜色，未知的一律灰着 —— 这一列的价值在于
+/// 「一眼看出哪条不是本机发的」，所以远端必须是唯一显眼的那个。
+function OriginCell({ origin }: { origin?: LogOrigin }) {
+  const t = useT();
+  if (!origin || origin.kind === "unknown") {
+    return (
+      <span className="text-xs text-muted/50" title={origin?.ip}>
+        {origin?.who ?? "—"}
+      </span>
+    );
+  }
+
+  const remote = origin.kind === "remote";
+  const text =
+    origin.kind === "local-cli"
+      ? (origin.who ?? t("本机"))
+      : origin.kind === "local-direct"
+        ? t("本机直连")
+        : (origin.who ?? t("远端"));
+  // 悬停给出判定依据：出口 IP 和令牌，排查「这条到底是谁」时要的就是这两个。
+  const title = [
+    remote ? t("另一台机器") : t("本机"),
+    origin.ip,
+    origin.token,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  return (
+    <span
+      title={title}
+      className={cn(
+        "inline-block max-w-full truncate rounded px-1.5 py-px text-[11px]",
+        remote ? "bg-amber-500/15 text-amber-700" : "bg-surface-2 text-muted",
+      )}
+    >
+      {remote && <span className="mr-1 opacity-70">{t("远端")}</span>}
+      {text}
+    </span>
   );
 }
