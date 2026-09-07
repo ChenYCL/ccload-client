@@ -58,6 +58,17 @@ const MAX_RECORDS: usize = 2000;
 /// 从 `syscall.Exec` 自重启里回来、也够隧道抖一下；再长就该把错误交给 CLI 了。
 const CONNECT_RETRIES: u32 = 3;
 const CONNECT_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_millis(200);
+/// 内核回 408（请求体没在 `http_read_timeout_seconds` 内传完）时重发几次。
+///
+/// 重发是安全的：这个 408 产生在内核**选渠道之前**（`parseIncomingRequest` 里
+/// 读 body 就失败了），既没有 attempt 也没有计费，重发不会产生第二次上游调用。
+///
+/// 只重发一次，不是三次。上行被打满时每次尝试都可能烧掉内核那整段读取超时
+/// （默认 120s，实测环境配到 300s），重发三次等于让 CLI 干等一刻钟 —— 那比直接
+/// 失败更糟。一次重发换的是「偶发卡顿」那一类，链路真的持续拥塞时就该让它失败，
+/// 由人去降并发。
+const UPLOAD_RETRIES: u32 = 1;
+const UPLOAD_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
 /// WebSocket 握手里等上游回话的上限。上游接了 TCP 却不回响应时不能无限挂着：
 /// 客户端早就放弃了，这个任务和两条连接却会一直留着。
 const WS_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -68,11 +79,15 @@ const WS_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 /// 「连接池里的旧连接被对端关了」（reqwest 报成 request error）。
 /// 超时不算：请求可能已经在内核里跑了，重放等于双倍账单。
 fn is_connect_failure(e: &reqwest::Error) -> bool {
-    if e.is_timeout() {
-        return false;
-    }
+    // 握手阶段的失败一律可重试，**包括 connect_timeout 打出来的超时**。这一层只设
+    // 了 connect_timeout（整体 timeout 是 None），所以「超时」只可能来自建连；
+    // 先判 is_timeout 再判 is_connect 会让 5 秒握不上手的请求直接 502，而上行被
+    // 打满时握手慢正是最该重试的一种。
     if e.is_connect() {
         return true;
+    }
+    if e.is_timeout() {
+        return false;
     }
     // hyper 的 "connection closed before message completed" / "connection reset"
     // 在 reqwest 里是 request error；只认还没拿到状态的那种。
@@ -969,6 +984,32 @@ struct KernelCall<'a> {
 }
 
 async fn send_to_kernel(
+    http: &reqwest::Client,
+    call: &KernelCall<'_>,
+    body: &[u8],
+) -> Result<reqwest::Response, reqwest::Error> {
+    let mut retried = 0u32;
+    loop {
+        let resp = send_once(http, call, body).await?;
+        // 408 = 内核没能在读取超时内把请求体读完。它发生在选渠道之前，没有上游
+        // 调用、没有计费，所以重发是干净的；而对 CLI 来说这一轮本来就是死的。
+        if resp.status() != reqwest::StatusCode::REQUEST_TIMEOUT
+            || retried >= UPLOAD_RETRIES
+            || body.is_empty()
+        {
+            return Ok(resp);
+        }
+        retried += 1;
+        tracing::info!(
+            "cli proxy: kernel could not finish reading the body ({} bytes), resending {retried}/{UPLOAD_RETRIES}",
+            body.len()
+        );
+        tokio::time::sleep(UPLOAD_RETRY_BACKOFF).await;
+    }
+}
+
+/// 发一次，只在连接级失败时重试（还没拿到任何状态，重试不会重复任何已发生的事）。
+async fn send_once(
     http: &reqwest::Client,
     call: &KernelCall<'_>,
     body: &[u8],
@@ -2492,6 +2533,52 @@ mod pin_tests {
         let _ = tokio::time::timeout(std::time::Duration::from_secs(5), c.read_to_end(&mut got)).await;
         let recs = records.read().await.clone();
         (String::from_utf8_lossy(&got).to_string(), recs)
+    }
+
+    /// 内核回 408（请求体没读完）时代理自己重发一次，CLI 只看到最终那个 200。
+    ///
+    /// 这个 408 产生在内核选渠道之前，没有 attempt、没有计费，所以重发是干净的；
+    /// 不重发的话上行偶尔卡一下就会把一整轮对话打断。
+    #[tokio::test]
+    async fn a_body_read_timeout_is_resent_once_and_succeeds() {
+        fn decide(_m: &str) -> (u16, String) {
+            static N: AtomicUsize = AtomicUsize::new(0);
+            if N.fetch_add(1, Ordering::SeqCst) == 0 {
+                (408, r#"{"error":"timed out reading the request body"}"#.into())
+            } else {
+                (200, r#"{"ok":true}"#.into())
+            }
+        }
+        let (port, hits, _seen) = spawn_kernel(decide).await;
+        let (got, recs) = run_through_proxy(
+            port,
+            ProxyRules::default(),
+            br#"{"model":"grok-4.6","messages":[]}"#,
+        )
+        .await;
+        assert!(got.starts_with("HTTP/1.1 200"), "CLI 应当只看到重发后的成功：{got}");
+        assert_eq!(hits.load(Ordering::SeqCst), 2, "原始一次 + 重发一次");
+        assert_eq!(recs.len(), 1, "记录里只留最终结果");
+        assert_eq!(recs[0].status, 200);
+    }
+
+    /// 但重发是**有上限**的：链路持续拥塞时每次尝试都可能烧掉内核那整段读取超时，
+    /// 无限重发会让 CLI 干等到天荒地老，比直接把 408 交出去更糟。
+    #[tokio::test]
+    async fn a_persistent_body_read_timeout_gives_up_after_one_resend() {
+        fn decide(_m: &str) -> (u16, String) {
+            (408, r#"{"error":"timed out reading the request body"}"#.into())
+        }
+        let (port, hits, _seen) = spawn_kernel(decide).await;
+        let (got, recs) = run_through_proxy(
+            port,
+            ProxyRules::default(),
+            br#"{"model":"grok-4.6","messages":[]}"#,
+        )
+        .await;
+        assert!(got.starts_with("HTTP/1.1 408"), "最终要把 408 如实交给 CLI：{got}");
+        assert_eq!(hits.load(Ordering::SeqCst), 1 + UPLOAD_RETRIES as usize);
+        assert_eq!(recs[0].status, 408, "盲区面板要靠这条记录才看得见");
     }
 
     /// 主线：私有别名被内核 503（那条只有一个渠道，冷却了就没人接），代理用原名重发，
