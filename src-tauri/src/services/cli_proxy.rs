@@ -436,6 +436,68 @@ fn with_model(body: &[u8], model: &str) -> Vec<u8> {
     serde_json::to_vec(&v).unwrap_or_else(|_| body.to_vec())
 }
 
+/// xAI Responses 协议里的 `encrypted_content` 和 `previous_response_id` 是按
+/// **签发它们的那个模型**加密 / 绑定的。会话从 grok-4.6 切到 opus-5 之后，Grok CLI
+/// 仍会把 250+ 条 grok 的加密思维链原样塞进下一次请求；上游解不开就 400，CLI 把
+/// 这个 400 映射成 "conversation history is incompatible with the current model"。
+///
+/// 只在发往非 grok 家族时剥：留在 grok 上时这两样是思维链和提示缓存的一部分，
+/// 剥了会让同模型续写变差。有人类可读 summary 的 reasoning 项留下（摘要文本
+/// 换模型之后仍然有用），只带着密文、摘要是空的整条丢掉 —— 空壳 reasoning
+/// 上游照样拒。
+fn grok_family(model: &str) -> bool {
+    alias_key(model).starts_with("grok")
+}
+
+fn sanitize_cross_model(body: &[u8], sent_model: &str) -> Vec<u8> {
+    if grok_family(sent_model) {
+        return body.to_vec();
+    }
+    let Ok(mut v) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return body.to_vec();
+    };
+    let Some(obj) = v.as_object_mut() else {
+        return body.to_vec();
+    };
+    let mut changed = obj.remove("previous_response_id").is_some();
+    for key in ["input", "messages"] {
+        if let Some(arr) = obj.get_mut(key).and_then(|x| x.as_array_mut()) {
+            if strip_foreign_reasoning(arr) {
+                changed = true;
+            }
+        }
+    }
+    if !changed {
+        return body.to_vec();
+    }
+    serde_json::to_vec(&v).unwrap_or_else(|_| body.to_vec())
+}
+
+fn strip_foreign_reasoning(items: &mut Vec<serde_json::Value>) -> bool {
+    let before = items.len();
+    let mut stripped = false;
+    items.retain_mut(|item| {
+        let Some(obj) = item.as_object_mut() else {
+            return true;
+        };
+        if obj.get("type").and_then(|t| t.as_str()) != Some("reasoning") {
+            return true;
+        }
+        if obj.remove("encrypted_content").is_some() {
+            stripped = true;
+        }
+        let has_summary = obj.get("summary").and_then(|s| s.as_array()).is_some_and(|parts| {
+            parts.iter().any(|p| {
+                p.get("text")
+                    .and_then(|t| t.as_str())
+                    .is_some_and(|t| !t.trim().is_empty())
+            })
+        });
+        has_summary
+    });
+    stripped || items.len() != before
+}
+
 /// 连接超时 5s，响应体不设上限 —— 一次长回答流上几分钟是常态。
 #[cfg(test)]
 fn test_proxy_http() -> Arc<RwLock<reqwest::Client>> {
@@ -766,6 +828,9 @@ async fn handle_conn(mut client: TcpStream, state: Arc<ProxyState>) -> std::io::
             } else {
                 with_model(&out_body, alias)
             };
+            // 换模型时把上一个模型签发的密文剥掉，否则上游 400、CLI 会把整段
+            // 会话判死。同家族（都是 grok-*）原样过。
+            last_body = sanitize_cross_model(&last_body, alias);
             let r = send_to_kernel(&http, &call, &last_body).await;
             sent_model = Some(alias.clone());
             match &r {
@@ -2417,6 +2482,50 @@ mod pin_tests {
         for s in [200, 201, 400, 404, 408, 413, 422] {
             assert!(!is_fallback_status(s), "{s} 不该退让");
         }
+    }
+
+    /// 发往 opus 时：上一个 grok 模型签发的密文和 response id 必须剥掉，
+    /// 空摘要的 reasoning 整条丢掉，有摘要的留下（换模型之后摘要仍然可读）。
+    #[test]
+    fn cross_model_strips_xai_bound_fields() {
+        let body = serde_json::json!({
+            "model": "claude-opus-5",
+            "previous_response_id": "resp_abc",
+            "input": [
+                {"type": "message", "role": "user", "content": "hi"},
+                {
+                    "type": "reasoning",
+                    "id": "rs_msg_011xxx",
+                    "summary": [{"type": "summary_text", "text": "prior plan"}],
+                    "encrypted_content": "deadbeef"
+                },
+                {
+                    "type": "reasoning",
+                    "id": "rs_msg_011yyy",
+                    "summary": [{"type": "summary_text", "text": ""}],
+                    "encrypted_content": "aa"
+                }
+            ]
+        });
+        let out: serde_json::Value = serde_json::from_slice(&sanitize_cross_model(
+            &serde_json::to_vec(&body).unwrap(),
+            "claude-opus-5@ch15",
+        ))
+        .unwrap();
+        assert!(out.get("previous_response_id").is_none());
+        let input = out["input"].as_array().unwrap();
+        assert_eq!(input.len(), 2, "空摘要的 reasoning 应整条丢掉: {input:?}");
+        assert_eq!(input[0]["type"], "message");
+        assert_eq!(input[1]["summary"][0]["text"], "prior plan");
+        assert!(input[1].get("encrypted_content").is_none());
+    }
+
+    /// 留在 grok 家族时一个字节都不能动 —— 密文是同模型续写和提示缓存的一部分。
+    #[test]
+    fn grok_destination_keeps_encrypted_content() {
+        let body = br#"{"model":"grok-4.6","previous_response_id":"resp_abc","input":[{"type":"reasoning","encrypted_content":"aa"}]}"#;
+        assert_eq!(sanitize_cross_model(body, "grok-4.6@ch21"), body);
+        assert_eq!(sanitize_cross_model(body, "Grok-4.6[1m]"), body);
     }
 
     /// 重发只换 model，键序、其余字段一个字节不动。
