@@ -10,9 +10,10 @@ import { ActiveRequestsPanel } from "../components/logs/ActiveRequestsPanel";
 import { EMPTY_FILTERS, LogFilters, type LogFilterState } from "../components/logs/LogFilters";
 import { LogTable } from "../components/logs/LogTable";
 import { LogDetail } from "../components/logs/LogDetail";
+import { UnloggedFailures } from "../components/logs/UnloggedFailures";
 import { useLogFeed } from "../components/logs/useLogFeed";
 import { classifyOrigins } from "../lib/logOrigin";
-import { matchRecords } from "../lib/sessionMatch";
+import { matchRecords, unloggedFailures } from "../lib/sessionMatch";
 import { fmtInt } from "../components/formatters";
 
 /// 实时日志页。
@@ -132,11 +133,35 @@ export function LogsPage({ onNavigate }: { onNavigate?: (page: "session-manage")
     localIps.current = r.localIps;
     return r.origins;
   }, [visible, matched]);
+  // 内核看不见的失败。内核在选完渠道之后才写日志，所以请求体读超时（408）、
+  // 体积超限（413）这类更早的失败它一行都不会留；代理连不上内核（502）时更是
+  // 连内核都没到。判定拿 fetched 而不是 visible：「只看错误」是客户端筛的，
+  // 被它滤掉的成功日志仍然是「内核确实记下了」的证据。
+  // 服务端筛选（模型/渠道/状态码）开着时不做判定 —— 那时缺日志可能只是被筛掉了。
+  const serverFiltered = !!(filters.model || filters.channelId || filters.statusCode);
+  const blindSpots = useMemo(() => {
+    if (serverFiltered) return [];
+    return unloggedFailures(
+      fetched,
+      proxyRecords.data ?? [],
+      matchRecords(fetched, proxyRecords.data ?? []),
+      Math.floor(Date.now() / 1000),
+    );
+    // logs.dataUpdatedAt：轮询回来的新一页要重算，即使数组内容看着一样。
+  }, [fetched, proxyRecords.data, serverFiltered, logs.dataUpdatedAt]);
+
   // 标题要读磁盘上的会话文件，按 id 逐个解析并缓存 —— 同一个会话会占很多行，
   // 逐行去查会把同一个文件读上几十遍。
   const sessionIds = useMemo(
-    () => Array.from(new Set(sessions.values())).sort(),
-    [sessions],
+    () =>
+      Array.from(
+        new Set([
+          ...sessions.values(),
+          // 盲区那一块也要显示标题，它的会话不在 sessions 里（正因为没配上日志）。
+          ...blindSpots.map((r) => r.session_id).filter((s): s is string => !!s),
+        ]),
+      ).sort(),
+    [sessions, blindSpots],
   );
   const titles = useQuery({
     queryKey: ["cli-proxy-session-titles", sessionIds],
@@ -216,6 +241,29 @@ export function LogsPage({ onNavigate }: { onNavigate?: (page: "session-manage")
               <ActiveRequestsPanel items={activeItems} localIps={localIps.current} />
             </AsyncBlock>
           </Panel>
+
+          {/* 内核的盲区。只在真有东西时出现 —— 平时它不该占位置，一旦出现就说明
+              有请求连日志都没留下，那是比任何一条错误日志都值得先看的信号。 */}
+          {blindSpots.length > 0 && (
+            <Panel
+              title={t("内核没有日志的失败")}
+              hint={t("只有本机代理见过 · 内核在选渠道之前就失败了")}
+              right={
+                <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-700">
+                  {blindSpots.length}
+                </span>
+              }
+            >
+              <UnloggedFailures
+                records={blindSpots}
+                sessionTitles={titles.data}
+                onOpenSession={(id) => {
+                  sessionStorage.setItem("ccload:focus-session", id);
+                  onNavigate?.("session-manage");
+                }}
+              />
+            </Panel>
+          )}
 
           <Panel
             title={t("历史日志")}

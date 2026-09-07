@@ -927,6 +927,16 @@ registerDict("en", {
   当前最大: "Largest current",
   文件最大: "Largest file",
   清除筛选: "Clear filters",
+  // ---- 内核盲区（代理见过、日志里没有的失败） ----
+  内核没有日志的失败: "Failures with no kernel log",
+  "只有本机代理见过 · 内核在选渠道之前就失败了":
+    "Seen only by the local proxy — these failed before the kernel picked a channel",
+  "请求体没能在内核的读取超时内传完（http_read_timeout_seconds）":
+    "The request body did not finish uploading within the kernel's read timeout (http_read_timeout_seconds)",
+  "请求体超过体积上限（max_body_bytes）": "The request body exceeded the size limit (max_body_bytes)",
+  "代理连不上内核，或响应中途断了":
+    "The proxy could not reach the kernel, or the response broke mid-stream",
+  内核没在超时内完成握手: "The kernel did not complete the handshake in time",
   // ---- 日志来源归因（「来源」「上游协议」已在上面收录） ----
   本机: "This machine",
   本机直连: "This machine, direct",

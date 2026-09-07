@@ -23,6 +23,10 @@ import type { LogEntry, ProxyRecord } from "../types";
 /// 实测最慢的流式回答跑到 80 多秒，留 180s 才不会把长回答漏掉。
 const MAX_SKEW_SECONDS = 180;
 
+/// 代理在收到响应后才落记录，而日志每 2.5s 才轮询一次；这段窗口里「记录已在、
+/// 日志还没拉回来」是常态，不是盲区。
+const GRACE_SECONDS = 8;
+
 /// 一条日志对应的代理记录，匹配不上就没有这个 key。
 export function matchRecords(
   logs: LogEntry[],
@@ -84,4 +88,45 @@ export function matchSessions(
     if (rec.session_id) out.set(id, rec.session_id);
   }
   return out;
+}
+
+/// 代理记下了、内核历史日志里却找不到的**失败**请求。
+///
+/// 内核只在选完渠道、发起 attempt 之后才写日志。请求体读超时（408，
+/// `http_read_timeout_seconds`）、体积超限（413）这类失败发生在那之前，
+/// 内核**永远不会**为它们留下日志行；代理连不上内核时更是连内核都没到。
+/// 结果就是：CLI 那边报了错，历史日志里翻不到任何痕迹。这个函数把这段盲区
+/// 捞出来 —— 代理是唯一见过这些请求的一方。
+///
+/// 判据故意保守，宁可漏报也不误报：
+///   * 只看 `status >= 400`。成功的记录没配上，多半只是配对没中或被筛掉了，
+///     那是显示问题，不是故障。
+///   * 只看落在**已取回日志时间范围内**的记录。代理的环形缓冲比日志页的
+///     200 条窗口长得多，更早的记录没有日志可对，不能算“内核漏了”。
+///   * 给一段宽限期。代理在收到响应后才落记录，而日志每 2.5s 才轮询一次，
+///     刚发生的失败会有一小段“记录已在、日志还没拉回来”的窗口。
+///   * 附近有同状态码的日志就跳过。配对偶尔会错认，而这类盲区状态码
+///     （408/413/502）本来就不会出现在日志里，同码即在册，说明是配对没中。
+export function unloggedFailures(
+  logs: LogEntry[],
+  records: ProxyRecord[],
+  matched: ReadonlyMap<number, ProxyRecord>,
+  nowSeconds: number,
+): ProxyRecord[] {
+  if (logs.length === 0 || records.length === 0) return [];
+  const claimed = new Set(matched.values());
+  const oldestLog = Math.min(...logs.map((l) => l.time));
+  const cutoff = nowSeconds - GRACE_SECONDS;
+
+  return records
+    .filter((r) => r.status >= 400)
+    .filter((r) => !claimed.has(r))
+    .filter((r) => r.time >= oldestLog && r.time <= cutoff)
+    .filter(
+      (r) =>
+        !logs.some(
+          (l) => l.status_code === r.status && Math.abs(l.time - r.time) <= MAX_SKEW_SECONDS,
+        ),
+    )
+    .sort((a, b) => b.time - a.time);
 }
