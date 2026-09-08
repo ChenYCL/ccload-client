@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
   Server,
@@ -20,7 +21,6 @@ import {
   ScrollText,
   Settings,
   Shuffle,
-  GitBranch,
   PackagePlus,
   Workflow,
   Zap,
@@ -37,11 +37,27 @@ import logoUrl from "@icons/128x128.png";
 // 渠道/令牌 的增删改都在「内核后台」里，用的是 ccLoad 自带的界面，所以这里不再
 // 单列 —— 自绘表单只会是个字段更少的弱化版。只读的观测（总览/日志）才自绘。
 //
-// 八项平铺时找一个入口要从头扫到尾，所以按「你现在想干什么」分三组：先看发生了
-// 什么（监控），再改它怎么跑（配置），最后才是环境本身（系统）。分组只用一行小
-// 标题，不加折叠、不加图标 —— 八项而已，能收起来的东西不值得多一次点击。
-const GROUPS: { title: string; items: { id: Page; label: string; icon: typeof Activity }[] }[] = [
+// 分组按「你现在想干什么」，而且刻意把**两层**分开：
+//
+//   · 本地 CLI 配置 —— 写的是本机各 CLI 自己的配置文件（连哪儿、默认发哪个别名、
+//     `/model` 里能选到哪些、注入什么）。改的是「谁发什么名字」。
+//   · 内核路由 —— 写的是**当前连着的那个内核**的渠道（那个名字到了内核之后去谁家、
+//     变成什么上游模型名）。改的是「名字发出去之后的事」。
+//
+// 内核那一组的标题带「本地 / 远端」前缀，因为这一页改的东西**跟着内核跑**：连的是
+// 本机托管内核，改的是这台机器上的；连的是远端，改的是别人机器上那个 —— 同一套
+// 界面，后果完全不同，标题上不写清楚，很容易在远端内核上把别人的路由改掉。
+//
+// 这两层以前混在一个「配置」组里平铺十项，找入口要从头扫到尾，而且看不出
+// 「模型链 / 强制路由 / 调度图」和「CLI 接管 / 模型导入」根本不写同一批文件。
+// 分组只用一行小标题，不加折叠、不加图标 —— 能收起来的东西不值得多一次点击。
+const GROUPS: {
+  id: string;
+  title: string;
+  items: { id: Page; label: string; icon: typeof Activity }[];
+}[] = [
   {
+    id: "monitor",
     title: "监控",
     items: [
       { id: "dashboard", label: "总览", icon: LayoutDashboard },
@@ -52,23 +68,30 @@ const GROUPS: { title: string; items: { id: Page; label: string; icon: typeof Ac
     ],
   },
   {
-    title: "配置",
+    id: "cli",
+    title: "本地 CLI 配置",
     items: [
       { id: "cli", label: "CLI 接管", icon: Cable },
-      { id: "graph", label: "调度图", icon: Workflow },
-      { id: "fallback", label: "模型链", icon: GitBranch },
-      { id: "forced-route", label: "强制路由", icon: Shuffle },
       { id: "models", label: "模型导入", icon: PackagePlus },
       { id: "inject", label: "系统注入", icon: FileCode },
       { id: "unlock", label: "破禁", icon: Unlock },
       { id: "automation", label: "自动插件", icon: Zap },
       { id: "extensions", label: "扩展管理", icon: Blocks },
-      { id: "node-services", label: "Node 服务", icon: Server },
     ],
   },
   {
+    id: "kernel",
+    title: "内核路由",
+    items: [
+      { id: "route", label: "模型路由", icon: Shuffle },
+      { id: "graph", label: "调度图", icon: Workflow },
+    ],
+  },
+  {
+    id: "system",
     title: "系统",
     items: [
+      { id: "node-services", label: "Node 服务", icon: Server },
       { id: "web-admin", label: "内核后台", icon: Globe },
       { id: "settings", label: "设置", icon: Settings },
     ],
@@ -94,6 +117,16 @@ export function Sidebar(props: {
   const version = clientVersion.version;
   const update = useUpdateCheck(clientVersion);
   const running = props.status?.state === "running";
+  // 内核那一组的标题要跟着**连的是哪个内核**变：同一页在远端模式下改的是别人
+  // 机器上的渠道。取设置而不是内核状态：托管内核没启动时 status 是 stopped，
+  // 但用户连的仍然是本机内核，标题不该跟着空掉。
+  const settings = useQuery({ queryKey: ["app-settings"], queryFn: api.settingsGet });
+  const remote = settings.data?.kernel?.mode === "remote";
+  const groups = GROUPS.map((g) =>
+    g.id === "kernel"
+      ? { ...g, title: remote ? t("远端内核路由") : t("本地内核路由") }
+      : g,
+  );
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem(COLLAPSE_KEY) === "1",
   );
@@ -197,7 +230,7 @@ export function Sidebar(props: {
       </div>
 
       <nav className={cn("flex-1 space-y-4", collapsed ? "px-2" : "px-2.5")}>
-        {GROUPS.map((group) => (
+        {groups.map((group) => (
           <div key={group.title} className="space-y-0.5">
             {/* 收起时分组标题换成一条细分隔线：分组关系还在，只是不占字宽。 */}
             {collapsed ? (

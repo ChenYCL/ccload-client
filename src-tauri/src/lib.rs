@@ -291,6 +291,8 @@ pub fn run() {
             commands::cli::context_window_preview,
             commands::cli::context_tiers,
             commands::cli::alias_routes,
+            commands::cli::channel_model_set,
+            commands::cli::channel_model_remove,
             commands::cli::model_catalog_refresh,
             commands::cli::cli_backups,
             commands::cli::cli_backup_diff,

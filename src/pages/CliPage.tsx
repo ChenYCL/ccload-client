@@ -7,6 +7,7 @@ import type {
   ConfigFileView,
   DiffBase,
   FileDiff,
+  Page,
   TakeoverOptions,
   TakeoverPreview,
 } from "../types";
@@ -20,9 +21,9 @@ import { kernelAliases, type ChannelModels } from "../lib/modelOptions";
 import { ALL_TARGETS, TARGET_LABELS } from "../lib/targets";
 import { cn } from "../lib/cn";
 import { ContextWindowCard } from "../components/cli/ContextWindowCard";
-import { AliasRoutes } from "../components/cli/AliasRoutes";
+import { AliasLanding } from "../components/routes/AliasRoutes";
 
-export function CliPage() {
+export function CliPage({ onNavigate }: { onNavigate?: (page: Page) => void }) {
   const t = useT();
   const qc = useQueryClient();
   const kernel = useQuery({ queryKey: ["kernel"], queryFn: api.kernelStatus });
@@ -135,8 +136,13 @@ export function CliPage() {
               key={p.target}
               p={p}
               disabled={!running || apply.isPending}
-              proxyOn={settings.data?.route_cli_through_proxy ?? false}
               pending={apply.isPending && apply.variables?.target === p.target}
+              onOpenRoute={(alias) => {
+                // 路由页自己按别名定位。用 sessionStorage 而不是 URL：这个应用的
+                // 路由就是一个 useState，没有可挂参数的地方（和日志页跳会话同一套）。
+                sessionStorage.setItem("ccload:focus-alias", alias);
+                onNavigate?.("route");
+              }}
               // Completion/error feedback belongs ON the card that triggered
               // it. Rendering it at the page bottom meant a successful write
               // to an already-active target looked like nothing happened —
@@ -231,24 +237,24 @@ function pickedModel(target: CliTarget, o: TakeoverOptions): string | undefined 
 function CliCard({
   p,
   disabled,
-  proxyOn,
   pending,
   result,
   options,
   onOptionsChange,
   onApply,
   onEdit,
+  onOpenRoute,
 }: {
   p: TakeoverPreview;
   disabled: boolean;
-  /** 「CLI 走本地代理」开着没有；首选渠道钉住只在代理那一层生效。 */
-  proxyOn: boolean;
   pending: boolean;
   result: { ok: boolean; text: string } | null;
   options: TakeoverOptions;
   onOptionsChange: (o: TakeoverOptions) => void;
   onApply: () => void;
   onEdit: () => void;
+  /** 跳到「模型路由」并定位到这个别名。 */
+  onOpenRoute: (alias: string) => void;
 }) {
   const t = useT();
   const [expanded, setExpanded] = useState(false);
@@ -279,8 +285,13 @@ function CliCard({
             </div>
           )}
           {/* 这个别名在内核里会落到哪 —— 「选了 grok-4.6 却一直在跑 glm」在这里
-              一眼看出来：内核只按渠道优先级选路，高优先级渠道上的一条改写就是主路由。 */}
-          <AliasRoutes alias={pickedModel(p.target, options) ?? p.current_model} proxyOn={proxyOn} />
+              一眼看出来：内核只按渠道优先级选路，高优先级渠道上的一条改写就是主路由。
+              这里只给结论，改在「模型路由」页 —— 落点是按别名生效的，挂在每张 CLI
+              卡片下面等于同一套控件摆五份。 */}
+          <AliasLanding
+            alias={pickedModel(p.target, options) ?? p.current_model}
+            onOpen={onOpenRoute}
+          />
           {result && (
             <div
               role="status"

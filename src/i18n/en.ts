@@ -8,7 +8,9 @@ import { registerDict } from "./index";
 registerDict("en", {
   // ---- 导航与外壳 ----
   监控: "Monitor",
-  配置: "Configure",
+  "本地 CLI 配置": "Local CLI config",
+  本地内核路由: "Local kernel routing",
+  远端内核路由: "Remote kernel routing",
   系统: "System",
   总览: "Overview",
   实时日志: "Live logs",
@@ -59,7 +61,6 @@ registerDict("en", {
   关闭: "Close",
   刷新: "Refresh",
   安装: "Install",
-  移除: "Remove",
   已安装: "Installed",
   未安装: "Not installed",
   "读取中…": "Loading…",
@@ -153,7 +154,6 @@ registerDict("en", {
     "Validation failed — nothing will be written",
   "内核未运行，读不到渠道列表": "Kernel isn't running, so the channel list is unavailable",
   按名称自动匹配: "Auto-match by name",
-  应用到内核: "Apply to kernel",
   档位与队列: "Tiers and queues",
   角色映射: "Role mapping",
   别名: "Alias",
@@ -184,51 +184,118 @@ registerDict("en", {
   按名称填槽位: "Fill slots by name",
   把第一个勾选的设为主模型: "Bind the first checked model as default",
 
-  // ---- 模型链 ----
-  新建链: "New chain",
-  编辑模型链: "Edit model chain",
-  添加一层: "Add a hop",
-  "上游模型，例如 kimi-k3": "Upstream model, e.g. kimi-k3",
-  选择渠道: "Pick a channel",
+  // ---- 模型路由（原「模型链」+「强制路由」合并） ----
+  模型路由: "Model routing",
+  "内核侧的那一层：一个别名到了内核之后去哪个渠道、变成哪个上游模型名。内核只按渠道优先级选路，没有 per-model 优先级 —— 所以「选了 A 却一直在跑 B」几乎总是某个高优先级渠道上的一条改写，而不是故障转移。CLI 发什么名字是另一层，在「CLI 接管」页。":
+    "The kernel-side layer: once an alias reaches the kernel, which channel serves it and what upstream model name it becomes. The kernel picks routes by channel priority only — there is no per-model priority — so \"I picked A but B keeps running\" is almost always a rewrite on a higher-priority channel, not a failover. Which name the CLI sends is the other layer, on the CLI takeover page.",
+  "内核未运行，读不到渠道，也没法改落点。":
+    "Kernel is not running: no channels to read, and no landing to change.",
+  改的是远端内核: "You are editing the remote kernel",
+  "上的渠道 —— 共用这台内核的人都会跟着变。":
+    " — everyone sharing that kernel is affected.",
+  "改的是本机托管内核上的渠道。": "You are editing channels on the locally managed kernel.",
+  "这条已停用。先「重新启用」再改落点。":
+    "This row is disabled. Re-enable it first, then change the landing.",
+  "屏幕上的改动还没保存 —— 先点「保存」，应用写的是磁盘上那份":
+    "There are unsaved edits on screen — save first; Apply writes what is on disk",
+  "内核里还没有任何别名。先去内核后台建一个渠道，或者在左边新建一个别名。":
+    "No aliases in the kernel yet. Create a channel in the kernel console, or add an alias on the left.",
+  搜索别名: "Search aliases",
+  搜索: "Search",
+  没有匹配的别名: "No matching alias",
+  新建别名: "New alias",
+  "给一个内核里还没有的名字建编排 —— 应用之后内核才认得它":
+    "Plan a name the kernel does not know yet — it only becomes real once applied",
+  加: "Add",
+  有退让编排: "Has a graceful-fallback plan",
+  有独占编排: "Has an exclusive plan",
+  钉了首选渠道: "Preferred channel pinned",
+  钉: "Pin",
+  "① 编排 · 你要它落到哪": "① Plan · where you want it to land",
+  "本地记录，点「应用到内核」才写进渠道": "Stored locally; only Apply writes it into channels",
+  "② 内核落点 · 它现在落到哪": "② Kernel landing · where it lands right now",
+  "GET /admin/channels · 改这里立刻生效，不经过编排":
+    "GET /admin/channels · edits here take effect immediately, bypassing the plan",
+  "③ 谁在发这个别名": "③ Who sends this alias",
+  "各 CLI 配置里现在写着的默认模型": "The default model currently written in each CLI's config",
+  "没有 CLI 的默认模型是这个名字。它可能只在 CLI 的 /model 菜单里被临时选中，或者压根没人用。":
+    "No CLI has this name as its default model. It may only be picked ad hoc from a /model menu, or not used at all.",
+  "去 CLI 接管看看": "Open CLI takeover",
 
-  // ---- 强制路由 ----
-  强制路由: "Forced route",
-  "CLI 请求某个模型名，就强制把它发到你选的渠道 + 上游模型。选一个渠道，联动列出它的模型，勾多个即可 —— 不校验上游，手填任意名字照样发。和「模型链」的区别是心智：那边讲主力冷了往下降级，这里是「我说发去哪就发去哪」。":
-    "When a CLI requests a given model name, force it to the channel + upstream model you pick. Choose a channel, its models cascade below — check as many as you like; the upstream is never validated, so a name you type by hand is sent all the same. The difference from Model chain is the mindset: that one degrades gracefully when the primary cools; this one just sends it where you say.",
-  新建路由: "New route",
-  "还没有路由。点「新建路由」把第一个别名钉到一个渠道+模型上。":
-    "No routes yet. Click New route to pin your first alias to a channel + model.",
-  "把这条路由写进各目标渠道": "Write this route into each target channel",
-  "删除路由 {from}": "Delete route {from}",
-  "（还没有目标）": "(no targets yet)",
-  "第 {n} 个": "#{n}",
-  首选: "Primary",
-  "备用 {n}": "Backup {n}",
-  " · 渠道已禁用，不会被选中": " · channel disabled, will not be picked",
-  " · 没绑渠道，应用时跳过": " · no channel bound, skipped on apply",
-  未绑渠道: "no channel",
-  编辑强制路由: "Edit forced route",
-  "命中「请求别名」就强制发到下面的目标。多个目标按序：第一个是首选，命中即用，后面的是备用落点。应用时会把目标排到现有服务该别名的渠道之上，确保独占而不是被平分。":
-    "A request matching the alias is forced to the targets below. Multiple targets are ordered: the first is primary and is used when reachable; the rest are backups. On apply, targets are pushed above any existing channel serving this alias, so it's an exclusive take-over rather than a 50/50 split.",
-  "请求别名（CLI 里写的模型名）": "Request alias (the model name the CLI sends)",
-  请求别名: "Request alias",
-  "内核里还没有渠道；名字可以手填": "No channels in the kernel yet; you can type the name",
-  "目标（按序，第一个优先级最高）": "Targets (in order; the first has the highest priority)",
-  "还没有目标。在下面选个渠道、勾几个模型，点「加入选中」。":
-    "No targets yet. Pick a channel below, check a few models, then click Add selected.",
-  上移: "Move up",
-  下移: "Move down",
-  移除这个目标: "Remove this target",
-  批量添加目标: "Add targets in bulk",
-  目标渠道: "Target channel",
+  // 编排编辑器
+  退让: "Fallback",
+  独占: "Exclusive",
+  "优先级 100/90/80…，主力不可用时内核自动往下走":
+    "Priority 100/90/80… — the kernel walks down when the primary is unavailable",
+  "应用时排到现有服务者之上，谁也别想平分":
+    "On apply, ranked above every existing server of this alias — no splitting",
+  "写进内核时按 100 / 90 / 80… 依次降级":
+    "Written into the kernel as 100 / 90 / 80… descending",
+  "写进内核时压过正在服务这个别名的其它渠道":
+    "Written above the other channels currently serving this alias",
+  未保存: "Unsaved",
+  "这个别名还存着一条「独占」编排（{n} 条目标）。点保存会把它删掉 —— 一个别名同时只保留一种模式，两份都在的话谁后应用谁赢。":
+    "This alias still has an exclusive plan stored ({n} targets). Saving deletes it — an alias keeps only one mode, and with both stored whichever is applied last wins.",
+  "这个别名还存着一条「退让」编排（{n} 条目标）。点保存会把它删掉 —— 一个别名同时只保留一种模式，两份都在的话谁后应用谁赢。":
+    "This alias still has a fallback plan stored ({n} targets). Saving deletes it — an alias keeps only one mode, and with both stored whichever is applied last wins.",
+  "还没有编排。这个别名现在只按内核里已有的落点走。":
+    "No plan yet. This alias just follows whatever the kernel already has.",
+  "从内核落点复制一份（{n} 条）": "Copy from the kernel landing ({n})",
+  从空白开始: "Start from scratch",
+  添加一条: "Add one",
+  删除编排: "Delete plan",
+  应用到内核: "Apply to kernel",
+  "应用中…": "Applying…",
+  "把这张表写进内核渠道": "Write this table into the kernel channels",
+  "先保存，再应用": "Save first, then apply",
+  每条都要填上游模型名: "Every row needs an upstream model name",
+  "第 {n} 条，拖动或按上下键调整顺序": "Row {n}: drag, or use the arrow keys to reorder",
+  "第 {n} 条的渠道": "Channel for row {n}",
+  "第 {n} 条的上游模型": "Upstream model for row {n}",
+  "删除第 {n} 条": "Delete row {n}",
+  "上游模型，例如 claude-opus-5": "Upstream model, e.g. claude-opus-5",
+  "先选左边的渠道，这里会列出它能服务的模型":
+    "Pick the channel on the left and its models show up here",
+  "应用时算出的优先级会压过正在服务这个别名的其它渠道":
+    "The priority computed on apply will outrank the other channels serving this alias",
+  "没绑渠道 · 应用时这一条会被跳过": "No channel bound · this row is skipped on apply",
+  "渠道已禁用 · 这一条永远不会被选中": "Channel disabled · this row can never be picked",
+  "上游清单里没有 {m} · 请求打到这一条会直接失败":
+    "{m} is not in the upstream catalog · a request landing here fails outright",
+  "逐个渠道去问上游要真实模型清单，核对每一条的模型名":
+    "Ask each channel's upstream for its real model list and check every row against it",
+  "已保存「{alias}」的退让编排（{n} 条）。": "Saved the fallback plan for {alias} ({n} rows).",
+  "已保存「{alias}」的独占编排（{n} 条）。": "Saved the exclusive plan for {alias} ({n} rows).",
+  "原来的独占编排已删除 —— 一个别名同时只保留一种模式。":
+    "The previous exclusive plan was removed — one alias keeps only one mode.",
+  "原来的退让编排已删除 —— 一个别名同时只保留一种模式。":
+    "The previous fallback plan was removed — one alias keeps only one mode.",
+  选择渠道: "Pick a channel",
   "（已禁用）": " (disabled)",
-  "这个渠道还没配模型 —— 下面手填要发的模型名。":
-    "This channel has no models configured — type the model name to send below.",
-  "或手填一个模型名（不校验上游，照发）":
-    "Or type a model name (upstream not validated, sent as-is)",
-  手填模型名: "Type a model name",
-  加入选中: "Add selected",
-  "（{n}）": " ({n})",
+
+  // 落点（可编辑）
+  "内核落点（按优先级，第一条是默认去处）· 可直接改":
+    "Kernel landing (by priority; the first row is the default) · editable here",
+  改落点: "Change landing",
+  移除: "Remove",
+  确认移除: "Confirm removal",
+  "把这个别名从这个渠道的模型清单里摘掉。内核里再没人服务它时，请求会 503。":
+    "Drop this alias from the channel's model list. Once nothing serves it, requests 503.",
+  "「{alias}」在 {channel} 上的上游模型": "Upstream model for {alias} on {channel}",
+  "这个渠道还没配模型，直接填要发给上游的名字":
+    "This channel has no models configured; just type the name to send upstream",
+  要加哪个渠道: "Which channel to add",
+  要写进去的上游模型名: "Upstream model name to write",
+  "上游模型名，例如 claude-opus-5": "Upstream model name, e.g. claude-opus-5",
+  "+ 给「{alias}」加一个渠道": "+ Add a channel for {alias}",
+  "首选渠道（本地代理钉住）": "Preferred channel (pinned in the local proxy)",
+  "内核里没有任何启用渠道服务「{alias}」—— 请求会 503。在下面给它挂一个渠道，或去内核后台加。":
+    "No enabled channel serves {alias} — requests will 503. Attach a channel below, or add one in the kernel console.",
+  "内核里没有任何启用渠道服务「{alias}」—— 请求会 503。":
+    "No enabled channel serves {alias} — requests will 503.",
+  去模型路由挂一个: "Attach one in Model routing",
+  内核落点: "Kernel landing",
+  "· 另有 {n} 个备选": "· {n} more candidates",
 
   // ---- 扩展管理 ----
   搜索名称或描述: "Search name or description",

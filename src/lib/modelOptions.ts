@@ -20,8 +20,13 @@ import { splitPinned } from "./pins";
 /// 不合并成一个「取模型名」。
 
 /// `GET /admin/channels` 里和模型有关的那几个字段。
+///
+/// `name` 严格说不是模型字段，但凡是要挑渠道的地方（模型路由的目标、落点里加一
+/// 个渠道）都得把它显示出来，否则下拉里只有一串 `#12`。多带一个可选字段比让每个
+/// 调用点各自 `& { name?: string }` 好。
 export type ChannelModels = {
   id?: number;
+  name?: string;
   enabled?: boolean;
   models?: { model?: string; redirect_model?: string; disabled?: boolean }[];
 };

@@ -9,8 +9,7 @@ import { UsagePage } from "./pages/UsagePage";
 import { WebAdminPage } from "./pages/WebAdminPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { CliPage } from "./pages/CliPage";
-import { FallbackPage } from "./pages/FallbackPage";
-import { ForcedRoutePage } from "./pages/ForcedRoutePage";
+import { RoutePage } from "./pages/RoutePage";
 import { ModelsPage } from "./pages/ModelsPage";
 import { InjectPage } from "./pages/InjectPage";
 import { SessionsPage } from "./pages/SessionsPage";
@@ -34,8 +33,7 @@ const PAGES: Record<Page, (props: PageProps) => JSX.Element> = {
   "web-admin": WebAdminPage,
   settings: SettingsPage,
   cli: CliPage,
-  fallback: FallbackPage,
-  "forced-route": ForcedRoutePage,
+  route: RoutePage,
   models: ModelsPage,
   inject: InjectPage,
   sessions: SessionsPage,

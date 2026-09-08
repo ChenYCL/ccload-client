@@ -167,6 +167,15 @@ export const api = {
   contextTiers: () => invoke<TierRow[]>("context_tiers"),
   /** 某个别名在内核里会落到哪些渠道，按优先级从高到低。内核没连上会报错。 */
   aliasRoutes: (alias: string) => invoke<RouteHit[]>("alias_routes", { alias }),
+  /**
+   * 直接改内核落点：把「别名 → 上游模型」写进某个渠道（已存在就覆盖那条）。
+   * 返回人话日志，含窗口重算的结果。
+   */
+  channelModelSet: (channelId: number, alias: string, upstream: string) =>
+    invoke<string[]>("channel_model_set", { channelId, alias, upstream }),
+  /** 把别名从某个渠道的 models 里摘掉。摘完没人服务它就 503，调用方负责说清楚。 */
+  channelModelRemove: (channelId: number, alias: string) =>
+    invoke<string[]>("channel_model_remove", { channelId, alias }),
   /** 首选渠道钉住：`pin_save` 会顺手把私有别名写进内核并刷代理，`pin_delete` 反之。 */
   pinList: () => invoke<Pin[]>("pin_list"),
   pinSave: (pin: Pin) => invoke<PinOutcome>("pin_save", { pin }),

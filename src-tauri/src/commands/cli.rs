@@ -12,6 +12,7 @@ use crate::services::cli_advanced::{
 use crate::services::cli_backup::unique_stamp;
 use crate::services::cli_backup::BackupEntry;
 use crate::services::cli_backup_diff::{diff_backup, BackupDiff, DiffBase};
+use crate::services::channel_writer::{patch_channel, remove_models};
 use crate::services::cli_config::{
     apply_takeover, current_context_tokens, current_model, preview, CliTarget, ConfigRoot,
     TakeoverPreview, TakeoverResult,
@@ -654,6 +655,69 @@ pub async fn alias_routes(state: State<'_, AppState>, alias: String) -> AppResul
         .await
         .ok_or_else(|| AppError::Config("内核没连上，读不到渠道清单".into()))?;
     Ok(routes.hits(&alias))
+}
+
+/// 直接改内核里某个别名的落点：把「别名 → 上游模型」写进（或更新到）某个渠道。
+///
+/// 和「模型路由」页上那套本地编排的区别：编排是**先存一张表、点应用才写内核**，
+/// 这里是所见即所得的一步写入 —— 在落点列表上改一条就立刻生效，不落任何本地文件，
+/// 所以它修的是「内核现在长什么样」，不是「我想要它长什么样」。
+///
+/// 走的是同一条 `patch_channel`：凭据回传、OAuth 只读、models upsert 而不是整体
+/// 替换，那些坑只在那一处处理（见 channel_writer 的文件头注释）。
+#[tauri::command]
+pub async fn channel_model_set(
+    state: State<'_, AppState>,
+    channel_id: i64,
+    alias: String,
+    upstream: String,
+) -> AppResult<Vec<String>> {
+    let alias = alias.trim().to_string();
+    let upstream = upstream.trim().to_string();
+    if alias.is_empty() {
+        return Err(AppError::Config("别名不能为空".into()).into());
+    }
+    if upstream.is_empty() {
+        return Err(AppError::Config("上游模型名不能为空".into()).into());
+    }
+    let patch = patch_channel(
+        &state,
+        channel_id,
+        None,
+        &[(alias.clone(), upstream.clone())],
+    )
+    .await?;
+    let mut log = vec![format!(
+        "渠道 {}（#{}）：{alias} → {upstream}",
+        patch.channel_name, channel_id
+    )];
+    // 落点变了，已接管 CLI 的上下文窗口就得跟着重算 —— 给这个别名多挂一个 500k 的
+    // 落点，发它的 CLI 还按 1M 写的话，分流过去那一刻直接 400 too long。
+    log.extend(resync_windows(&state).await);
+    Ok(log)
+}
+
+/// 把某个别名从某个渠道的 models 里摘掉。
+///
+/// 摘完内核里可能再没有渠道服务这个别名（请求会 503），所以调用方必须在动手前
+/// 把后果说清楚 —— 这里不做二次确认，命令层不该替界面做产品决定。
+#[tauri::command]
+pub async fn channel_model_remove(
+    state: State<'_, AppState>,
+    channel_id: i64,
+    alias: String,
+) -> AppResult<Vec<String>> {
+    let alias = alias.trim().to_string();
+    if alias.is_empty() {
+        return Err(AppError::Config("别名不能为空".into()).into());
+    }
+    let patch = remove_models(&state, channel_id, std::slice::from_ref(&alias)).await?;
+    let mut log = vec![format!(
+        "渠道 {}（#{}）：已移除 {alias}",
+        patch.channel_name, channel_id
+    )];
+    log.extend(resync_windows(&state).await);
+    Ok(log)
 }
 
 /// 手动刷新 models.dev 目录。返回收录了多少个模型。
