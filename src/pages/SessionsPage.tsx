@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, LifeBuoy, Loader2, RefreshCw, Scissors, Sparkles } from "lucide-react";
+import { AlertTriangle, History, LifeBuoy, Loader2, RefreshCw, Scissors, Sparkles } from "lucide-react";
 import { api } from "../lib/api";
 import { cn } from "../lib/cn";
 import { errText } from "../lib/err";
@@ -57,6 +57,36 @@ const MODEL_KEY = "ccload.sessions.model";
 
 type BatchItem = { id: string; slug: string; ok: boolean; detail: string };
 
+/// 一条救援记录。写进 localStorage 而不是内存：救援刚点完用户常常切去 CLI
+/// 验证效果，「完成」的凭据必须还在；而前端没有别的持久层。
+type RescueLogEntry = {
+  time: number;
+  kind: "slim" | "compact";
+  cli: string;
+  slug: string;
+  backup: string;
+  detail: string;
+};
+
+const HISTORY_KEY = "ccload.sessions.rescue-history";
+const HISTORY_MAX = 30;
+
+function loadHistory(): RescueLogEntry[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(HISTORY_KEY) ?? "[]");
+    return Array.isArray(v) ? v.filter((x) => x && x.time) : [];
+  } catch {
+    return [];
+  }
+}
+
+function pushHistory(e: RescueLogEntry) {
+  const list = [e, ...loadHistory()].slice(0, HISTORY_MAX);
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(list));
+  // 同页的其它组件（历史面板）靠它感知，不用把 setState 提到父层。
+  window.dispatchEvent(new CustomEvent("ccload:rescue-history"));
+}
+
 export function SessionsPage() {
   const t = useT();
   const qc = useQueryClient();
@@ -91,14 +121,35 @@ export function SessionsPage() {
   });
   const models = useMemo(() => kernelAliases(channels.data?.data), [channels.data]);
 
-  const done = (label: string, backup: string, detail: string) => {
+  const [history, setHistory] = useState<RescueLogEntry[]>(loadHistory);
+  useEffect(() => {
+    const on = () => setHistory(loadHistory());
+    window.addEventListener("ccload:rescue-history", on);
+    return () => window.removeEventListener("ccload:rescue-history", on);
+  }, []);
+
+  const done = (
+    label: string,
+    backup: string,
+    detail: string,
+    kind: RescueLogEntry["kind"],
+    s: SessionInfo,
+  ) => {
     setMessage(`${label}：${detail}\n${t("备份")}：${backup}`);
+    pushHistory({
+      time: Math.floor(Date.now() / 1000),
+      kind,
+      cli: s.cli,
+      slug: s.slug || s.id.slice(0, 8),
+      backup,
+      detail,
+    });
     qc.invalidateQueries({ queryKey: ["sessions"] });
   };
 
   const slim = useMutation({
     mutationFn: (s: SessionInfo) => api.sessionSlim(s.path, target, DEFAULT_TEXT_LIMIT),
-    onSuccess: (r: SlimReport) =>
+    onSuccess: (r: SlimReport, s) =>
       done(
         t("瘦身完成"),
         r.backup,
@@ -110,6 +161,8 @@ export function SessionsPage() {
           b1: fmtBytes(r.bytes_before),
           b2: fmtBytes(r.bytes_after),
         }),
+        "slim",
+        s,
       ),
     onError: (e) => setMessage(errText(e)),
     onSettled: () => setBusyId(null),
@@ -118,7 +171,7 @@ export function SessionsPage() {
   const compact = useMutation({
     mutationFn: (s: SessionInfo) =>
       api.sessionCompact(s.path, model, KEEP_TAIL, CHUNK_TOKENS),
-    onSuccess: (r: CompactReport) =>
+    onSuccess: (r: CompactReport, s) =>
       done(
         t("分块总结完成"),
         r.backup,
@@ -129,6 +182,8 @@ export function SessionsPage() {
           s: fmtTokens(r.summary_tokens),
           before: fmtTokens(r.context_before),
         }),
+        "compact",
+        s,
       ),
     onError: (e) => setMessage(errText(e)),
     onSettled: () => setBusyId(null),
@@ -536,6 +591,36 @@ export function SessionsPage() {
       </div>
 
       {message && <p className="mt-4 whitespace-pre-line text-sm text-accent">{message}</p>}
+
+      {/* 救援历史。救援点完用户常切去 CLI 验证，回来时那条「已完成」早没了 ——
+          记录是唯一还在场的凭据，顺带把备份路径留在手边（那是唯一的后悔药）。 */}
+      {history.length > 0 && (
+        <details className="mt-4 rounded-xl border border-border">
+          <summary className="flex cursor-pointer items-center gap-1.5 px-3 py-2 text-sm text-muted">
+            <History className="h-3.5 w-3.5" />
+            {t("救援记录（{n}）", { n: history.length })}
+          </summary>
+          <ul className="divide-y divide-border/60 border-t border-border">
+            {history.map((h) => (
+              <li key={h.time} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 px-3 py-2 text-xs">
+                <span className="tabular-nums text-muted">{new Date(h.time * 1000).toLocaleTimeString()}</span>
+                <span className="rounded bg-surface-2 px-1.5 py-px text-[10px] text-muted">{cliLabel(h.cli as SessionInfo["cli"])}</span>
+                <span className={cn("rounded px-1.5 py-px text-[10px]", h.kind === "compact" ? "bg-accent/15 text-accent" : "bg-surface-2 text-muted")}>
+                  {h.kind === "compact" ? t("分块总结") : t("瘦身")}
+                </span>
+                <span className="font-medium">{h.slug}</span>
+                <span className="min-w-0 flex-1 truncate text-muted" title={`${h.detail}
+${h.backup}`}>
+                  {h.detail}
+                </span>
+                <span className="truncate font-mono text-[10px] text-muted/70" title={h.backup}>
+                  {h.backup.split("/").pop()}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
     </div>
   );
 }

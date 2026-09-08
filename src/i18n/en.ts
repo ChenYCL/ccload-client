@@ -931,6 +931,8 @@ registerDict("en", {
   "全部 CLI（{n}）": "All CLIs ({n})",
   "先退出那个 CLI 窗口 —— 进程里有内存态，现在改会被它盖回去":
     "Quit that CLI window first — the process holds in-memory state and would overwrite your changes",
+  // ---- 救援记录 ----
+  "救援记录（{n}）": "Rescue history ({n})",
   清除筛选: "Clear filters",
   // ---- 内核盲区（代理见过、日志里没有的失败） ----
   内核没有日志的失败: "Failures with no kernel log",
