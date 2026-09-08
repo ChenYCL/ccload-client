@@ -368,7 +368,12 @@ fn sync_summary(dir: &Path, chat_len: usize) -> Result<(), AppError> {
 /// 明文模型名嵌在里面（实测 claude-opus-5 的密文里就有 `Y2xhdWRlLW9wdXM`）。
 /// 解 base64 后取前一小段找可打印串 —— 只为识别签发方，不需要解密。
 fn issuer_of(enc: &str) -> String {
-    let cleaned: String = enc.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '=').collect();
+    // `+` 和 `/` 是标准 base64 的合法字符，**不能滤掉** —— 滤了会让后面的位错开，
+    // 解出来是乱码。实测滤掉它们后 260 条密文只认出 16 条（6%），正是这个原因。
+    let cleaned: String = enc
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '-' | '_' | '='))
+        .collect();
     let Ok(raw) = base64ish_decode(&cleaned) else {
         return String::new();
     };
@@ -1097,6 +1102,24 @@ mod tests {
         let r = pollution(&chat_path(&dir)).unwrap();
         assert_eq!(r.cross_model_reasoning, 0);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// base64 的 `+` 和 `/` 不能当噪声滤掉。
+    ///
+    /// 滤掉它们会让后面的位错开、解出乱码：实测真实会话里 260 条密文只认出 16 条
+    /// （6%），修好后 257 条，与 Python 基准逐条一致。单测里的伪密文恰好不含
+    /// `+/`，所以这个 bug 只有拿真实数据比对才抓得到 —— 这条钉住它。
+    #[test]
+    fn base64_specials_are_not_filtered_out() {
+        use base64::Engine;
+        // 前缀用高位字节，确保编码里必然出现 `+` 和 `/`（它们只由高位组合产生）。
+        // 真实密文就是这样的二进制，单测里的纯 ASCII 伪样本恰好碰不到，
+        // 所以这个 bug 当初没被单测拦住。
+        let mut raw: Vec<u8> = vec![0xfb, 0xff, 0xbf, 0xfe, 0xff, 0x3f];
+        raw.extend_from_slice(b"-model=claude-opus-5-");
+        let enc = base64::engine::general_purpose::STANDARD.encode(&raw);
+        assert!(enc.contains('+') && enc.contains('/'), "样本要能触发旧写法：{enc}");
+        assert_eq!(issuer_of(&enc), "claude-opus", "带 +/ 的密文没认出来");
     }
 
     /// 签发方识别：密文里嵌的模型名要认得出来，认不出也不许崩。

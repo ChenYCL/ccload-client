@@ -2221,6 +2221,30 @@ mod tests {
 mod live {
     use super::*;
 
+    /// 指定一条会话做体检：`CCLOAD_POLLUTION_PATH=<正文路径> cargo test --lib
+    /// live_pollution_of_one -- --ignored --nocapture`。
+    ///
+    /// 存在的理由：真正带病灶的样本往往是**救援前的备份**，它不在扫描列表里
+    /// （列表只认当前正文）。没有这条就只能靠肉眼去读几万行 jsonl。
+    #[test]
+    #[ignore = "要 CCLOAD_POLLUTION_PATH 指定路径"]
+    fn live_pollution_of_one() {
+        let Ok(path) = std::env::var("CCLOAD_POLLUTION_PATH") else {
+            eprintln!("跳过：没有设 CCLOAD_POLLUTION_PATH");
+            return;
+        };
+        let r = pollution(&path).expect("体检失败");
+        eprintln!(
+            "行={} 孤儿={} 重复组={} 冗余={} 跨模型={} 签发方={:?}",
+            r.entries,
+            r.orphan_tool_results,
+            r.repeated_tool_results,
+            r.redundant_tool_results,
+            r.cross_model_reasoning,
+            r.reasoning_issuers,
+        );
+    }
+
     /// 真机体检：把本地最大的几条会话过一遍污染检测。单测用的是造出来的
     /// 数据，证明不了「真实会话里这三类信号长什么样」。
     #[test]
