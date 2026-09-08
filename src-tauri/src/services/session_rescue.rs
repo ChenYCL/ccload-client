@@ -32,7 +32,7 @@
 //!
 //! 两者都先把原文件另存 `.bak-<时间戳>`。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
@@ -92,6 +92,34 @@ pub struct SessionInfo {
     pub compactions: usize,
 }
 
+/// 一条会话的污染体检报告。按需算（要读整份正文），不放进 `SessionInfo` ——
+/// 列表扫描本来就要半分钟，不能为了个红点再把每条会话读两遍。
+#[derive(Debug, Clone, Serialize)]
+pub struct PollutionReport {
+    /// 配不上调用方的工具结果。CLI 复原对话时会拿它没辙。
+    pub orphan_tool_results: usize,
+    /// 同内容重复 ≥3 次的工具结果组数（每组留一次，其余是重试循环的尸体）。
+    pub repeated_tool_results: usize,
+    /// 重复组里冗余的条数（= 可清洗掉的条数）。
+    pub redundant_tool_results: usize,
+    /// 跨模型签名密文条数 —— 密文里嵌着签发模型名，认出多种即为换过模型或换过
+    /// 上游落点（正是「Could not decrypt encrypted_content」400 的病灶）。
+    pub cross_model_reasoning: usize,
+    /// 从密文 base64 里认出的签发方（按出现次数降序）。
+    pub reasoning_issuers: Vec<(String, usize)>,
+    /// 扫了多少行正文。
+    pub entries: usize,
+}
+
+impl PollutionReport {
+    pub fn score(&self) -> usize {
+        self.orphan_tool_results + self.redundant_tool_results + self.cross_model_reasoning
+    }
+    pub fn is_clean(&self) -> bool {
+        self.score() == 0
+    }
+}
+
 /// 一条会话要怎么压。Grok / Codex 的写回形状和 Claude Code 不同（那边是追加两条
 /// 剪链，这两家只能重写），但「渲染成行 → 切块总结 → 写回」这三步是共用的，
 /// 所以中间这层结果抽出来。
@@ -117,6 +145,45 @@ pub struct SlimReport {
     pub context_after: u64,
     pub backup: String,
 }
+
+/// 清洗结果。三类分开报，因为处置手段不同、风险也不同。
+#[derive(Debug, Clone, Serialize)]
+pub struct CleanReport {
+    /// 配不上任何调用的工具结果 —— 直接删，没有调用在等它。
+    pub orphans_removed: usize,
+    /// 重复重试循环 —— **折叠内容**而不是删除条目。删了会让对应的工具调用
+    /// 没有结果，而每个 tool_use / tool_call 都必须有配对的结果，恢复时上游
+    /// 会当场拒掉。折叠既腾出了上下文，又保住了配对。
+    pub duplicates_collapsed: usize,
+    /// 换成占位的跨模型密文条数。
+    pub reasoning_stripped: usize,
+    pub backup: String,
+}
+
+impl CleanReport {
+    pub fn total(&self) -> usize {
+        self.orphans_removed + self.duplicates_collapsed + self.reasoning_stripped
+    }
+}
+
+/// 取前 `n` 个**字符**做指纹。
+///
+/// 不能用 `&s[..n]`：那是按字节切，切进多字节字符中间会 panic —— 中文工具
+/// 输出是本机常态，这条路必炸（实测 `"…重试了很多次…"` 的第 200 字节正好落在
+/// 「很」中间）。
+pub(crate) fn head_chars(s: &str, n: usize) -> String {
+    s.chars().take(n).collect()
+}
+
+/// 短于这个长度的工具结果不算「值得折叠的重复」。
+///
+/// 检测和清洗必须用同一条线：否则体检报告说「3 条冗余」、清洗却一条没动
+/// （占位说明本身就有 40 多字节，折叠 "ok" 反而更占地方），用户只会以为功能坏了。
+pub(crate) const MIN_COLLAPSE_BYTES: usize = 64;
+
+/// 折叠重复工具结果时写进去的说明。原内容在备份里。
+pub(crate) const COLLAPSED_NOTE: &str =
+    "[会话救援折叠了重复的工具结果 —— 与前一次完全相同，原文在备份里]";
 
 /// 分块总结结果。
 #[derive(Debug, Clone, Serialize)]
@@ -1326,6 +1393,187 @@ pub(crate) async fn summarize_lines(
     Ok((summary, chunks.len()))
 }
 
+/// 污染体检。读整份正文，按各家格式找三类信号：孤儿工具结果、重复重试循环、
+/// 跨模型签名密文。
+pub fn pollution(path: &str) -> Result<PollutionReport, AppError> {
+    let p = Path::new(path);
+    if session_grok::owns(p) {
+        return session_grok::pollution(p);
+    }
+    if session_codex::owns(p) {
+        return session_codex::pollution(p);
+    }
+    let entries = load(p)?;
+    let mut call_ids: HashSet<String> = HashSet::new();
+    for e in &entries {
+        for tc in e
+            .pointer("/message/content")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if tc.get("type").and_then(Value::as_str) == Some("tool_use") {
+                if let Some(id) = tc.get("id").and_then(Value::as_str) {
+                    call_ids.insert(id.to_string());
+                }
+            }
+        }
+    }
+    let mut contents: Vec<String> = Vec::new();
+    let mut orphans = 0;
+    for e in &entries {
+        let Some(content) = e.pointer("/message/content").and_then(Value::as_array) else {
+            continue;
+        };
+        for c in content {
+            if c.get("type").and_then(Value::as_str) != Some("tool_result") {
+                continue;
+            }
+            let id = c.get("tool_use_id").and_then(Value::as_str).unwrap_or("");
+            if !id.is_empty() && !call_ids.contains(id) {
+                orphans += 1;
+            }
+            contents.push(c.get("content").map(|v| v.to_string()).unwrap_or_default());
+        }
+    }
+    let (groups, redundant) = repeated_groups(&contents);
+    Ok(PollutionReport {
+        orphan_tool_results: orphans,
+        repeated_tool_results: groups,
+        redundant_tool_results: redundant,
+        cross_model_reasoning: 0,
+        reasoning_issuers: Vec::new(),
+        entries: contents.len(),
+    })
+}
+
+/// 同内容出现 ≥3 次的组数，以及这些组里超出一次的部分。
+/// Claude Code 的正文没有跨模型密文，第三类信号恒为零。
+fn repeated_groups(contents: &[String]) -> (usize, usize) {
+    use std::collections::HashMap;
+    let mut n: HashMap<String, usize> = HashMap::new();
+    for c in contents {
+        if c.len() < MIN_COLLAPSE_BYTES {
+            continue; // 和清洗同一条线，见 MIN_COLLAPSE_BYTES
+        }
+        *n.entry(head_chars(c, 200)).or_default() += 1;
+    }
+    let (groups, redundant) = n.values().fold((0, 0), |(g, r), v| {
+        if *v >= 3 {
+            (g + 1, r + v - 1)
+        } else {
+            (g, r)
+        }
+    });
+    (groups, redundant)
+}
+
+/// Claude Code 侧的清洗：孤儿工具结果拿掉、重复循环留一次。它的密文
+/// （thinking signature）没有跨模型问题 —— 同一条链总是发回同一家 —— 不动。
+pub fn clean_claude(path: &str) -> Result<CleanReport, AppError> {
+    let path = PathBuf::from(path);
+    let id = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default()
+        .to_string();
+    if live_session_ids().contains(&id) {
+        return Err(AppError::Config(
+            "这个会话正被一个 Claude Code 进程使用。先退出那个窗口再来。".into(),
+        ));
+    }
+    let mut entries = load(&path)?;
+
+    let mut call_ids: HashSet<String> = HashSet::new();
+    for e in &entries {
+        for c in e
+            .pointer("/message/content")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if c.get("type").and_then(Value::as_str) == Some("tool_use") {
+                if let Some(id) = c.get("id").and_then(Value::as_str) {
+                    call_ids.insert(id.to_string());
+                }
+            }
+        }
+    }
+
+    // 删除粒度是**块级**：只动 tool_result 块，同一行里的文本块不碰。
+    // 行本身一条都不能删 —— transcript 是靠 uuid/parentUuid 串起来的链表。
+    let mut orphans = 0usize;
+    let mut collapsed = 0usize;
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    for e in entries.iter_mut() {
+        let Some(content) = e.pointer_mut("/message/content").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        // 孤儿：没有任何 tool_use 在等它，删掉不会让谁落空。
+        content.retain(|c| {
+            if c.get("type").and_then(Value::as_str) != Some("tool_result") {
+                return true;
+            }
+            let id = c.get("tool_use_id").and_then(Value::as_str).unwrap_or("");
+            let orphan = !id.is_empty() && !call_ids.contains(id);
+            if orphan {
+                orphans += 1;
+            }
+            !orphan
+        });
+        // 重复：折叠内容，块留着 —— 删了它对应的 tool_use 就没结果了。
+        for c in content.iter_mut() {
+            if c.get("type").and_then(Value::as_str) != Some("tool_result") {
+                continue;
+            }
+            let body = c.get("content").map(|v| v.to_string()).unwrap_or_default();
+            if body.len() < MIN_COLLAPSE_BYTES {
+                continue; // 短结果折叠不出空间，徒增噪声
+            }
+            let key = head_chars(&body, 400);
+            let n = seen.entry(key).or_default();
+            *n += 1;
+            if *n > 1 {
+                if let Some(obj) = c.as_object_mut() {
+                    obj.insert("content".into(), Value::String(COLLAPSED_NOTE.into()));
+                    collapsed += 1;
+                }
+            }
+        }
+    }
+
+    if orphans + collapsed == 0 {
+        return Err(AppError::Config("没有可清除的污染。".into()));
+    }
+    let body: String = entries
+        .iter()
+        .map(|e| serde_json::to_string(e).unwrap_or_default() + "\n")
+        .collect();
+    let backup = backup_and_write(&path, &body)?;
+    Ok(CleanReport {
+        orphans_removed: orphans,
+        duplicates_collapsed: collapsed,
+        reasoning_stripped: 0,
+        backup,
+    })
+}
+
+/// 清洗分派。
+pub fn clean(path: &str) -> Result<CleanReport, AppError> {
+    let p = Path::new(path);
+    if session_grok::owns(p) {
+        return session_grok::clean(p.to_str().unwrap_or_default());
+    }
+    // Codex 不做清洗：rollout 里 response_item 与事件流交错，重写时要保持
+    // 行序与 turn 对应，错了会话就续不了 —— 检测报告照给，动手这步先不开。
+    if session_codex::owns(p) {
+        return Err(AppError::Config(
+            "Codex 会话暂不支持清洗（rollout 行序敏感，只读体检）。".into(),
+        ));
+    }
+    clean_claude(path)
+}
+
 /// 分块总结。按路径分派到对应的 CLI —— 三家的写回形状不同，见各自模块。
 pub async fn compact(
     base_url: &str,
@@ -1748,6 +1996,81 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 指纹按**字符**取，不按字节 —— 中文工具输出在第 200 字节处切开会 panic，
+    /// 而中文输出是本机常态。这条钉的就是那次崩溃。
+    #[test]
+    fn fingerprints_never_split_a_multibyte_char() {
+        let cn = "同一条命令的输出，重试了很多次都一样".repeat(4);
+        assert!(cn.len() > 200 && !cn.is_char_boundary(200), "样本要能触发旧写法");
+        let head = head_chars(&cn, 200);
+        assert_eq!(head.chars().count(), 200.min(cn.chars().count()));
+        // 纯 ASCII 与超短串也要正常。
+        assert_eq!(head_chars("abc", 200), "abc");
+        assert_eq!(head_chars("", 5), "");
+    }
+
+    /// Claude 格式的清洗：孤儿块、重复块按**块级**拿掉，同一行里的文本块不动，
+    /// thinking signature 一个字节不碰。
+    #[test]
+    fn clean_claude_drops_blocks_not_lines() {
+        let dir = std::env::temp_dir().join(format!("ccload-rescue-{}", uuid_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{}.jsonl", uuid_v4()));
+
+        let mk = |content: Value| {
+            json!({
+                "type": "user",
+                "uuid": uuid_v4(),
+                "message": { "role": "user", "content": content },
+            })
+        };
+        let normal = mk(json!([
+            { "type": "text", "text": "正常文本，必须留下" },
+            { "type": "tool_result", "tool_use_id": "t1", "content": "ok" },
+        ]));
+        // 内容要长过 MIN_COLLAPSE_BYTES，否则按设计不算「值得折叠的重复」。
+        let same = "同一条命令的输出，重试很多次都一样".repeat(4);
+        let dup: Vec<Value> = (0..3)
+            .map(|_| mk(json!([{ "type": "tool_result", "tool_use_id": "t1", "content": same }])))
+            .collect();
+        let orphan = mk(json!([{ "type": "tool_result", "tool_use_id": "ghost", "content": "x" }]));
+        let sig = json!({
+            "type": "assistant",
+            "uuid": uuid_v4(),
+            "message": { "content": [
+                { "type": "thinking", "thinking": "想法", "signature": format!("SIG-{}", "s".repeat(50)) },
+            ]},
+        });
+        // 先给 t1 一个真正的调用方，否则所有 tool_result 都成了孤儿 ——
+        // 那样测的就不是「重复 vs 孤儿分得清」，而是「全删」。
+        let call = json!({
+            "type": "assistant",
+            "uuid": uuid_v4(),
+            "message": { "content": [
+                { "type": "tool_use", "id": "t1", "name": "Bash", "input": {} },
+            ]},
+        });
+        let mut lines = vec![call, normal];
+        lines.extend(dup);
+        lines.push(orphan);
+        lines.push(sig);
+        let body: String = lines.iter().map(|v| v.to_string() + "\n").collect();
+        std::fs::write(&path, &body).unwrap();
+
+        let r = clean_claude(path.to_str().unwrap()).unwrap();
+        assert_eq!(r.orphans_removed, 1, "孤儿该删掉");
+        assert_eq!(r.duplicates_collapsed, 2, "重复该折叠（首次保留）");
+
+        let after = load(&path).unwrap();
+        let dumped = serde_json::to_string(&after).unwrap();
+        assert!(dumped.contains("正常文本，必须留下"), "同行文本被误删");
+        assert!(dumped.contains("SIG-"), "签名被动了");
+        // 孤儿那块没了，配对的三块都在（删了 t1 就没结果了），两块被折叠。
+        assert_eq!(dumped.matches("tool_use_id").count(), 4, "配对的结果被误删：{dumped}");
+        assert_eq!(dumped.matches("折叠").count(), 2, "重复没折叠：{dumped}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// 没有 usage 就必须拒绝动手：拿估算值当真实值去砍，砍多砍少都是瞎砍。
     #[test]
     fn slim_refuses_without_ground_truth() {
@@ -1897,6 +2220,31 @@ mod tests {
 #[cfg(test)]
 mod live {
     use super::*;
+
+    /// 真机体检：把本地最大的几条会话过一遍污染检测。单测用的是造出来的
+    /// 数据，证明不了「真实会话里这三类信号长什么样」。
+    #[test]
+    #[ignore = "读本机真实会话，结果因机器而异"]
+    fn live_pollution_on_the_biggest_sessions() {
+        let mut all = list_sessions().unwrap();
+        all.sort_by_key(|s| std::cmp::Reverse(s.bytes));
+        for s in all.iter().take(6) {
+            match pollution(&s.path) {
+                Ok(r) => eprintln!(
+                    "{:?} {:<34} 行={:<6} 孤儿={} 重复组={} 冗余={} 跨模型={} 签发方={:?}",
+                    s.cli,
+                    s.slug.chars().take(32).collect::<String>(),
+                    r.entries,
+                    r.orphan_tool_results,
+                    r.repeated_tool_results,
+                    r.redundant_tool_results,
+                    r.cross_model_reasoning,
+                    r.reasoning_issuers,
+                ),
+                Err(e) => eprintln!("{:?} {} -> 体检失败: {e}", s.cli, s.id),
+            }
+        }
+    }
 
     #[test]
     #[ignore = "读本机真实会话目录，结果因机器而异"]

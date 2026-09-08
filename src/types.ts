@@ -1104,6 +1104,32 @@ export type ProxyRecord = {
   rescued: number;
 };
 
+/// 会话污染体检。按需算 —— 要读整份正文，不进列表扫描。
+export type PollutionReport = {
+  /** 配不上任何调用的工具结果。 */
+  orphan_tool_results: number;
+  /** 同内容重复 ≥3 次的组数。 */
+  repeated_tool_results: number;
+  /** 这些组里冗余的条数（可折叠掉的量）。 */
+  redundant_tool_results: number;
+  /** 跨模型签名密文条数 —— 正是「解不开 encrypted_content」400 的病灶。 */
+  cross_model_reasoning: number;
+  /** 认出的签发方，按出现次数降序。 */
+  reasoning_issuers: [string, number][];
+  entries: number;
+};
+
+/// 清洗结果。三类分开报，处置手段和风险都不同。
+export type CleanReport = {
+  /** 直接删掉的孤儿工具结果。 */
+  orphans_removed: number;
+  /** 折叠内容（不是删除）的重复工具结果 —— 删了会让对应的调用落空。 */
+  duplicates_collapsed: number;
+  /** 换成占位的跨模型密文。 */
+  reasoning_stripped: number;
+  backup: string;
+};
+
 /// 一个会话 id 解析出来的可展示引用。
 export type SessionRef = {
   session_id: string;

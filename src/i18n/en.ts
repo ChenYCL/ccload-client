@@ -933,6 +933,28 @@ registerDict("en", {
     "Quit that CLI window first — the process holds in-memory state and would overwrite your changes",
   // ---- 救援记录 ----
   "救援记录（{n}）": "Rescue history ({n})",
+  // ---- 污染体检 / 清洗 / 体积筛选 ----
+  体检: "Check",
+  污染体检: "Contamination check",
+  清洗: "Clean",
+  清洗完成: "Cleaned",
+  // 「关闭」在上面已收录
+  签发方: "Signed by",
+  孤儿工具结果: "Orphan tool results",
+  重复的重试循环: "Repeated retry loops",
+  跨模型思维链: "Cross-model reasoning",
+  "正在读整份正文…": "Reading the whole transcript…",
+  "共扫描 {n} 行正文": "Scanned {n} transcript rows",
+  "写前会先备份整份原文": "The full original is backed up before writing",
+  "查这条会话有没有孤儿工具结果、重试循环、跨模型思维链":
+    "Check this session for orphan tool results, retry loops and cross-model reasoning",
+  "删掉 {o} 条孤儿工具结果、折叠 {d} 处重复、清理 {c} 条跨模型思维链":
+    "Removed {o} orphan tool results, collapsed {d} duplicates, cleared {c} cross-model reasoning blobs",
+  不限体积: "Any size",
+  "按体积筛选": "Filter by size",
+  "{n} 条运行中不可删": "{n} running, cannot delete",
+  "运行中的会话删不掉 —— 进程会把它写回来": "Running sessions cannot be deleted — the process would write them back",
+  "运行中，删不掉 —— 进程会把它写回来": "Running — cannot delete, the process would write it back",
   清除筛选: "Clear filters",
   // ---- 内核盲区（代理见过、日志里没有的失败） ----
   内核没有日志的失败: "Failures with no kernel log",

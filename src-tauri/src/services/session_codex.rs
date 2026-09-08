@@ -31,8 +31,8 @@ use serde_json::{json, Value};
 
 use crate::error::AppError;
 use crate::services::session_rescue::{
-    backup_and_write, est_text_tokens, is_b64_image, load_jsonl, now_iso, map_nodes, rewrite, CompactPlan,
-    SessionCli, SessionInfo, SlimReport,
+    backup_and_write, est_text_tokens, is_b64_image, load_jsonl, now_iso, map_nodes, rewrite,
+    CompactPlan, PollutionReport, SessionCli, SessionInfo, SlimReport, head_chars, MIN_COLLAPSE_BYTES,
 };
 
 /// `~/.codex/sessions`。
@@ -383,6 +383,68 @@ pub(crate) fn slim(path: &str, target: u64, text_limit: usize) -> Result<SlimRep
         context_before: last,
         context_after: last.saturating_sub((cut as f64 * scale) as u64),
         backup,
+    })
+}
+
+/// 污染体检。Codex 的正文行只有 response_item，工具配对在
+/// function_call / function_call_output 之间。
+pub(crate) fn pollution(path: &Path) -> Result<PollutionReport, AppError> {
+    let entries = load_jsonl(path)?;
+    let mut call_ids: HashSet<String> = HashSet::new();
+    for e in &entries {
+        if !is_response_item(e) {
+            continue;
+        }
+        if e.pointer("/payload/type").and_then(Value::as_str) == Some("function_call") {
+            if let Some(id) = e.pointer("/payload/call_id").and_then(Value::as_str) {
+                call_ids.insert(id.to_string());
+            }
+        }
+    }
+    let mut contents: Vec<(String, String)> = Vec::new();
+    let mut orphans = 0;
+    for e in &entries {
+        if !is_response_item(e) {
+            continue;
+        }
+        if e.pointer("/payload/type").and_then(Value::as_str) != Some("function_call_output") {
+            continue;
+        }
+        let id = e.pointer("/payload/call_id").and_then(Value::as_str).unwrap_or("");
+        if !id.is_empty() && !call_ids.contains(id) {
+            orphans += 1;
+        }
+        contents.push((
+            id.to_string(),
+            e.get("output").map(|v| v.to_string()).unwrap_or_default(),
+        ));
+    }
+    use std::collections::HashMap;
+    let mut seen: HashMap<(String, String), usize> = HashMap::new();
+    for (id, c) in &contents {
+        if c.len() < MIN_COLLAPSE_BYTES {
+            continue; // 和清洗同一条线，见 MIN_COLLAPSE_BYTES
+        }
+        let key = (id.clone(), head_chars(c, 200));
+        *seen.entry(key).or_default() += 1;
+    }
+    let (groups, redundant) = seen.values().fold((0, 0), |(g, r), v| {
+        if *v >= 3 {
+            (g + 1, r + v.saturating_sub(1))
+        } else {
+            (g, r)
+        }
+    });
+    // Codex 的 reasoning 密文是 OpenAI 格式，签发方识别按模型名走 ——
+    // rollout 的 turn_context 里有模型名，密文本身不嵌。这里只数条数，
+    // 跨模型与否结合上下文判断不了就报 0，不猜。
+    Ok(PollutionReport {
+        orphan_tool_results: orphans,
+        repeated_tool_results: groups,
+        redundant_tool_results: redundant,
+        cross_model_reasoning: 0,
+        reasoning_issuers: Vec::new(),
+        entries: entries.iter().filter(|e| is_response_item(e)).count(),
     })
 }
 

@@ -31,15 +31,15 @@
 //! 「哪条快撑爆了」，不参与写入决策，所以均值够用 —— 但界面上不能把它说成
 //! 和 Claude Code 那个 usage 一样精确。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
 use crate::error::AppError;
 use crate::services::session_rescue::{
-    backup_and_write, est_text_tokens, is_b64_image, load_jsonl, pid_alive, map_nodes, rewrite, CompactPlan,
-    SessionCli, SessionInfo, SlimReport,
+    backup_and_write, est_text_tokens, is_b64_image, load_jsonl, map_nodes, pid_alive, rewrite,
+    CompactPlan, PollutionReport, SessionCli, SessionInfo, SlimReport, head_chars, MIN_COLLAPSE_BYTES,
 };
 
 /// `~/.grok/sessions`。
@@ -364,6 +364,271 @@ fn sync_summary(dir: &Path, chat_len: usize) -> Result<(), AppError> {
     Ok(())
 }
 
+/// 从密文 base64 里认签发模型。xAI Responses 的密文是按签发模型加密的，
+/// 明文模型名嵌在里面（实测 claude-opus-5 的密文里就有 `Y2xhdWRlLW9wdXM`）。
+/// 解 base64 后取前一小段找可打印串 —— 只为识别签发方，不需要解密。
+fn issuer_of(enc: &str) -> String {
+    let cleaned: String = enc.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '=').collect();
+    let Ok(raw) = base64ish_decode(&cleaned) else {
+        return String::new();
+    };
+    let text = String::from_utf8_lossy(&raw[..raw.len().min(512)]);
+    for known in ISSUER_PREFIXES {
+        if text.contains(known) {
+            return known.to_string();
+        }
+    }
+    String::new()
+}
+
+/// 宽松 base64：密文里偶尔混着 URL 安全字符，先补齐 padding 再解。
+fn base64ish_decode(s: &str) -> Result<Vec<u8>, ()> {
+    let mut buf = s.replace('-', "+").replace('_', "/");
+    while buf.len() % 4 != 0 {
+        buf.push('=');
+    }
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.decode(buf.as_bytes()).map_err(|_| ())
+}
+
+/// 这条会话当前用的模型属于哪个签发方前缀（与 [`issuer_of`] 同一套词表）。
+fn current_issuer(dir: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(dir.join("summary.json")).ok()?;
+    let v: Value = serde_json::from_str(&raw).ok()?;
+    let model = v.get("current_model_id").and_then(Value::as_str)?;
+    ISSUER_PREFIXES
+        .iter()
+        .find(|p| model.contains(*p))
+        .map(|p| p.to_string())
+}
+
+/// 密文里可能嵌着的签发方名字。识别和「当前模型归类」共用这一份，两处不能漂。
+const ISSUER_PREFIXES: [&str; 8] = [
+    "claude-opus",
+    "claude-sonnet",
+    "claude-haiku",
+    "grok-4",
+    "grok-3",
+    "gpt-5",
+    "gpt-4",
+    "glm",
+];
+
+/// 污染体检。
+pub(crate) fn pollution(path: &Path) -> Result<PollutionReport, AppError> {
+    let dir = session_dir(path)?;
+    let entries = load_jsonl(path)?;
+
+    // 工具调用 id 全集，再数配不上的工具结果。
+    let mut call_ids: HashSet<String> = HashSet::new();
+    for e in &entries {
+        for tc in e.get("tool_calls").and_then(Value::as_array).into_iter().flatten() {
+            if let Some(id) = tc.get("id").and_then(Value::as_str) {
+                call_ids.insert(id.to_string());
+            }
+        }
+    }
+    let mut contents: Vec<(String, String)> = Vec::new(); // (tool_call_id, 内容)
+    let mut orphans = 0;
+    for e in &entries {
+        if e.get("type").and_then(Value::as_str) != Some("tool_result") {
+            continue;
+        }
+        let id = e.get("tool_call_id").and_then(Value::as_str).unwrap_or("");
+        if !id.is_empty() && !call_ids.contains(id) {
+            orphans += 1;
+        }
+        contents.push((
+            id.to_string(),
+            e.get("content").map(|v| v.to_string()).unwrap_or_default(),
+        ));
+    }
+
+    // 重复重试循环：同 tool_call_id 的同内容结果 ≥3 次。
+    // 同 id 多次本身就有问题（一次调用只该有一个结果），重复的按内容再分组。
+    let mut seen: HashMap<(String, String), usize> = HashMap::new();
+    for (id, c) in &contents {
+        if c.len() < MIN_COLLAPSE_BYTES {
+            continue; // 和清洗同一条线，见 MIN_COLLAPSE_BYTES
+        }
+        let key = (id.clone(), head_chars(c, 200));
+        *seen.entry(key).or_default() += 1;
+    }
+    let (groups, redundant) = seen.values().fold((0, 0), |(g, r), v| {
+        if *v >= 3 {
+            (g + 1, r + v.saturating_sub(1))
+        } else {
+            (g, r)
+        }
+    });
+
+    // 跨模型密文 = 签发方与**这条会话当前要发去的那一家**不同的密文。
+    //
+    // 判据不能是「认出 ≥2 种签发方」：实测那条报
+    // "conversation history is incompatible" 的会话，260 条密文里 257 条**全部**
+    // 由 claude-opus 签发（只有一种），而会话当时已经切回 grok-4.6 —— 按「≥2 种」
+    // 判会漏掉整个病灶，正是它让整条会话再也发不出去。
+    //
+    // 认不出签发方的不算：grok 自己的密文里不嵌模型名（实测），把它们判成污染
+    // 会把好密文清掉，那比不清更糟。
+    let current = current_issuer(&dir);
+    let mut issuers: HashMap<String, usize> = HashMap::new();
+    for e in &entries {
+        if e.get("type").and_then(Value::as_str) != Some("reasoning") {
+            continue;
+        }
+        let Some(enc) = e.get("encrypted_content").and_then(Value::as_str) else {
+            continue;
+        };
+        let issuer = issuer_of(enc);
+        if !issuer.is_empty() {
+            *issuers.entry(issuer).or_default() += 1;
+        }
+    }
+    let mut list: Vec<(String, usize)> = issuers.into_iter().collect();
+    list.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let cross = match &current {
+        // 知道当前发给谁：所有别家签发的都是解不开的。
+        Some(cur) => list.iter().filter(|(k, _)| k != cur).map(|(_, n)| n).sum(),
+        // 读不到当前模型：退回「除最大的一家之外都是外来的」。
+        None => list.iter().skip(1).map(|(_, n)| n).sum(),
+    };
+
+    Ok(PollutionReport {
+        orphan_tool_results: orphans,
+        repeated_tool_results: groups,
+        redundant_tool_results: redundant,
+        cross_model_reasoning: cross,
+        reasoning_issuers: list,
+        entries: entries.len(),
+    })
+}
+
+/// 污染清洗：孤儿工具结果拿掉、重复重试循环每组留一次、跨模型密文换成可读的
+/// 占位（密文换家解不开，留着就是下一次 400 的引信；summary 通常是空的）。
+/// 系统提示、正文、reasoning 的摘要文本原样不动。
+pub(crate) fn clean(path: &str) -> Result<crate::services::session_rescue::CleanReport, AppError> {
+    let path = PathBuf::from(path);
+    let dir = session_dir(&path)?;
+    guard_live(&dir)?;
+    let mut entries = load_jsonl(&path)?;
+
+    // 留哪一家的密文，取决于**这条会话接下来发给谁**，也就是 summary.json 里的
+    // current_model_id —— 不是「哪家出现得多」。按出现次数选会在并列时由 HashMap
+    // 的迭代顺序决定去留，同一份文件两次清洗结果可能不同；而且出现多的那家未必
+    // 是当前这家，留错了等于把唯一能续写的密文删掉、把注定解不开的留下。
+    let dominant = current_issuer(&dir).or_else(|| {
+        let issuers = pollution(&path).ok()?.reasoning_issuers;
+        // 兜底：读不到当前模型时按出现次数，并列的按名字排以保证可复现。
+        let mut v = issuers;
+        v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        v.first().map(|(k, _)| k.clone())
+    });
+
+    let mut removed_reasoning = 0usize;
+    let mut call_ids: HashSet<String> = HashSet::new();
+    for e in &entries {
+        for tc in e.get("tool_calls").and_then(Value::as_array).into_iter().flatten() {
+            if let Some(id) = tc.get("id").and_then(Value::as_str) {
+                call_ids.insert(id.to_string());
+            }
+        }
+    }
+
+    // 第一遍：拿掉孤儿 —— 没有任何调用在等它，删掉不会让谁落空。
+    let before = entries.len();
+    entries.retain(|e| {
+        if e.get("type").and_then(Value::as_str) != Some("tool_result") {
+            return true;
+        }
+        let id = e.get("tool_call_id").and_then(Value::as_str).unwrap_or("");
+        id.is_empty() || call_ids.contains(id)
+    });
+    let orphans = before - entries.len();
+
+    // 第二遍：重复重试循环 —— **折叠内容**，条目留着。
+    // 删条目会让对应的 tool_call 没有结果，而每个调用都必须有配对的结果，
+    // 恢复时上游会当场拒掉。折叠既腾出上下文，又保住配对。
+    let mut collapsed = 0usize;
+    let mut count: HashMap<(String, String), usize> = HashMap::new();
+    for e in entries.iter_mut() {
+        if e.get("type").and_then(Value::as_str) != Some("tool_result") {
+            continue;
+        }
+        let id = e
+            .get("tool_call_id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let c = e.get("content").map(|v| v.to_string()).unwrap_or_default();
+        if c.len() < MIN_COLLAPSE_BYTES {
+            continue;
+        }
+        let key = (id, head_chars(&c, 200));
+        let n = count.entry(key).or_default();
+        *n += 1;
+        if *n > 1 {
+            if let Some(obj) = e.as_object_mut() {
+                obj.insert(
+                    "content".into(),
+                    Value::String(
+                        crate::services::session_rescue::COLLAPSED_NOTE.to_string(),
+                    ),
+                );
+                collapsed += 1;
+            }
+        }
+    }
+
+    // 第三遍：跨模型密文 —— 非主流签发方的换占位，主流的留着（它还可能续写）。
+    if let Some(dom) = dominant {
+        for e in entries.iter_mut() {
+            if e.get("type").and_then(Value::as_str) != Some("reasoning") {
+                continue;
+            }
+            let Some(obj) = e.as_object_mut() else { continue };
+            let Some(enc) = obj.get("encrypted_content").and_then(Value::as_str) else {
+                continue;
+            };
+            if issuer_of(enc) == dom {
+                continue;
+            }
+            obj.remove("encrypted_content");
+            // 有可读摘要的留下本体；纯密文壳子整个换掉。
+            let has_summary = obj
+                .get("summary")
+                .and_then(Value::as_array)
+                .is_some_and(|parts| {
+                    parts.iter().any(|p| {
+                        p.get("text").and_then(Value::as_str).is_some_and(|t| !t.trim().is_empty())
+                    })
+                });
+            if !has_summary {
+                removed_reasoning += 1;
+                *e = json!({
+                    "type": "reasoning",
+                    "id": obj.get("id").cloned().unwrap_or(Value::Null),
+                    "summary": [{"type": "summary_text", "text":
+                        "[跨模型思维链已清除：原密文由另一家上游签发，目标上游解不开]"}],
+                });
+            }
+        }
+    }
+
+    let body: String = entries
+        .iter()
+        .map(|e| serde_json::to_string(e).unwrap_or_default() + "\n")
+        .collect();
+    let backup = backup_and_write(&path, &body)?;
+    sync_summary(&dir, entries.len())?;
+    Ok(crate::services::session_rescue::CleanReport {
+        orphans_removed: orphans,
+        duplicates_collapsed: collapsed,
+        reasoning_stripped: removed_reasoning,
+        backup,
+    })
+}
+
 /// 瘦身。语义和 Claude Code 那边一致：砍图 + 截长文本，直到估算降到目标以下。
 pub(crate) fn slim(path: &str, target: u64, text_limit: usize) -> Result<SlimReport, AppError> {
     let path = PathBuf::from(path);
@@ -589,6 +854,13 @@ mod tests {
         std::fs::write(dir.join(name), body).unwrap();
     }
 
+    /// 造一段内嵌模型名的伪密文 —— 足以让 issuer_of 认出签发方。
+    fn enc_for(model: &str) -> String {
+        use base64::Engine;
+        let raw = format!("preamble-bytes-model={model}-trailing");
+        base64::engine::general_purpose::STANDARD.encode(raw)
+    }
+
     fn temp_session() -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "ccload-grok-{}",
@@ -691,6 +963,148 @@ mod tests {
         assert_eq!(summary["num_chat_messages"], json!(after.len()));
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 污染体检 + 清洗的完整往返：孤儿、重复循环、跨模型密文各自要认出来、
+    /// 清干净，而正文和主流签发的密文一个字节都不能动。
+    #[test]
+    fn pollution_is_detected_and_cleaned_without_touching_the_rest() {
+        let dir = temp_session();
+        let mut lines = vec![json!({"type":"system","content":"sys"})];
+        lines.push(json!({
+            "type": "assistant",
+            "content": "step",
+            "tool_calls": [{"id": "t1", "name": "run"}],
+        }));
+        // 正常结果一份 + 同内容重复三份（重试循环的尸体）。
+        // 内容要长过 MIN_COLLAPSE_BYTES，否则按设计不算「值得折叠的重复」。
+        let long = "同一条命令的输出，重试了很多次都一样".repeat(4);
+        lines.push(json!({"type":"tool_result","tool_call_id":"t1","content":long}));
+        for _ in 0..3 {
+            lines.push(json!({"type":"tool_result","tool_call_id":"t1","content":long}));
+        }
+        // 孤儿：没有对应的 tool_calls。
+        lines.push(json!({"type":"tool_result","tool_call_id":"ghost","content":"who"}));
+        // 两种签发方的密文：claude 一条（主流，要留）、grok 一条（要换占位）。
+        lines.push(json!({
+            "type": "reasoning", "id": "rs_claude",
+            "summary": [{"type":"summary_text","text":""}],
+            "encrypted_content": enc_for("claude-opus-5"),
+        }));
+        lines.push(json!({
+            "type": "reasoning", "id": "rs_grok",
+            "summary": [{"type":"summary_text","text":""}],
+            "encrypted_content": enc_for("grok-4.6"),
+        }));
+        let body: String = lines.iter().map(|v| v.to_string() + "\n").collect();
+        write(&dir, "chat_history.jsonl", &body);
+        // 当前模型决定留谁的密文 —— 这条会话现在跑在 claude 上。
+        write(
+            &dir,
+            "summary.json",
+            &json!({"info":{"cwd":"/tmp"},"current_model_id":"claude-opus-5","num_chat_messages":lines.len()})
+                .to_string(),
+        );
+
+        let chat = chat_path(&dir);
+        let r = pollution(&chat).unwrap();
+        assert_eq!(r.orphan_tool_results, 1, "孤儿没认出来");
+        assert_eq!(r.repeated_tool_results, 1, "重复组没认出来");
+        assert_eq!(r.redundant_tool_results, 3, "冗余条数不对：{}", r.redundant_tool_results);
+        // 会话当前跑在 claude 上，所以只有 grok 签的那条是解不开的外来密文。
+        assert_eq!(r.cross_model_reasoning, 1, "跨模型密文条数不对");
+        assert_eq!(r.reasoning_issuers.len(), 2, "两种签发方都该认出来");
+        assert!(!r.is_clean());
+
+        let cleaned = clean(chat.to_str().unwrap()).unwrap();
+        assert_eq!(cleaned.orphans_removed, 1, "孤儿该删掉");
+        assert_eq!(cleaned.duplicates_collapsed, 3, "重复该折叠");
+        assert_eq!(cleaned.reasoning_stripped, 1, "跨模型密文该换占位");
+        assert!(std::fs::metadata(&cleaned.backup).is_ok(), "备份没落地");
+
+        let after = load_jsonl(&chat).unwrap();
+        let tool_results: Vec<&Value> = after
+            .iter()
+            .filter(|e| e.get("type").and_then(Value::as_str) == Some("tool_result"))
+            .collect();
+        // 孤儿没了；4 条配对结果都还在（删了会让 t1 这个调用落空），
+        // 其中 3 条内容被折叠。
+        assert_eq!(tool_results.len(), 4, "配对的结果被误删了");
+        let collapsed = tool_results
+            .iter()
+            .filter(|e| {
+                e["content"]
+                    .as_str()
+                    .is_some_and(|c| c.contains("折叠"))
+            })
+            .count();
+        assert_eq!(collapsed, 3, "重复没被折叠");
+        // 主流签发的密文必须原样 —— 它还有续写价值。
+        let kept = after.iter().find(|e| e["id"] == "rs_claude").unwrap();
+        assert_eq!(
+            kept["encrypted_content"].as_str().unwrap(),
+            enc_for("claude-opus-5"),
+            "主流密文被动了"
+        );
+        // 非主流的换成占位，摘要说明来源。
+        let swapped = after.iter().find(|e| e["id"] == "rs_grok").unwrap();
+        assert!(swapped.get("encrypted_content").is_none());
+        assert!(
+            swapped["summary"][0]["text"].as_str().unwrap().contains("另一家上游"),
+            "占位说明没写清楚：{}",
+            swapped["summary"][0]["text"]
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 真实病灶：密文**只有一种**签发方，但和会话当前模型不是同一家。
+    /// 实测那条报 "conversation history is incompatible" 的会话就是这样
+    /// （257 条全由 claude-opus 签发，会话却已切回 grok-4.6）—— 旧判据
+    /// 「认出 ≥2 种才算跨模型」会把整个病灶漏掉。
+    #[test]
+    fn a_single_foreign_issuer_still_counts_as_cross_model() {
+        let dir = temp_session();
+        let lines = [
+            json!({"type":"system","content":"sys"}),
+            json!({"type":"reasoning","id":"a","summary":[{"type":"summary_text","text":""}],
+                   "encrypted_content": enc_for("claude-opus-5")}),
+            json!({"type":"reasoning","id":"b","summary":[{"type":"summary_text","text":""}],
+                   "encrypted_content": enc_for("claude-opus-5")}),
+        ];
+        let body: String = lines.iter().map(|v| v.to_string() + "\n").collect();
+        write(&dir, "chat_history.jsonl", &body);
+        // 会话现在跑在 grok 上，密文却是 claude 签的 —— 换家必解不开。
+        write(&dir, "summary.json",
+            &json!({"info":{"cwd":"/tmp"},"current_model_id":"grok-4.6"}).to_string());
+
+        let r = pollution(&chat_path(&dir)).unwrap();
+        assert_eq!(r.cross_model_reasoning, 2, "单一外来签发方没被认出来");
+        assert_eq!(r.reasoning_issuers, vec![("claude-opus".to_string(), 2)]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 认不出签发方的密文不算污染 —— grok 自己的密文里不嵌模型名（实测），
+    /// 把它们判成外来会把唯一能续写的密文清掉。
+    #[test]
+    fn unrecognised_blobs_are_not_flagged() {
+        let dir = temp_session();
+        let lines = [
+            json!({"type":"reasoning","id":"a","summary":[],"encrypted_content":"AAAABBBBCCCC"}),
+        ];
+        write(&dir, "chat_history.jsonl", &(lines[0].to_string() + "\n"));
+        write(&dir, "summary.json",
+            &json!({"info":{"cwd":"/tmp"},"current_model_id":"grok-4.6"}).to_string());
+        let r = pollution(&chat_path(&dir)).unwrap();
+        assert_eq!(r.cross_model_reasoning, 0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 签发方识别：密文里嵌的模型名要认得出来，认不出也不许崩。
+    #[test]
+    fn issuer_sniffing_reads_the_model_name() {
+        assert_eq!(issuer_of(&enc_for("claude-opus-5")), "claude-opus");
+        assert_eq!(issuer_of(&enc_for("grok-4.6")), "grok-4");
+        assert_eq!(issuer_of("!!!not-base64!!!"), "");
     }
 
     /// 上下文取数：精确值优先，没有就用「累计 / 调用次数」的均值。

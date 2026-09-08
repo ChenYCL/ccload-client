@@ -28,6 +28,15 @@ import type { SessionInfo } from "../types";
 
 const AGE_OPTIONS = [0, 7, 14, 30, 60, 90] as const;
 
+/// 体积档位。一条会话动辄几百 MB（Grok 的 updates.jsonl 单个就能到 100 MB），
+/// 想腾空间时最有效的一刀是「先看最大的那几条」。
+const SIZE_OPTIONS = [
+  [0, "不限体积"],
+  [10 * 1024 * 1024, "≥ 10 MB"],
+  [100 * 1024 * 1024, "≥ 100 MB"],
+  [1024 * 1024 * 1024, "≥ 1 GB"],
+] as const;
+
 export function SessionManagePage() {
   const t = useT();
   const qc = useQueryClient();
@@ -44,6 +53,7 @@ export function SessionManagePage() {
   const [cli, setCli] = useState("");
   const [sort, setSort] = useState<SessionSort>("oldest");
   const [olderThan, setOlderThan] = useState(30);
+  const [minBytes, setMinBytes] = useState(0);
 
   const sessions = useQuery({
     queryKey: ["sessions"],
@@ -55,8 +65,9 @@ export function SessionManagePage() {
   const projects = useMemo(() => uniqueProjects(all), [all]);
   const clis = useMemo(() => uniqueClis(all), [all]);
   const rows = useMemo(
-    () => filterSessions(all, { query, project, cli, sort, olderThanDays: olderThan }),
-    [all, query, project, cli, sort, olderThan],
+    () =>
+      filterSessions(all, { query, project, cli, minBytes, sort, olderThanDays: olderThan }),
+    [all, query, project, cli, minBytes, sort, olderThan],
   );
 
   useEffect(() => {
@@ -78,7 +89,11 @@ export function SessionManagePage() {
     if (focusId) focusRowRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
   }, [focusId, rows.length]);
 
+  // 能删的 = 没在跑。活着的删了会被进程写回来，等于没删。
   const selectable = rows.filter((s) => !s.live);
+  const liveCount = rows.length - selectable.length;
+  // 这一屏总共占多少盘 —— 决定「值不值得删」的那个数。
+  const shownBytes = rows.reduce((n, s) => n + Number(s.bytes), 0);
   const selectedRows = selectable.filter((s) => selected.has(s.id));
   const allChecked = selectable.length > 0 && selectedRows.length === selectable.length;
   const selectedBytes = selectedRows.reduce((n, s) => n + Number(s.bytes), 0);
@@ -186,6 +201,19 @@ export function SessionManagePage() {
         </Select>
         <Select
           small
+          className="w-36 shrink-0"
+          value={String(minBytes)}
+          onChange={(e) => setMinBytes(Number(e.target.value))}
+          aria-label={t("按体积筛选")}
+        >
+          {SIZE_OPTIONS.map(([b, label]) => (
+            <option key={b} value={b}>
+              {t(label)}
+            </option>
+          ))}
+        </Select>
+        <Select
+          small
           className="w-40 shrink-0"
           value={String(olderThan)}
           onChange={(e) => setOlderThan(Number(e.target.value))}
@@ -210,12 +238,13 @@ export function SessionManagePage() {
           <option value="peak">{t("峰值最大")}</option>
           <option value="current">{t("当前最大")}</option>
         </Select>
-        {(query || project || cli || olderThan !== 30) && (
+        {(query || project || cli || minBytes || olderThan !== 30) && (
           <button
             onClick={() => {
               setQuery("");
               setProject("");
               setCli("");
+              setMinBytes(0);
               setOlderThan(30);
             }}
             className="shrink-0 whitespace-nowrap rounded-lg border border-border bg-surface-raised px-2.5 py-1 text-xs text-muted hover:bg-surface-2"
@@ -227,6 +256,15 @@ export function SessionManagePage() {
           {rows.length === all.length
             ? t("共 {n} 个会话", { n: all.length })
             : t("{shown} / {total}", { shown: rows.length, total: all.length })}
+          <span className="ml-1.5">· {fmtBytes(shownBytes)}</span>
+          {liveCount > 0 && (
+            <span
+              className="ml-1.5 text-amber-700"
+              title={t("运行中的会话删不掉 —— 进程会把它写回来")}
+            >
+              · {t("{n} 条运行中不可删", { n: liveCount })}
+            </span>
+          )}
         </span>
       </div>
 
@@ -282,6 +320,7 @@ export function SessionManagePage() {
               checked={selected.has(s.id)}
               disabled={s.live || remove.isPending}
               onChange={(e) => toggle(s.id, e.target.checked)}
+              title={s.live ? t("运行中，删不掉 —— 进程会把它写回来") : undefined}
               aria-label={t("选中 {name}", { name: s.slug || s.id.slice(0, 8) })}
               className="shrink-0"
             />

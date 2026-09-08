@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, History, LifeBuoy, Loader2, RefreshCw, Scissors, Sparkles } from "lucide-react";
+import { AlertTriangle, History, LifeBuoy, Loader2, RefreshCw, Scissors, Sparkles, Stethoscope } from "lucide-react";
 import { api } from "../lib/api";
 import { cn } from "../lib/cn";
 import { errText } from "../lib/err";
 import { useT } from "../i18n";
 import { ComboBox } from "../components/ui/ComboBox";
+import { Overlay } from "../components/Modal";
 import { Select, TextInput } from "../components/ui/Input";
 import { kernelAliases, type ChannelModels } from "../lib/modelOptions";
 import {
@@ -19,7 +20,7 @@ import {
   uniqueProjects,
   type SessionSort,
 } from "../lib/sessionList";
-import type { CompactReport, SessionInfo, SlimReport } from "../types";
+import type { CleanReport, CompactReport, PollutionReport, SessionInfo, SlimReport } from "../types";
 
 /// 会话救援。
 ///
@@ -61,7 +62,7 @@ type BatchItem = { id: string; slug: string; ok: boolean; detail: string };
 /// 验证效果，「完成」的凭据必须还在；而前端没有别的持久层。
 type RescueLogEntry = {
   time: number;
-  kind: "slim" | "compact";
+  kind: "slim" | "compact" | "clean";
   cli: string;
   slug: string;
   backup: string;
@@ -241,6 +242,43 @@ export function SessionsPage() {
     onError: (e) => setMessage(errText(e)),
     onSettled: () => setBusyId(null),
   });
+
+  // 污染体检：按需算（要读整份正文），结果留在弹窗里，清洗完就地刷新。
+  const [checking, setChecking] = useState<SessionInfo | null>(null);
+  const [report, setReport] = useState<PollutionReport | null>(null);
+  const checkup = useMutation({
+    mutationFn: (s: SessionInfo) => api.sessionPollution(s.path),
+    onSuccess: (r) => setReport(r),
+    onError: (e) => {
+      setChecking(null);
+      setMessage(errText(e));
+    },
+  });
+  const clean = useMutation({
+    mutationFn: (s: SessionInfo) => api.sessionClean(s.path),
+    onSuccess: (r: CleanReport, s) => {
+      setChecking(null);
+      setReport(null);
+      done(
+        t("清洗完成"),
+        r.backup,
+        t("删掉 {o} 条孤儿工具结果、折叠 {d} 处重复、清理 {c} 条跨模型思维链", {
+          o: r.orphans_removed,
+          d: r.duplicates_collapsed,
+          c: r.reasoning_stripped,
+        }),
+        "clean",
+        s,
+      );
+    },
+    onError: (e) => setMessage(errText(e)),
+  });
+
+  const openCheckup = (s: SessionInfo) => {
+    setChecking(s);
+    setReport(null);
+    checkup.mutate(s);
+  };
 
   const busy = slim.isPending || compact.isPending || batch.isPending;
 
@@ -524,6 +562,15 @@ export function SessionsPage() {
               ) : (
                 <span className="flex shrink-0 items-center gap-1.5">
                   <button
+                    onClick={() => openCheckup(s)}
+                    disabled={busy}
+                    title={t("查这条会话有没有孤儿工具结果、重试循环、跨模型思维链")}
+                    className="flex items-center gap-1 rounded-lg border border-border bg-surface-raised px-2 py-1 text-xs hover:bg-surface-2 disabled:opacity-40"
+                  >
+                    <Stethoscope className="h-3 w-3" />
+                    {t("体检")}
+                  </button>
+                  <button
                     onClick={() => {
                       setBusyId(s.id);
                       slim.mutate(s);
@@ -590,6 +637,89 @@ export function SessionsPage() {
         </ul>
       </div>
 
+      {checking && (
+        <Overlay onClose={() => !clean.isPending && setChecking(null)}>
+          <div className="material-modal animate-materialize w-[32rem] max-w-full rounded-xl border border-border p-4">
+            <h2 className="t-title">{t("污染体检")}</h2>
+            <p className="mt-0.5 truncate text-xs text-muted" title={checking.cwd}>
+              {checking.slug || checking.id.slice(0, 8)} · {cliLabel(checking.cli)}
+            </p>
+
+            {checkup.isPending && (
+              <p className="mt-4 flex items-center gap-2 text-sm text-muted">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                {t("正在读整份正文…")}
+              </p>
+            )}
+
+            {report && (
+              <div className="mt-4 space-y-2 text-sm">
+                <Finding
+                  n={report.orphan_tool_results}
+                  label={t("孤儿工具结果")}
+                  hint={t("配不上任何调用 —— CLI 复原对话时会拿它没辙。清洗直接删。")}
+                />
+                <Finding
+                  n={report.redundant_tool_results}
+                  label={t("重复的重试循环")}
+                  hint={t(
+                    "同一次调用的同样输出重复出现，是卡在重试里的痕迹。清洗只折叠内容、保留条目 —— 删了会让对应的调用落空。",
+                  )}
+                />
+                <Finding
+                  n={report.cross_model_reasoning}
+                  label={t("跨模型思维链")}
+                  hint={t(
+                    "密文由另一家上游签发，换家之后解不开，正是「conversation history is incompatible」的病灶。清洗把非当前那家换成占位。",
+                  )}
+                />
+                {report.reasoning_issuers.length > 0 && (
+                  <p className="text-xs text-muted">
+                    {t("签发方")}：
+                    {report.reasoning_issuers.map(([k, n]) => `${k}×${n}`).join("、")}
+                  </p>
+                )}
+                <p className="text-xs text-muted">
+                  {t("共扫描 {n} 行正文", { n: report.entries })}
+                </p>
+              </div>
+            )}
+
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <button
+                onClick={() => setChecking(null)}
+                disabled={clean.isPending}
+                className="rounded-lg border border-border bg-surface-raised px-3 py-1.5 text-sm hover:bg-surface-2 disabled:opacity-40"
+              >
+                {t("关闭")}
+              </button>
+              {report && (
+                <button
+                  onClick={() => clean.mutate(checking)}
+                  disabled={
+                    clean.isPending ||
+                    checking.live ||
+                    report.orphan_tool_results +
+                      report.redundant_tool_results +
+                      report.cross_model_reasoning ===
+                      0
+                  }
+                  title={
+                    checking.live
+                      ? t("先退出那个 CLI 窗口 —— 进程里有内存态，现在改会被它盖回去")
+                      : t("写前会先备份整份原文")
+                  }
+                  className="flex items-center gap-1 rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent/90 disabled:opacity-40"
+                >
+                  {clean.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                  {t("清洗")}
+                </button>
+              )}
+            </div>
+          </div>
+        </Overlay>
+      )}
+
       {message && <p className="mt-4 whitespace-pre-line text-sm text-accent">{message}</p>}
 
       {/* 救援历史。救援点完用户常切去 CLI 验证，回来时那条「已完成」早没了 ——
@@ -606,7 +736,7 @@ export function SessionsPage() {
                 <span className="tabular-nums text-muted">{new Date(h.time * 1000).toLocaleTimeString()}</span>
                 <span className="rounded bg-surface-2 px-1.5 py-px text-[10px] text-muted">{cliLabel(h.cli as SessionInfo["cli"])}</span>
                 <span className={cn("rounded px-1.5 py-px text-[10px]", h.kind === "compact" ? "bg-accent/15 text-accent" : "bg-surface-2 text-muted")}>
-                  {h.kind === "compact" ? t("分块总结") : t("瘦身")}
+                  {h.kind === "compact" ? t("分块总结") : h.kind === "clean" ? t("清洗") : t("瘦身")}
                 </span>
                 <span className="font-medium">{h.slug}</span>
                 <span className="min-w-0 flex-1 truncate text-muted" title={`${h.detail}
@@ -621,6 +751,26 @@ ${h.backup}`}>
           </ul>
         </details>
       )}
+    </div>
+  );
+}
+
+/// 体检里的一条发现。0 是好消息，所以零和非零要一眼分得开。
+function Finding({ n, label, hint }: { n: number; label: string; hint: string }) {
+  return (
+    <div className="rounded-lg border border-border px-3 py-2">
+      <div className="flex items-baseline gap-2">
+        <span
+          className={cn(
+            "rounded px-1.5 py-px text-xs font-medium tabular-nums",
+            n > 0 ? "bg-amber-500/15 text-amber-700" : "bg-emerald-500/12 text-emerald-700",
+          )}
+        >
+          {n}
+        </span>
+        <span className="text-sm">{label}</span>
+      </div>
+      <p className="mt-0.5 text-[11px] leading-relaxed text-muted">{hint}</p>
     </div>
   );
 }

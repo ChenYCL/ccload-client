@@ -32,8 +32,10 @@ import type {
   ImportEntry,
   ImportPreview,
   ImportResult,
+  CleanReport,
   CompactReport,
   DeleteReport,
+  PollutionReport,
   SessionPreset,
   PresetPrefs,
   SpawnResult,
@@ -370,6 +372,12 @@ export const api = {
    * 删掉选中的会话。不可恢复，调用方必须先弹确认。
    * 活着的会话后端会跳过；一条失败不拖累其余。
    */
+  /// 污染体检。读整份正文，所以是按需调，不跟着列表扫描跑。
+  sessionPollution: (path: string) => invoke<PollutionReport>("session_pollution", { path }),
+
+  /// 清洗：孤儿删掉、重复折叠、跨模型密文换占位。写前必备份。
+  sessionClean: (path: string) => invoke<CleanReport>("session_clean", { path }),
+
   sessionDelete: (paths: string[]) => invoke<DeleteReport>("session_delete", { paths }),
 
   pickFolder: () => invoke<string | null>("pick_folder"),

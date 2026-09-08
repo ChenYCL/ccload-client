@@ -335,6 +335,8 @@ pub fn run() {
             commands::session::session_slim,
             commands::session::session_compact,
             commands::session::session_delete,
+            commands::session::session_pollution,
+            commands::session::session_clean,
             commands::preset::preset_list,
             commands::preset::preset_prefs,
             commands::preset::preset_set_hide_builtins,

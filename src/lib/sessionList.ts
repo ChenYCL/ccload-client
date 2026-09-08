@@ -65,6 +65,11 @@ export function filterSessions(
     project: string;
     /** 只留这个 CLI 的。空 = 不过滤。 */
     cli?: string;
+    /**
+     * 只留不小于这么多字节的。0 = 不过滤。一条会话动辄几百 MB，想腾空间时
+     * 翻列表找大的太慢，得能直接把小的滤掉。
+     */
+    minBytes?: number;
     sort: SessionSort;
     /** 只留「最后改动」早于这么多天的。0 = 不过滤。 */
     olderThanDays?: number;
@@ -77,6 +82,7 @@ export function filterSessions(
       : 0;
   const out = all.filter((s) => {
     if (opts.cli && s.cli !== opts.cli) return false;
+    if (opts.minBytes && Number(s.bytes) < opts.minBytes) return false;
     if (opts.project && projectName(s) !== opts.project) return false;
     if (cutoff && s.modified_at > cutoff) return false;
     if (!q) return true;

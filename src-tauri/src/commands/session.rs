@@ -6,7 +6,7 @@ use crate::error::{AppError, AppResult};
 use crate::services::context_window::pick_compact_models;
 use crate::services::fallback::FallbackStore;
 use crate::services::session_rescue::{
-    self, CompactReport, DeleteReport, SessionInfo, SlimReport,
+    self, CleanReport, CompactReport, DeleteReport, PollutionReport, SessionInfo, SlimReport,
 };
 use crate::state::AppState;
 
@@ -114,6 +114,24 @@ fn compact_candidates(
         ));
     }
     Ok(out)
+}
+
+/// 污染体检。按需读整份正文 —— 不能并进列表扫描（那本来就要半分钟）。
+#[tauri::command]
+pub async fn session_pollution(path: String) -> AppResult<PollutionReport> {
+    Ok(tokio::task::spawn_blocking(move || session_rescue::pollution(&path))
+        .await
+        .map_err(|e| AppError::Config(format!("体检失败：{e}")))??)
+}
+
+/// 清洗。备份先行，报告清掉了几条。
+#[tauri::command]
+pub async fn session_clean(path: String) -> AppResult<CleanReport> {
+    Ok(
+        tokio::task::spawn_blocking(move || session_rescue::clean(&path))
+            .await
+            .map_err(|e| AppError::Config(format!("清洗失败：{e}")))??,
+    )
 }
 
 /// 删掉选中的会话。不可恢复，调用方必须先弹确认。
