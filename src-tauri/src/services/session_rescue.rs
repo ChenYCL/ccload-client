@@ -41,6 +41,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::error::AppError;
+use crate::services::{session_codex, session_grok};
 
 /// 一张图的 token 数 ≈ 像素数 / 750，Anthropic 文档口径。
 const PIXELS_PER_TOKEN: u64 = 750;
@@ -52,9 +53,24 @@ const CHARS_PER_TOKEN: f64 = 3.5;
 /// 短于这个长度的字符串不可能是 base64 图片，先挡掉省得逐个查兄弟字段。
 const MIN_B64_LEN: usize = 4096;
 
+/// 这条会话是哪个 CLI 的。三家的磁盘布局完全不同（单文件 / 目录 / 按日期分层），
+/// 救援的每一步都要按它分派，所以它是 `SessionInfo` 的一等字段而不是从路径猜。
+///
+/// Gemini CLI 和 OpenCode 不在这里：实测两者磁盘上**没有对话正文**（前者只有
+/// `projects.json`，后者只存 `session_diff`），没有可救的东西，列出来只会让人
+/// 以为是扫描漏了。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SessionCli {
+    ClaudeCode,
+    GrokBuild,
+    Codex,
+}
+
 /// 一条会话的概况。
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionInfo {
+    pub cli: SessionCli,
     /// 会话 uuid，也就是文件名去掉 `.jsonl`。`--resume` 认它。
     pub id: String,
     pub path: String,
@@ -74,6 +90,19 @@ pub struct SessionInfo {
     pub live: bool,
     /// 已经成功压缩过几次。>0 说明最后一个边界之前的内容本来就不进上下文。
     pub compactions: usize,
+}
+
+/// 一条会话要怎么压。Grok / Codex 的写回形状和 Claude Code 不同（那边是追加两条
+/// 剪链，这两家只能重写），但「渲染成行 → 切块总结 → 写回」这三步是共用的，
+/// 所以中间这层结果抽出来。
+pub struct CompactPlan {
+    /// 进摘要的内容，一条记录一行。
+    pub lines: Vec<String>,
+    /// 切点：这个下标之前的条目被摘要顶替。
+    pub cut: usize,
+    /// 原样留下的尾巴条数。
+    pub kept_tail: usize,
+    pub context_before: u64,
 }
 
 /// 瘦身结果。
@@ -119,7 +148,7 @@ pub(crate) fn sessions_root() -> Result<PathBuf, AppError> {
     Ok(home.join(".claude").join("projects"))
 }
 
-fn est_text_tokens(s: &str) -> u64 {
+pub(crate) fn est_text_tokens(s: &str) -> u64 {
     (s.chars().count() as f64 / CHARS_PER_TOKEN) as u64
 }
 
@@ -127,7 +156,7 @@ fn est_text_tokens(s: &str) -> u64 {
 ///
 /// 判据是同级字段里有 `image/` 或 `type: "base64"` —— 只看键名会把别的长
 /// 字符串也当成图砍掉。
-fn is_b64_image(parent: &serde_json::Map<String, Value>, key: &str, val: &Value) -> bool {
+pub(crate) fn is_b64_image(parent: &serde_json::Map<String, Value>, key: &str, val: &Value) -> bool {
     let Some(s) = val.as_str() else { return false };
     if s.len() < MIN_B64_LEN || (key != "data" && key != "base64") {
         return false;
@@ -257,6 +286,43 @@ fn load(path: &Path) -> Result<Vec<Value>, AppError> {
     Ok(out)
 }
 
+/// 给别家 CLI 的模块用的读取入口。语义和 [`load`] 完全一致 —— 三家都是 jsonl，
+/// 差别只在每行的形状。
+pub(crate) fn load_jsonl(path: &Path) -> Result<Vec<Value>, AppError> {
+    load(path)
+}
+
+/// 备份 + 原子写回**任意**文本文件。
+///
+/// 三家 CLI 的正文格式不同（jsonl / jsonl / json），但「先备份再原子替换」这条
+/// 规矩是一样的，而且是唯一的后悔药：直接就地改写的话，写到一半断电就把用户
+/// 几十小时的会话变成半个文件。备份名统一是 `<原名>.bak-<秒级时间戳>`。
+pub(crate) fn backup_and_write(path: &Path, body: &str) -> Result<String, AppError> {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| AppError::Config("路径没有文件名".into()))?;
+    let dir = path
+        .parent()
+        .ok_or_else(|| AppError::Config("路径没有上级目录".into()))?;
+    let backup = dir.join(format!("{name}.bak-{stamp}"));
+    std::fs::copy(path, &backup)
+        .map_err(|e| AppError::Io(format!("备份失败，已中止：{e}")))?;
+
+    let tmp = dir.join(format!("{name}.tmp"));
+    std::fs::write(&tmp, body).map_err(|e| AppError::Io(format!("写临时文件失败：{e}")))?;
+    // 保留原权限：会话是 0600，写成默认的 0644 等于把对话内容对同机其他用户开放。
+    if let Ok(meta) = std::fs::metadata(path) {
+        let _ = std::fs::set_permissions(&tmp, meta.permissions());
+    }
+    std::fs::rename(&tmp, path).map_err(|e| AppError::Io(format!("落盘失败：{e}")))?;
+    Ok(backup.display().to_string())
+}
+
 /// 备份 + 原子写回。
 ///
 /// 先复制再写临时文件最后 rename：直接就地改写的话，写到一半断电就把用户
@@ -300,12 +366,12 @@ fn save(path: &Path, entries: &[Value]) -> Result<String, AppError> {
 /// `libc::kill`，退回 `tasklist` —— 会话残留文件在那边最多让一条已经死掉的
 /// 会话暂时删不掉，不值得为它引一个 winapi 依赖。
 #[cfg(unix)]
-fn pid_alive(pid: i64) -> bool {
+pub(crate) fn pid_alive(pid: i64) -> bool {
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 
 #[cfg(not(unix))]
-fn pid_alive(pid: i64) -> bool {
+pub(crate) fn pid_alive(pid: i64) -> bool {
     // 数组字面量的元素类型必须一致，别把 `&str` 和 `&String` 混在一个 args 里。
     let filter = format!("PID eq {pid}");
     let Ok(out) = std::process::Command::new("tasklist")
@@ -388,11 +454,37 @@ fn live_session_ids() -> HashSet<String> {
 /// 扫出所有会话。读不动的文件跳过而不是整个失败 —— 一份坏 transcript 不该
 /// 让整页打不开。
 pub fn list_sessions() -> Result<Vec<SessionInfo>, AppError> {
-    let root = sessions_root()?;
+    // 三家并行扫。这一步是纯 IO：实测本机 claude 27s / grok 8.8s / codex 10.1s，
+    // 串行加起来 46 秒，界面进这一页就是卡死；并行之后墙钟等于最慢的那一家。
+    // 用 `thread::scope` 而不是 rayon —— 只有三个任务，不值得引一个依赖。
+    let (mut out, grok, codex) = std::thread::scope(|sc| {
+        let g = sc.spawn(session_grok::list);
+        let c = sc.spawn(session_codex::list);
+        let claude = list_claude();
+        // 扫描线程 panic 只该让那一家为空，不能把整页拖垮。
+        (
+            claude,
+            g.join().unwrap_or_default(),
+            c.join().unwrap_or_default(),
+        )
+    });
+    out.extend(grok);
+    out.extend(codex);
+    // 大的排前面：这一页的用途就是找出哪条快撑爆了。
+    out.sort_by_key(|s| std::cmp::Reverse(s.peak_context));
+    Ok(out)
+}
+
+/// 扫 Claude Code 那一家。扫不动就返回空 —— 没装 Claude Code 的机器上
+/// `~/.claude/projects` 根本不存在，那不是错误。
+fn list_claude() -> Vec<SessionInfo> {
+    let Ok(root) = sessions_root() else {
+        return Vec::new();
+    };
     let live = live_session_ids();
     let mut out = Vec::new();
     let Ok(projects) = std::fs::read_dir(&root) else {
-        return Ok(out);
+        return out;
     };
     for proj in projects.flatten() {
         let Ok(files) = std::fs::read_dir(proj.path()) else {
@@ -408,9 +500,7 @@ pub fn list_sessions() -> Result<Vec<SessionInfo>, AppError> {
             }
         }
     }
-    // 大的排前面：这一页的用途就是找出哪条快撑爆了。
-    out.sort_by_key(|s| std::cmp::Reverse(s.peak_context));
-    Ok(out)
+    out
 }
 
 /// 删掉选中的会话。不可恢复 —— Claude Code 没有回收站，所以调用方必须先弹确认。
@@ -423,7 +513,77 @@ pub fn list_sessions() -> Result<Vec<SessionInfo>, AppError> {
 /// 同 uuid 旁边的 `.jsonl.bak-*` 一起清 —— 那是救援留下的备份，只删 jsonl
 /// 腾不出真正的空间。
 pub fn delete_sessions(paths: &[String]) -> Result<DeleteReport, AppError> {
-    delete_under(&sessions_root()?, &live_session_ids(), paths)
+    if paths.is_empty() {
+        return Err(AppError::Config("没有选中任何会话".into()));
+    }
+    let mut report = DeleteReport {
+        deleted: 0,
+        bytes: 0,
+        skipped_live: Vec::new(),
+        errors: Vec::new(),
+    };
+    let live_grok = session_grok::live_ids();
+    let live_codex = session_codex::live_ids();
+    let mut claude: Vec<String> = Vec::new();
+    let mut seen = HashSet::new();
+
+    for raw in paths {
+        let canon = match PathBuf::from(raw).canonicalize() {
+            Ok(p) => p,
+            Err(e) => {
+                report.errors.push(format!("{raw}：找不到（{e}）"));
+                continue;
+            }
+        };
+        if !seen.insert(canon.clone()) {
+            continue;
+        }
+        // Grok 是整目录，Codex 是单文件，两家各自的活会话表也不一样，所以
+        // 先分流再删；剩下的才交给 Claude Code 那条带根目录校验的老路。
+        if session_grok::owns(&canon) {
+            let id = canon
+                .parent()
+                .and_then(|d| d.file_name())
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .to_string();
+            if live_grok.contains(&id) {
+                report.skipped_live.push(id);
+                continue;
+            }
+            match session_grok::delete(&canon) {
+                Ok(b) => {
+                    report.deleted += 1;
+                    report.bytes += b;
+                }
+                Err(e) => report.errors.push(format!("{}：{e}", canon.display())),
+            }
+        } else if session_codex::owns(&canon) {
+            let id = session_codex::id_of(&canon);
+            if !id.is_empty() && live_codex.contains(&id) {
+                report.skipped_live.push(id);
+                continue;
+            }
+            match session_codex::delete(&canon) {
+                Ok(b) => {
+                    report.deleted += 1;
+                    report.bytes += b;
+                }
+                Err(e) => report.errors.push(format!("{}：{e}", canon.display())),
+            }
+        } else {
+            claude.push(canon.display().to_string());
+        }
+    }
+
+    if !claude.is_empty() {
+        let r = delete_under(&sessions_root()?, &live_session_ids(), &claude)?;
+        report.deleted += r.deleted;
+        report.bytes += r.bytes;
+        report.skipped_live.extend(r.skipped_live);
+        report.errors.extend(r.errors);
+    }
+    Ok(report)
 }
 
 fn delete_under(
@@ -598,6 +758,7 @@ fn scan(path: &Path, live: &HashSet<String>) -> Option<SessionInfo> {
     }
 
     Some(SessionInfo {
+        cli: SessionCli::ClaudeCode,
         live: live.contains(&id),
         id,
         path: path.display().to_string(),
@@ -618,7 +779,7 @@ fn scan(path: &Path, live: &HashSet<String>) -> Option<SessionInfo> {
 }
 
 /// 就地改写：对每个 (所在对象, 键) 调 `f`，返回 `Some(新值)` 就替换。
-fn rewrite(node: &mut Value, f: &mut impl FnMut(&serde_json::Map<String, Value>, &str, &Value) -> Option<Value>) {
+pub(crate) fn rewrite(node: &mut Value, f: &mut impl FnMut(&serde_json::Map<String, Value>, &str, &Value) -> Option<Value>) {
     match node {
         Value::Object(map) => {
             // 先算出要改什么，再改 —— 边遍历边改会借用冲突。
@@ -638,11 +799,54 @@ fn rewrite(node: &mut Value, f: &mut impl FnMut(&serde_json::Map<String, Value>,
     }
 }
 
+/// 就地改写**每个节点本身**（含数组元素）：`f` 返回 `Some(新值)` 就整个替换掉。
+///
+/// 和 [`rewrite`] 的区别在这里，而且这个区别害过人：`rewrite` 只把「对象里的
+/// 某个键的值」交给回调，数组元素自己永远不会被当成 `val` 传进去。Claude Code
+/// 的图片是 `{"type":"image","source":{…base64…}}`，那个 base64 块是 `source`
+/// 键的值，所以 `rewrite` 够用；而 Grok 的 `{"type":"image","url":"data:…"}` 和
+/// Codex 的 `input_image` **本身就是 content 数组的一个元素**，用 `rewrite` 一张
+/// 都砍不掉。要替换整个节点就用这个。
+///
+/// 命中的节点不再往下递归 —— 它已经被换掉了，里面的东西不存在了。
+pub(crate) fn map_nodes(node: &mut Value, f: &mut impl FnMut(&Value) -> Option<Value>) {
+    match node {
+        Value::Array(items) => {
+            for v in items.iter_mut() {
+                match f(v) {
+                    Some(nv) => *v = nv,
+                    None => map_nodes(v, f),
+                }
+            }
+        }
+        Value::Object(map) => {
+            for (_, v) in map.iter_mut() {
+                match f(v) {
+                    Some(nv) => *v = nv,
+                    None => map_nodes(v, f),
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 /// 瘦身。图片换占位符、超长文本留首尾，直到预计上下文降到 `target` 以下。
 ///
 /// `target` 是**真实**口径。内部按字符估算排序，再用「真实 / 估算」的换算
 /// 系数折算回来 —— 直接按估算砍会砍过头（实测估算比真值高三倍多）。
 pub fn slim(path: &str, target: u64, text_limit: usize) -> Result<SlimReport, AppError> {
+    let p = Path::new(path);
+    if session_grok::owns(p) {
+        return session_grok::slim(path, target, text_limit);
+    }
+    if session_codex::owns(p) {
+        return session_codex::slim(path, target, text_limit);
+    }
+    slim_claude(path, target, text_limit)
+}
+
+fn slim_claude(path: &str, target: u64, text_limit: usize) -> Result<SlimReport, AppError> {
     let path = PathBuf::from(path);
     let id = path
         .file_stem()
@@ -901,7 +1105,7 @@ fn render(entry: &Value) -> Option<String> {
 ///
 /// 保留尾巴靠 `compactMetadata.preservedMessages.uuids` 点名，不靠 parent 链 ——
 /// 那些条目已经在文件里了，重复写一遍会出现两个相同 uuid。
-pub async fn compact(
+async fn compact_claude(
     base_url: &str,
     token: &str,
     model: &str,
@@ -958,57 +1162,8 @@ pub async fn compact(
         ));
     }
 
-    // 切块。按估算权重累加，超过一块就换下一块。
-    let mut chunks: Vec<String> = Vec::new();
-    let (mut buf, mut acc) = (String::new(), 0u64);
-    for e in &to_summarize {
-        let Some(line) = render(e) else { continue };
-        let w = est_text_tokens(&line);
-        if acc + w > chunk_tokens && !buf.is_empty() {
-            chunks.push(std::mem::take(&mut buf));
-            acc = 0;
-        }
-        buf.push_str(&line);
-        buf.push_str("\n\n");
-        acc += w;
-    }
-    if !buf.is_empty() {
-        chunks.push(buf);
-    }
-
-    // 逐块总结。串行而不是并发：这些请求打的是同一个渠道，并发只会把它
-    // 顶到限流，而这里本来就不赶时间。
-    let mut partials = Vec::new();
-    for (i, c) in chunks.iter().enumerate() {
-        let prompt = format!(
-            "下面是一段编程对话的第 {}/{} 段。请写一份**事实性**摘要，覆盖：\
-             用户提出的每一个要求与意图、改过的文件与函数、做过的决定和它的理由、\
-             遇到的错误与最终怎么解决的、以及尚未完成的事。不要评价，不要省略具体的\
-             文件名和命令。\n\n---\n{}",
-            i + 1,
-            chunks.len(),
-            c
-        );
-        partials.push(ask(base_url, token, model, &prompt).await?);
-    }
-
-    // 合并。一段的时候不用再问一次模型。
-    let summary = if partials.len() == 1 {
-        partials.remove(0)
-    } else {
-        let joined = partials.join("\n\n---\n\n");
-        ask(
-            base_url,
-            token,
-            model,
-            &format!(
-                "下面是同一段编程对话按先后顺序切成几段后各自的摘要。\
-                 把它们合并成一份连贯的摘要，保留所有具体的文件名、命令、决定和未完成事项，\
-                 去掉重复。\n\n---\n{joined}"
-            ),
-        )
-        .await?
-    };
+    let lines: Vec<String> = to_summarize.iter().filter_map(|e| render(e)).collect();
+    let (summary, chunk_count) = summarize_lines(base_url, token, model, &lines, chunk_tokens).await?;
 
     let body = format!(
         "This session is being continued from a previous conversation that ran out of context. \
@@ -1098,7 +1253,7 @@ pub async fn compact(
     let backup = save(&path, &out)?;
 
     Ok(CompactReport {
-        chunks: chunks.len(),
+        chunks: chunk_count,
         kept_tail: tail_idx.len(),
         context_before: last,
         summary_tokens,
@@ -1107,8 +1262,113 @@ pub async fn compact(
     })
 }
 
+/// 把渲染好的行切块、逐块总结、再合并成一份。返回 (摘要, 切了几块)。
+///
+/// 三家 CLI 的正文形状不同，但到了这一步都已经是「一条记录一行文本」，所以
+/// 切块和提问是共用的。串行而不是并发：这些请求打的是同一个渠道，并发只会把
+/// 它顶到限流，而救援本来就不赶时间。
+pub(crate) async fn summarize_lines(
+    base_url: &str,
+    token: &str,
+    model: &str,
+    lines: &[String],
+    chunk_tokens: u64,
+) -> Result<(String, usize), AppError> {
+    let mut chunks: Vec<String> = Vec::new();
+    let (mut buf, mut acc) = (String::new(), 0u64);
+    for line in lines {
+        let w = est_text_tokens(line);
+        if acc + w > chunk_tokens && !buf.is_empty() {
+            chunks.push(std::mem::take(&mut buf));
+            acc = 0;
+        }
+        buf.push_str(line);
+        buf.push_str("\n\n");
+        acc += w;
+    }
+    if !buf.is_empty() {
+        chunks.push(buf);
+    }
+    if chunks.is_empty() {
+        return Err(AppError::Config("没有可总结的内容".into()));
+    }
+
+    let mut partials = Vec::new();
+    for (i, c) in chunks.iter().enumerate() {
+        let prompt = format!(
+            "下面是一段编程对话的第 {}/{} 段。请写一份**事实性**摘要，覆盖：\
+             用户提出的每一个要求与意图、改过的文件与函数、做过的决定和它的理由、\
+             遇到的错误与最终怎么解决的、以及尚未完成的事。不要评价，不要省略具体的\
+             文件名和命令。\n\n---\n{}",
+            i + 1,
+            chunks.len(),
+            c
+        );
+        partials.push(ask(base_url, token, model, &prompt).await?);
+    }
+
+    let summary = if partials.len() == 1 {
+        partials.remove(0)
+    } else {
+        let joined = partials.join("\n\n---\n\n");
+        ask(
+            base_url,
+            token,
+            model,
+            &format!(
+                "下面是同一段编程对话按先后顺序切成几段后各自的摘要。\
+                 把它们合并成一份连贯的摘要，保留所有具体的文件名、命令、决定和未完成事项，\
+                 去掉重复。\n\n---\n{joined}"
+            ),
+        )
+        .await?
+    };
+    Ok((summary, chunks.len()))
+}
+
+/// 分块总结。按路径分派到对应的 CLI —— 三家的写回形状不同，见各自模块。
+pub async fn compact(
+    base_url: &str,
+    token: &str,
+    model: &str,
+    path: &str,
+    keep_tail: usize,
+    chunk_tokens: u64,
+) -> Result<CompactReport, AppError> {
+    let p = Path::new(path);
+    if session_grok::owns(p) || session_codex::owns(p) {
+        let grok = session_grok::owns(p);
+        let plan = if grok {
+            session_grok::plan(path, keep_tail)?
+        } else {
+            session_codex::plan(path, keep_tail)?
+        };
+        if token.is_empty() {
+            return Err(AppError::Config(
+                "没有可用的客户端令牌 —— 分块总结要走内核的 /v1/messages。先在设置里生成一个。".into(),
+            ));
+        }
+        let (summary, chunk_count) =
+            summarize_lines(base_url, token, model, &plan.lines, chunk_tokens).await?;
+        let backup = if grok {
+            session_grok::apply(path, &summary, plan.cut)?
+        } else {
+            session_codex::apply(path, &summary, plan.cut)?
+        };
+        return Ok(CompactReport {
+            chunks: chunk_count,
+            kept_tail: plan.kept_tail,
+            context_before: plan.context_before,
+            summary_tokens: est_text_tokens(&summary),
+            backup,
+            model: model.to_string(),
+        });
+    }
+    compact_claude(base_url, token, model, path, keep_tail, chunk_tokens).await
+}
+
 /// 问内核要一段总结。走 `/v1/messages` —— 模型别名、路由、故障转移都归内核管。
-async fn ask(base_url: &str, token: &str, model: &str, prompt: &str) -> Result<String, AppError> {
+pub(crate) async fn ask(base_url: &str, token: &str, model: &str, prompt: &str) -> Result<String, AppError> {
     // no_proxy：内核多半在 127.0.0.1，而这台机器上常年挂着 HTTP_PROXY，
     // 默认客户端会把回环请求也交给代理，表现是「服务明明起着却连不上」。
     let client = reqwest::Client::builder()
@@ -1626,6 +1886,47 @@ mod tests {
         let err = delete_under(&root, &HashSet::new(), &[]).unwrap_err();
         assert!(err.to_string().contains("没有选中"), "{err}");
         std::fs::remove_dir_all(&root).ok();
+    }
+}
+
+/// 手动联调：`cargo test --lib live_scan_finds_every_cli -- --ignored --nocapture`。
+///
+/// 单测用的是造出来的文件，证明不了「真机上那三家的目录结构还是这个样子」——
+/// 而这正是最容易随 CLI 升级而失效的假设。这条走真实磁盘，把每家扫到多少、
+/// 有没有取到上下文打出来。
+#[cfg(test)]
+mod live {
+    use super::*;
+
+    #[test]
+    #[ignore = "读本机真实会话目录，结果因机器而异"]
+    fn live_scan_finds_every_cli() {
+        // 测的是界面真正调的那个入口（三家并行），不是各扫一遍的和。
+        let t0 = std::time::Instant::now();
+        let all = list_sessions().unwrap();
+        eprintln!("扫描耗时 {:?}，共 {} 条", t0.elapsed(), all.len());
+        for kind in [
+            SessionCli::ClaudeCode,
+            SessionCli::GrokBuild,
+            SessionCli::Codex,
+        ] {
+            let mine: Vec<&SessionInfo> = all.iter().filter(|s| s.cli == kind).collect();
+            let with_ctx = mine.iter().filter(|s| s.last_context > 0).count();
+            let live = mine.iter().filter(|s| s.live).count();
+            eprintln!(
+                "{kind:?}: {} 条，其中 {with_ctx} 条取到上下文，{live} 条正在跑",
+                mine.len()
+            );
+            if let Some(top) = mine.iter().max_by_key(|s| s.peak_context) {
+                eprintln!(
+                    "   最大：{} | 峰值 {} | {} | {}",
+                    top.slug.chars().take(40).collect::<String>(),
+                    top.peak_context,
+                    top.cwd.chars().take(50).collect::<String>(),
+                    top.path,
+                );
+            }
+        }
     }
 }
 

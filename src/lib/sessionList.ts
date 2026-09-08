@@ -5,6 +5,25 @@ import type { SessionInfo } from "../types";
 
 export type SessionSort = "recent" | "oldest" | "peak" | "current" | "size";
 
+/// CLI 的显示名。id 是后端 `SessionCli` 的 serde 形式，两边必须一致。
+export const CLI_LABELS: Record<SessionInfo["cli"], string> = {
+  "claude-code": "Claude Code",
+  "grok-build": "Grok Build",
+  codex: "Codex",
+};
+
+export function cliLabel(cli: SessionInfo["cli"]): string {
+  return CLI_LABELS[cli] ?? cli;
+}
+
+/// CLI 下拉：按会话数降序。只列**扫到的**那几家 —— 没装的 CLI 不该在筛选里
+/// 占一格空选项。
+export function uniqueClis(all: SessionInfo[]): [SessionInfo["cli"], number][] {
+  const n = new Map<SessionInfo["cli"], number>();
+  for (const s of all) n.set(s.cli, (n.get(s.cli) ?? 0) + 1);
+  return [...n.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+}
+
 export function projectName(s: SessionInfo): string {
   return s.cwd.split("/").pop() || s.cwd;
 }
@@ -44,6 +63,8 @@ export function filterSessions(
   opts: {
     query: string;
     project: string;
+    /** 只留这个 CLI 的。空 = 不过滤。 */
+    cli?: string;
     sort: SessionSort;
     /** 只留「最后改动」早于这么多天的。0 = 不过滤。 */
     olderThanDays?: number;
@@ -55,6 +76,7 @@ export function filterSessions(
       ? Math.floor(Date.now() / 1000) - opts.olderThanDays * 86_400
       : 0;
   const out = all.filter((s) => {
+    if (opts.cli && s.cli !== opts.cli) return false;
     if (opts.project && projectName(s) !== opts.project) return false;
     if (cutoff && s.modified_at > cutoff) return false;
     if (!q) return true;

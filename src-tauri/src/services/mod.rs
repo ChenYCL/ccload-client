@@ -28,6 +28,8 @@ pub mod node_services;
 pub mod pins;
 pub mod rescue;
 pub mod session_preset;
+pub mod session_codex;
+pub mod session_grok;
 pub mod session_rescue;
 pub mod system_inject;
 pub mod update;

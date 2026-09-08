@@ -955,6 +955,12 @@ export type UsageProbeReport = {
 --------------------------------------------------------------------------- */
 
 export type SessionInfo = {
+  /**
+   * 这条会话属于哪个 CLI。三家的磁盘布局完全不同（单文件 / 目录 / 按日期分层），
+   * 救援的每一步都按它分派。Gemini CLI 和 OpenCode 不在其中 —— 它们磁盘上没有
+   * 对话正文，没有可救的东西。
+   */
+  cli: "claude-code" | "grok-build" | "codex";
   /** 会话 uuid，也是文件名。`claude --resume` 认它。 */
   id: string;
   path: string;

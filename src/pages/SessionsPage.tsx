@@ -9,11 +9,13 @@ import { ComboBox } from "../components/ui/ComboBox";
 import { Select, TextInput } from "../components/ui/Input";
 import { kernelAliases, type ChannelModels } from "../lib/modelOptions";
 import {
+  cliLabel,
   filterSessions,
   fmtAgo,
   fmtBytes,
   fmtTokens,
   projectName,
+  uniqueClis,
   uniqueProjects,
   type SessionSort,
 } from "../lib/sessionList";
@@ -189,18 +191,20 @@ export function SessionsPage() {
 
   /// 列表的筛选 / 搜索 / 排序。
   ///
-  /// 这一页扫的只有 Claude Code 一家（`~/.claude/projects`），所以没有「按 CLI 分」
-  /// 这个维度 —— 名字右边那个标签是**项目**（cwd 的最后一段），几十个会话堆在一起
-  /// 时真正要缩小范围的也是它。
+  /// 三家 CLI 的会话混在一张表里（Claude Code / Grok Build / Codex），所以既要能按
+  /// **CLI** 缩范围，也要能按**项目**（cwd 的最后一段）缩。Gemini CLI 和 OpenCode
+  /// 不在列表里 —— 它们磁盘上没有对话正文，没有可救的东西。
   const [query, setQuery] = useState("");
   const [project, setProject] = useState("");
+  const [cli, setCli] = useState("");
   const [sort, setSort] = useState<SessionSort>("recent");
 
   const all = sessions.data ?? [];
   const projects = useMemo(() => uniqueProjects(all), [all]);
+  const clis = useMemo(() => uniqueClis(all), [all]);
   const rows = useMemo(
-    () => filterSessions(all, { query, project, sort }),
-    [all, query, project, sort],
+    () => filterSessions(all, { query, project, cli, sort }),
+    [all, query, project, cli, sort],
   );
 
   /// 能勾的：没在跑、有真实上下文。活着的改了会被进程盖回去；没用量的不敢压。
@@ -291,6 +295,21 @@ export function SessionsPage() {
           placeholder={t("搜名字、uuid 或路径")}
           aria-label={t("搜索会话")}
         />
+        {/* CLI 筛选。只列扫到的那几家，没装的不占位置。 */}
+        <Select
+          small
+          className="w-40 shrink-0"
+          value={cli}
+          onChange={(e) => setCli(e.target.value)}
+          aria-label={t("按 CLI 筛选")}
+        >
+          <option value="">{t("全部 CLI（{n}）", { n: clis.length })}</option>
+          {clis.map(([c, n]) => (
+            <option key={c} value={c}>
+              {cliLabel(c)}（{n}）
+            </option>
+          ))}
+        </Select>
         <Select
           small
           className="w-52 shrink-0"
@@ -318,11 +337,12 @@ export function SessionsPage() {
           <option value="current">{t("当前最大")}</option>
           <option value="size">{t("文件最大")}</option>
         </Select>
-        {(query || project) && (
+        {(query || project || cli) && (
           <button
             onClick={() => {
               setQuery("");
               setProject("");
+              setCli("");
             }}
             className="shrink-0 whitespace-nowrap rounded-lg border border-border bg-surface-raised px-2.5 py-1 text-xs text-muted hover:bg-surface-2"
           >
@@ -402,7 +422,10 @@ export function SessionsPage() {
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-sm" title={s.cwd}>
                   {s.slug || s.id.slice(0, 8)}
-                  <span className="ml-2 text-xs text-muted">{projectName(s)}</span>
+                  <span className="ml-2 rounded bg-surface-2 px-1 py-px text-[10px] text-muted">
+                    {cliLabel(s.cli)}
+                  </span>
+                  <span className="ml-1.5 text-xs text-muted">{projectName(s)}</span>
                 </span>
                 <span className="mt-0.5 block truncate font-mono text-[10px] text-muted/80">
                   {s.id}
@@ -438,7 +461,7 @@ export function SessionsPage() {
               {s.live ? (
                 <span
                   className="flex shrink-0 items-center gap-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-700"
-                  title={t("先退出那个 Claude Code 窗口 —— 进程里有内存态，现在改会被它盖回去")}
+                  title={t("先退出那个 CLI 窗口 —— 进程里有内存态，现在改会被它盖回去")}
                 >
                   <AlertTriangle className="h-3 w-3" />
                   {t("运行中")}

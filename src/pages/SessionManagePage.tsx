@@ -8,11 +8,13 @@ import { useT } from "../i18n";
 import { ConfirmDialog } from "../components/extensions/ConfirmDialog";
 import { Select, TextInput } from "../components/ui/Input";
 import {
+  cliLabel,
   filterSessions,
   fmtAgo,
   fmtBytes,
   fmtTokens,
   projectName,
+  uniqueClis,
   uniqueProjects,
   type SessionSort,
 } from "../lib/sessionList";
@@ -39,6 +41,7 @@ export function SessionManagePage() {
   const [focusId, setFocusId] = useState<string | null>(null);
   const focusRowRef = useRef<HTMLLIElement | null>(null);
   const [project, setProject] = useState("");
+  const [cli, setCli] = useState("");
   const [sort, setSort] = useState<SessionSort>("oldest");
   const [olderThan, setOlderThan] = useState(30);
 
@@ -50,9 +53,10 @@ export function SessionManagePage() {
 
   const all = sessions.data ?? [];
   const projects = useMemo(() => uniqueProjects(all), [all]);
+  const clis = useMemo(() => uniqueClis(all), [all]);
   const rows = useMemo(
-    () => filterSessions(all, { query, project, sort, olderThanDays: olderThan }),
-    [all, query, project, sort, olderThan],
+    () => filterSessions(all, { query, project, cli, sort, olderThanDays: olderThan }),
+    [all, query, project, cli, sort, olderThan],
   );
 
   useEffect(() => {
@@ -151,6 +155,21 @@ export function SessionManagePage() {
           placeholder={t("搜名字、uuid 或路径")}
           aria-label={t("搜索会话")}
         />
+        {/* 删除是不可逆的，CLI 必须能一眼分开 —— 三家的会话混在同一张表里。 */}
+        <Select
+          small
+          className="w-40 shrink-0"
+          value={cli}
+          onChange={(e) => setCli(e.target.value)}
+          aria-label={t("按 CLI 筛选")}
+        >
+          <option value="">{t("全部 CLI（{n}）", { n: clis.length })}</option>
+          {clis.map(([c, n]) => (
+            <option key={c} value={c}>
+              {cliLabel(c)}（{n}）
+            </option>
+          ))}
+        </Select>
         <Select
           small
           className="w-52 shrink-0"
@@ -191,11 +210,12 @@ export function SessionManagePage() {
           <option value="peak">{t("峰值最大")}</option>
           <option value="current">{t("当前最大")}</option>
         </Select>
-        {(query || project || olderThan !== 30) && (
+        {(query || project || cli || olderThan !== 30) && (
           <button
             onClick={() => {
               setQuery("");
               setProject("");
+              setCli("");
               setOlderThan(30);
             }}
             className="shrink-0 whitespace-nowrap rounded-lg border border-border bg-surface-raised px-2.5 py-1 text-xs text-muted hover:bg-surface-2"
@@ -275,7 +295,10 @@ export function SessionManagePage() {
             <span className="min-w-0 flex-1">
               <span className="block truncate text-sm" title={s.cwd}>
                 {s.slug || s.id.slice(0, 8)}
-                <span className="ml-2 text-xs text-muted">{projectName(s)}</span>
+                <span className="ml-2 rounded bg-surface-2 px-1 py-px text-[10px] text-muted">
+                  {cliLabel(s.cli)}
+                </span>
+                <span className="ml-1.5 text-xs text-muted">{projectName(s)}</span>
               </span>
               <span className="mt-0.5 block truncate font-mono text-[10px] text-muted/80">
                 {s.id}
