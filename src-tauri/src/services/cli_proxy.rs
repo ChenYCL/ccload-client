@@ -445,14 +445,27 @@ fn with_model(body: &[u8], model: &str) -> Vec<u8> {
 /// 剥了会让同模型续写变差。有人类可读 summary 的 reasoning 项留下（摘要文本
 /// 换模型之后仍然有用），只带着密文、摘要是空的整条丢掉 —— 空壳 reasoning
 /// 上游照样拒。
-fn grok_family(model: &str) -> bool {
-    alias_key(model).starts_with("grok")
+/// 请求体里带没带上一轮的加密思维链。
+///
+/// 只做一次子串扫描：绝大多数请求根本没有这东西，为它们各解析一遍几 MB 的
+/// JSON 是纯浪费。
+fn carries_encrypted_reasoning(body: &[u8]) -> bool {
+    const NEEDLE: &[u8] = b"encrypted_content";
+    body.windows(NEEDLE.len()).any(|w| w == NEEDLE)
 }
 
-fn sanitize_cross_model(body: &[u8], sent_model: &str) -> Vec<u8> {
-    if grok_family(sent_model) {
-        return body.to_vec();
-    }
+/// 上游明说「解不开你带来的 encrypted_content」。
+///
+/// 实测原文（内核转发的上游 400）：
+/// `Could not decrypt the provided encrypted_content. Ensure the value is the
+/// unmodified encrypted_content from a previous response.`
+fn is_decrypt_failure(body: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(body);
+    text.contains("Could not decrypt the provided encrypted_content")
+        || (text.contains("encrypted_content") && text.contains("decrypt"))
+}
+
+fn strip_encrypted_reasoning(body: &[u8]) -> Vec<u8> {
     let Ok(mut v) = serde_json::from_slice::<serde_json::Value>(body) else {
         return body.to_vec();
     };
@@ -473,6 +486,8 @@ fn sanitize_cross_model(body: &[u8], sent_model: &str) -> Vec<u8> {
     serde_json::to_vec(&v).unwrap_or_else(|_| body.to_vec())
 }
 
+/// 把 reasoning 条目里的密文拿掉。只剩密文、摘要是空的整条丢掉 —— 空壳
+/// reasoning 上游照样拒；有可读摘要的留下，换了上游之后它仍是有用的思维线索。
 fn strip_foreign_reasoning(items: &mut Vec<serde_json::Value>) -> bool {
     let before = items.len();
     let mut stripped = false;
@@ -828,9 +843,6 @@ async fn handle_conn(mut client: TcpStream, state: Arc<ProxyState>) -> std::io::
             } else {
                 with_model(&out_body, alias)
             };
-            // 换模型时把上一个模型签发的密文剥掉，否则上游 400、CLI 会把整段
-            // 会话判死。同家族（都是 grok-*）原样过。
-            last_body = sanitize_cross_model(&last_body, alias);
             let r = send_to_kernel(&http, &call, &last_body).await;
             sent_model = Some(alias.clone());
             match &r {
@@ -1053,23 +1065,57 @@ async fn send_to_kernel(
     call: &KernelCall<'_>,
     body: &[u8],
 ) -> Result<reqwest::Response, reqwest::Error> {
-    let mut retried = 0u32;
+    // 可能被剥掉密文后重发，所以要有自己的一份。
+    let mut body: Vec<u8> = body.to_vec();
+    let mut upload_retried = 0u32;
+    let mut decrypt_retried = false;
     loop {
-        let resp = send_once(http, call, body).await?;
+        let resp = send_once(http, call, &body).await?;
+        let status = resp.status();
+
         // 408 = 内核没能在读取超时内把请求体读完。它发生在选渠道之前，没有上游
         // 调用、没有计费，所以重发是干净的；而对 CLI 来说这一轮本来就是死的。
-        if resp.status() != reqwest::StatusCode::REQUEST_TIMEOUT
-            || retried >= UPLOAD_RETRIES
-            || body.is_empty()
+        if status == reqwest::StatusCode::REQUEST_TIMEOUT
+            && upload_retried < UPLOAD_RETRIES
+            && !body.is_empty()
         {
-            return Ok(resp);
+            upload_retried += 1;
+            tracing::info!(
+                "cli proxy: kernel could not finish reading the body ({} bytes), resending {upload_retried}/{UPLOAD_RETRIES}",
+                body.len()
+            );
+            tokio::time::sleep(UPLOAD_RETRY_BACKOFF).await;
+            continue;
         }
-        retried += 1;
-        tracing::info!(
-            "cli proxy: kernel could not finish reading the body ({} bytes), resending {retried}/{UPLOAD_RETRIES}",
-            body.len()
-        );
-        tokio::time::sleep(UPLOAD_RETRY_BACKOFF).await;
+
+        // 400 且请求里带着上一轮的加密思维链：多半是「这一发落到了另一家上游，
+        // 而密文是上一家签发的」。实测原文就是 "Could not decrypt the provided
+        // encrypted_content"，CLI 会把它显示成「会话历史与当前模型不兼容，请新开
+        // 会话」，一整条长会话就此报废。
+        //
+        // 为什么只能事后重发、不能事前剥：签发方和这一发的落点都由内核按优先级
+        // 和冷却状态临时决定（钉住的私有别名 429 之后会退到别的渠道），代理这一层
+        // 根本不知道会落到谁家。按「目标模型家族」猜是错的 —— 实测 claude-opus-5
+        // 的请求落到过 xAI 渠道。所以等上游明确说「解不开」再剥，剥完重发一次。
+        //
+        // 剥掉的代价是这一轮丢掉思维链续写；不剥的代价是整条会话再也发不出去。
+        if status == reqwest::StatusCode::BAD_REQUEST
+            && !decrypt_retried
+            && carries_encrypted_reasoning(&body)
+        {
+            decrypt_retried = true;
+            let bytes = resp.bytes().await?;
+            if is_decrypt_failure(&bytes) {
+                tracing::info!(
+                    "cli proxy: upstream could not decrypt the carried reasoning, resending without it"
+                );
+                body = strip_encrypted_reasoning(&body);
+            }
+            // 不是这个错的话，响应体已经被读掉、没法还给调用方了，就原样再发一次
+            // 把新的响应交出去。400 是被拒的请求，没有生成任何 token，重发不计费。
+            continue;
+        }
+        return Ok(resp);
     }
 }
 
@@ -2484,10 +2530,10 @@ mod pin_tests {
         }
     }
 
-    /// 发往 opus 时：上一个 grok 模型签发的密文和 response id 必须剥掉，
-    /// 空摘要的 reasoning 整条丢掉，有摘要的留下（换模型之后摘要仍然可读）。
+    /// 剥离是无条件的：密文拿掉、previous_response_id 拿掉，空摘要的 reasoning
+    /// 整条丢掉，有摘要的留下（换了上游之后摘要仍是可读的思维线索）。
     #[test]
-    fn cross_model_strips_xai_bound_fields() {
+    fn stripping_removes_carried_reasoning() {
         let body = serde_json::json!({
             "model": "claude-opus-5",
             "previous_response_id": "resp_abc",
@@ -2507,11 +2553,9 @@ mod pin_tests {
                 }
             ]
         });
-        let out: serde_json::Value = serde_json::from_slice(&sanitize_cross_model(
-            &serde_json::to_vec(&body).unwrap(),
-            "claude-opus-5@ch15",
-        ))
-        .unwrap();
+        let out: serde_json::Value =
+            serde_json::from_slice(&strip_encrypted_reasoning(&serde_json::to_vec(&body).unwrap()))
+                .unwrap();
         assert!(out.get("previous_response_id").is_none());
         let input = out["input"].as_array().unwrap();
         assert_eq!(input.len(), 2, "空摘要的 reasoning 应整条丢掉: {input:?}");
@@ -2520,12 +2564,95 @@ mod pin_tests {
         assert!(input[1].get("encrypted_content").is_none());
     }
 
-    /// 留在 grok 家族时一个字节都不能动 —— 密文是同模型续写和提示缓存的一部分。
+    /// 两个探测器：没带密文的请求一个字节都不该被碰，上游那句话要认得出来。
     #[test]
-    fn grok_destination_keeps_encrypted_content() {
-        let body = br#"{"model":"grok-4.6","previous_response_id":"resp_abc","input":[{"type":"reasoning","encrypted_content":"aa"}]}"#;
-        assert_eq!(sanitize_cross_model(body, "grok-4.6@ch21"), body);
-        assert_eq!(sanitize_cross_model(body, "Grok-4.6[1m]"), body);
+    fn detectors_recognise_the_upstream_decrypt_error() {
+        assert!(!carries_encrypted_reasoning(br#"{"model":"x","messages":[]}"#));
+        assert!(carries_encrypted_reasoning(
+            br#"{"input":[{"type":"reasoning","encrypted_content":"aa"}]}"#
+        ));
+
+        // 实测原文。
+        assert!(is_decrypt_failure(
+            br#"{"code":"invalid-argument","error":"Could not decrypt the provided encrypted_content. Ensure the value is the unmodified encrypted_content from a previous response."}"#
+        ));
+        // 别的 400 不能误判成它 —— 误判会白白剥掉一轮思维链。
+        assert!(!is_decrypt_failure(
+            br#"{"error":"This model's maximum prompt length is 500000 but the request contains 517306 tokens."}"#
+        ));
+    }
+
+    /// 端到端：上游说「解不开你带来的密文」时，代理剥掉密文重发一次，CLI 只看到
+    /// 最终那个 200。不修的话 Grok CLI 会把这个 400 显示成「会话历史与当前模型
+    /// 不兼容，请新开会话」，一条长会话就此报废。
+    #[tokio::test]
+    async fn an_undecryptable_reasoning_blob_is_stripped_and_resent() {
+        let up = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let up_port = up.local_addr().unwrap().port();
+        // 每一发有没有带密文，按顺序记下来。
+        let carried: Arc<RwLock<Vec<bool>>> = Arc::new(RwLock::new(Vec::new()));
+        let seen = Arc::clone(&carried);
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = up.accept().await else { break };
+                let seen = Arc::clone(&seen);
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut tmp = [0u8; 8192];
+                    let head_end = loop {
+                        let n = sock.read(&mut tmp).await.unwrap_or(0);
+                        if n == 0 {
+                            return;
+                        }
+                        buf.extend_from_slice(&tmp[..n]);
+                        if let Some(p) = find_header_end(&buf) {
+                            break p;
+                        }
+                    };
+                    let head = String::from_utf8_lossy(&buf[..head_end]).to_ascii_lowercase();
+                    let len: usize = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:"))
+                        .and_then(|v| v.trim().parse().ok())
+                        .unwrap_or(0);
+                    while buf.len() < head_end + len {
+                        let n = sock.read(&mut tmp).await.unwrap_or(0);
+                        if n == 0 {
+                            break;
+                        }
+                        buf.extend_from_slice(&tmp[..n]);
+                    }
+                    let has = carries_encrypted_reasoning(&buf[head_end..]);
+                    let nth = {
+                        let mut v = seen.write().await;
+                        v.push(has);
+                        v.len()
+                    };
+                    let (status, out) = if nth == 1 {
+                        (400, r#"{"code":"invalid-argument","error":"Could not decrypt the provided encrypted_content. Ensure the value is the unmodified encrypted_content from a previous response."}"#.to_string())
+                    } else {
+                        (200, r#"{"ok":true}"#.to_string())
+                    };
+                    let resp = format!(
+                        "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{out}",
+                        out.len()
+                    );
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                    let _ = sock.flush().await;
+                });
+            }
+        });
+
+        let body = br#"{"model":"grok-4.6","input":[{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":""}],"encrypted_content":"AAAA"},{"type":"message","role":"user","content":"hi"}]}"#;
+        let (got, recs) = run_through_proxy(up_port, ProxyRules::default(), body).await;
+
+        assert!(got.starts_with("HTTP/1.1 200"), "CLI 应当只看到重发后的成功：{got}");
+        let carried = carried.read().await.clone();
+        assert_eq!(carried.len(), 2, "应当正好重发一次：{carried:?}");
+        assert!(carried[0], "第一发本来就带着密文");
+        assert!(!carried[1], "重发那一次必须已经把密文剥掉了");
+        assert_eq!(recs.len(), 1, "记录里只留最终结果");
+        assert_eq!(recs[0].status, 200);
     }
 
     /// 重发只换 model，键序、其余字段一个字节不动。
