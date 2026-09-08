@@ -955,6 +955,11 @@ registerDict("en", {
   "{n} 条运行中不可删": "{n} running, cannot delete",
   "运行中的会话删不掉 —— 进程会把它写回来": "Running sessions cannot be deleted — the process would write them back",
   "运行中，删不掉 —— 进程会把它写回来": "Running — cannot delete, the process would write it back",
+  // ---- 首选渠道：改写标记 / 快照过期 ----
+  "（改写）": "(rewritten)",
+  同步: "Sync",
+  "钉住记录里的落点是 {stored}，但 {channel} 现在把它落到 {live}。重存一次让两边对齐 —— 否则以后任何一次重存都会把私有别名写回 {stored}。":
+    "The pin records {stored} as the landing, but {channel} now lands it on {live}. Save once to realign — otherwise any later save writes the private alias back to {stored}.",
   清除筛选: "Clear filters",
   // ---- 内核盲区（代理见过、日志里没有的失败） ----
   内核没有日志的失败: "Failures with no kernel log",

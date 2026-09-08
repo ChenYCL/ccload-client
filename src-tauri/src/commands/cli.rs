@@ -223,7 +223,7 @@ impl WindowContext {
 
 /// `GET /admin/channels` → 别名落点表。失败只记 warn：内核没起来、远端断了、
 /// 密码改了，都不该让「写一份 CLI 配置」这件事失败。
-async fn fetch_kernel_routes(state: &AppState) -> Option<KernelRoutes> {
+pub(crate) async fn fetch_kernel_routes(state: &AppState) -> Option<KernelRoutes> {
     let (base_url, password) = {
         let s = state.settings.read().await;
         (s.kernel.base_url(), s.kernel.admin_password.clone())

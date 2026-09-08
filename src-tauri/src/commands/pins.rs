@@ -9,7 +9,7 @@ use tauri::State;
 
 use crate::error::{AppError, AppResult};
 use crate::services::channel_writer::{patch_channel, remove_models};
-use crate::services::pins::{pin_rules, pinned_alias, validate_pin, Pin, PinStore};
+use crate::services::pins::{pin_rules, pinned_alias, resolve_upstream, validate_pin, Pin, PinStore};
 use crate::state::AppState;
 
 pub(crate) fn store_path(state: &AppState) -> std::path::PathBuf {
@@ -51,6 +51,19 @@ pub async fn pin_save(state: State<'_, AppState>, pin: Pin) -> AppResult<PinOutc
     let previous = store.find(&pin.alias).cloned();
 
     let mut log = Vec::new();
+    // 落点以渠道**现在**的基名条目为准，钉住表里的只是快照（见 resolve_upstream）。
+    // 内核读不到时退回快照 —— 那种情况下面的 patch_channel 也会失败，不会写错东西。
+    let mut pin = pin;
+    if let Some(routes) = crate::commands::cli::fetch_kernel_routes(&state).await {
+        let hits = routes.hits(&pin.alias);
+        for t in pin.targets.iter_mut() {
+            let (up, note) = resolve_upstream(&hits, t.channel_id, &t.upstream);
+            if let Some(n) = note {
+                log.push(format!("渠道 {}（{}）：{n}", t.channel_id, t.channel_name));
+            }
+            t.upstream = up;
+        }
+    }
     // 只切了退让开关、落点没变：不碰内核 —— 整体更新会让内核把该渠道的 key 全删再
     // 重建一遍，能省就省。落点和开关都没变的「原样再存一次」照常写：那是用户在
     // 内核后台误删了私有条目之后的修复路径。

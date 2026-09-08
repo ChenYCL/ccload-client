@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useT } from "../../i18n";
 import { api } from "../../lib/api";
 import { errText } from "../../lib/err";
-import { sameAlias } from "../../lib/pins";
+import { aliasKey, sameAlias } from "../../lib/pins";
 import type { Pin, RouteHit } from "../../types";
 import { Select } from "../ui/Input";
 
@@ -115,6 +115,14 @@ export function AliasRoutes({
   // 钉住的渠道在内核里已经没了（删了 / 停用了 / 不再服务这个别名）：下拉里没有它，
   // 原生 select 会默默显示第一项「不钉住」，和实际状态相反。补一个占位项把真相摆出来。
   const orphan = pinnedId !== null && !choices.some((h) => h.channel_id === pinnedId);
+  // 钉住表里存的落点是点下拉那一刻的快照；渠道条目之后在内核后台被改过，快照就过期了。
+  const stale = (() => {
+    if (!pin || pinnedId === null) return null;
+    const live = hits.find((h) => h.channel_id === pinnedId && !h.disabled);
+    if (!live) return null;
+    const stored = pin.targets[0]?.upstream?.trim() ?? "";
+    return stored && stored !== live.upstream.trim() ? live : null;
+  })();
 
   const choose = (value: string) => {
     if (value === "") {
@@ -183,6 +191,9 @@ export function AliasRoutes({
           {choices.map((h) => (
             <option key={h.channel_id} value={String(h.channel_id)}>
               {h.channel_name} → {h.upstream}
+              {/* 落点和别名不是一个名字 = 这条渠道会把它改写成别的模型。那次
+                  「选了 fable 却一直跑 opus」就是没看出这一点。 */}
+              {aliasKey(h.upstream) !== aliasKey(name) ? `　${t("（改写）")}` : ""}
             </option>
           ))}
         </Select>
@@ -201,6 +212,28 @@ export function AliasRoutes({
           </label>
         )}
       </div>
+      {pin && stale && (
+        <p className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 leading-relaxed text-amber-900">
+          <span>
+            {t("钉住记录里的落点是 {stored}，但 {channel} 现在把它落到 {live}。重存一次让两边对齐 —— 否则以后任何一次重存都会把私有别名写回 {stored}。", {
+              stored: pin.targets[0]?.upstream ?? "?",
+              channel: stale.channel_name,
+              live: stale.upstream,
+            })}
+          </span>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              deletePin.reset();
+              savePin.mutate(pin);
+            }}
+            className="rounded border border-amber-500/50 px-1.5 py-0 text-[10px] hover:bg-amber-500/15 disabled:opacity-40"
+          >
+            {t("同步")}
+          </button>
+        </p>
+      )}
       {pin && !proxyOn && (
         <p className="mt-1 text-amber-700">
           {t("钉住只在 CLI 走本地代理时生效 —— 「CLI 走本地代理」现在是关的，请求仍按内核默认顺序走。")}

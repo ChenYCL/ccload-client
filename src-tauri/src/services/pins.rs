@@ -204,6 +204,35 @@ impl PinRule {
     }
 }
 
+/// 私有别名在某渠道上该指向哪个上游：**以该渠道当前的基名条目为准**，钉住表里存的
+/// 只是兜底。
+///
+/// 钉住表里的 `upstream` 是用户点下拉那一刻从内核抄来的快照。之后基名条目在内核后台
+/// 被改（实测：`claude-fable-5-1 → claude-opus-5` 被改正为 `→ claude-fable-5-1`），
+/// 快照就过期了 —— 这时任何一次重存都会把私有别名写回旧值，把刚修好的落点再改坏。
+/// 所以写内核前先看渠道现在怎么说；渠道上没有基名条目（钉到一个不服务它的渠道）才
+/// 用快照。返回 `(该用的上游, 与快照不同时的说明)`。
+pub fn resolve_upstream(
+    hits: &[crate::services::context_floor::RouteHit],
+    channel_id: i64,
+    stored: &str,
+) -> (String, Option<String>) {
+    // 同一渠道可能带/不带后缀两条都在，取没停用的第一条。
+    let live = hits
+        .iter()
+        .find(|h| h.channel_id == channel_id && !h.disabled)
+        .map(|h| h.upstream.trim().to_string())
+        .filter(|u| !u.is_empty());
+    match live {
+        Some(u) if u != stored.trim() => {
+            let note = format!("渠道上的落点已是 {u}，钉住表里存的 {stored} 已过期，按渠道为准");
+            (u, Some(note))
+        }
+        Some(u) => (u, None),
+        None => (stored.trim().to_string(), None),
+    }
+}
+
 /// 键是 [`alias_key`]（剥后缀、小写），代理拿请求里的名字算同一个键来查。
 pub type PinRules = HashMap<String, PinRule>;
 
@@ -242,6 +271,42 @@ mod tests {
                 .collect(),
             fallback,
         }
+    }
+
+    fn hit(channel_id: i64, upstream: &str, disabled: bool) -> crate::services::context_floor::RouteHit {
+        crate::services::context_floor::RouteHit {
+            channel_id,
+            channel_name: format!("ch{channel_id}"),
+            priority: 0,
+            alias: "claude-fable-5-1".into(),
+            upstream: upstream.into(),
+            disabled,
+        }
+    }
+
+    /// 渠道当前的基名条目压过钉住表里的快照；渠道上没有条目才用快照；停用的条目不算。
+    /// 这是那次「修好了又被重存写坏」事故的护栏。
+    #[test]
+    fn stored_upstream_yields_to_the_channel_current_entry() {
+        // 快照是过期的 opus-5，渠道现在是 fable-5-1：按渠道，且要说明。
+        let hits = [hit(15, "claude-fable-5-1", false)];
+        let (up, note) = resolve_upstream(&hits, 15, "claude-opus-5");
+        assert_eq!(up, "claude-fable-5-1");
+        assert!(note.is_some_and(|n| n.contains("过期")));
+
+        // 一致时没有说明。
+        let (up, note) = resolve_upstream(&hits, 15, "claude-fable-5-1");
+        assert_eq!(up, "claude-fable-5-1");
+        assert!(note.is_none());
+
+        // 渠道上没有这个别名（钉到一个不服务它的渠道）：只能信快照。
+        let (up, _) = resolve_upstream(&hits, 99, "claude-opus-5");
+        assert_eq!(up, "claude-opus-5");
+
+        // 只有停用条目 = 等于没有，还是快照。
+        let off = [hit(15, "claude-fable-5-1", true)];
+        let (up, _) = resolve_upstream(&off, 15, "claude-opus-5");
+        assert_eq!(up, "claude-opus-5");
     }
 
     /// 私有别名的形状：剥后缀、留大小写；反解要能还原。
