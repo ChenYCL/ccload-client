@@ -2915,6 +2915,49 @@ mod pin_tests {
         assert_eq!(hits.load(Ordering::SeqCst), 1);
         assert_eq!(*seen.read().await, vec!["claude-opus-5"]);
     }
+
+    /// 出口别名走到线上：CLI 发我们自己起的名字，内核收到的必须是落点名。
+    ///
+    /// 这条是整个「模型桥接」的地基 —— 改写表在这一层生效，配置面（`bridge.json`）
+    /// 才有意义。内核不认识 `ccload-fast`，漏掉这一步的表现是每条请求 404。
+    #[tokio::test]
+    async fn an_egress_alias_reaches_the_kernel_under_its_target_name() {
+        let (port, hits, seen) = spawn_kernel(|_| (200, r#"{"ok":true}"#.into())).await;
+        let mut rules = ProxyRules::default();
+        rules.rewrites.insert("ccload-fast".into(), "grok-4.6".into());
+        let (got, recs) =
+            run_through_proxy(port, rules, br#"{"model":"ccload-fast","messages":[]}"#).await;
+        assert!(got.starts_with("HTTP/1.1 200"), "{got}");
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        assert_eq!(*seen.read().await, vec!["grok-4.6"], "内核必须收到落点名");
+        // 记录里两个名字都要留下：日志页得说得出「CLI 发的是什么、实际发的是什么」。
+        assert_eq!(recs[0].model.as_deref(), Some("ccload-fast"));
+        assert_eq!(recs[0].sent_model.as_deref(), Some("grok-4.6"));
+    }
+
+    /// 改写和钉住叠在一起：先换成落点名，再按**落点**去查钉住表。
+    ///
+    /// 顺序反了的话钉住会按出口名去找、一条都对不上，钉住对所有改过名的别名
+    /// 静默失灵。
+    #[tokio::test]
+    async fn a_renamed_alias_still_picks_up_the_pin_on_its_target() {
+        let (port, _hits, seen) = spawn_kernel(|m| {
+            // 私有别名那一发冷却了，退回原名才成功。
+            if m.contains("@ch") {
+                (503, "{}".into())
+            } else {
+                (200, r#"{"ok":true}"#.into())
+            }
+        })
+        .await;
+        let mut rules = rules_with_pin("grok-4.6", &[21], true);
+        rules.rewrites.insert("ccload-fast".into(), "grok-4.6".into());
+        let (got, recs) =
+            run_through_proxy(port, rules, br#"{"model":"ccload-fast","messages":[]}"#).await;
+        assert!(got.starts_with("HTTP/1.1 200"), "{got}");
+        assert_eq!(*seen.read().await, vec!["grok-4.6@ch21", "grok-4.6"]);
+        assert_eq!(recs[0].fallback_from.as_deref(), Some("grok-4.6@ch21"));
+    }
 }
 
 #[cfg(test)]

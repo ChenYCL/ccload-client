@@ -42,14 +42,14 @@ function sameSpec(a: InjectSpec, b: InjectSpec): boolean {
 ///
 /// 这两段说明的全部作用是「让模型想起来调那个工具」，工具不存在时它一样会想起来 ——
 /// 然后找不到，再自己编一条路（手写 SVG 冒充生成的图就是这么来的），比不写还坏。
-/// 装在「模型导入」页而说明勾在这一页，两件事隔着一个页面，光看这里根本发现不了。
+/// 装在「模型桥接」页而说明勾在这一页，两件事隔着一个页面，光看这里根本发现不了。
 function MissingMcp({ server, panel }: { server: string; panel: string }) {
   const t = useT();
   return (
     <span className="mt-2 flex items-start gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-xs">
       <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600" />
       <span>
-        {t("{server} 还没装到任何 CLI —— 只写说明不装服务器，等于教模型去调一个不存在的工具。先到「模型导入」页最下面的「{panel}」装一下。", {
+        {t("{server} 还没装到任何 CLI —— 只写说明不装服务器，等于教模型去调一个不存在的工具。先到「模型桥接」页最下面的「{panel}」装一下。", {
           server,
           panel,
         })}

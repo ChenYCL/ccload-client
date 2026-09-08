@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod bridge;
 pub mod channel_usage;
 pub mod cli;
 pub mod cli_proxy;
@@ -7,7 +8,6 @@ pub mod dynamic_inject;
 pub mod extensions;
 pub mod fallback;
 pub mod forced_route;
-pub mod graph;
 pub mod inject;
 pub mod kernel;
 pub mod models;

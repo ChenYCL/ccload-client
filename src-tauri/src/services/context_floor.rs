@@ -10,15 +10,23 @@
 //! 跑、在 450k 压缩。代价是主力健康时少用一半窗口；不这么写的代价是分流那一刻
 //! 会话直接 400 too long，`/compact` 自己也发不出去。
 //!
-//! # 四个来源
+//! # 先换名，再找落点
+//!
+//! CLI 配置里那个名字**可能是我们自己起的**（出口别名，见 `services::bridge`）：
+//! `ccload-fast` 由本地代理在转发前换成 `grok-4.6`。下面几张表全都按落点登记，
+//! 所以第一步是把名字换过去 —— 不换的话 `ccload-fast` 一条都匹配不上，只会拿到
+//! 家族猜测的 128k 兜底，然后被写进 CLI，正好把桥接表刚写好的 500k 顶掉。
+//!
+//! # 五个来源
 //!
 //! | 来源 | 什么时候算进来 |
 //! | --- | --- |
-//! | 模型本身 | 永远 |
-//! | 首选渠道钉住（`pins.json`） | 钉住的别名 == 这个模型名，且 CLI 走本地代理 |
-//! | 模型链（`fallback.json`） | 链的别名 == 这个模型名 |
-//! | 强制路由（`forced_route.json`） | 路由的 `from` == 这个模型名 |
-//! | 内核渠道（`GET /admin/channels`） | 启用渠道里有 `models[].model == 别名` 的条目 |
+//! | 模型本身（换名之后的落点） | 永远 |
+//! | 出口别名手填的窗口（`bridge.json`） | 那一行填了非 0 的窗口时，替掉按名字猜的数 |
+//! | 首选渠道钉住（`pins.json`） | 钉住的别名 == 落点名，且 CLI 走本地代理 |
+//! | 模型链（`fallback.json`） | 链的别名 == 落点名 |
+//! | 强制路由（`forced_route.json`） | 路由的 `from` == 落点名 |
+//! | 内核渠道（`GET /admin/channels`） | 启用渠道里有 `models[].model == 落点名` 的条目 |
 //!
 //! 钉住且**不退让**时，请求只会落到钉住的渠道，链 / 路由 / 内核那些落点根本到不了，
 //! 不算进来 —— 否则钉在 1M 的渠道上还会被链上一跳 500k 的备胎压窄。
@@ -41,6 +49,7 @@ use serde_json::Value;
 use crate::services::context_window::{ContextMode, ContextPolicy, WindowSource};
 use crate::services::fallback::FallbackChain;
 use crate::services::forced_route::ForcedRoute;
+use crate::services::bridge::BridgeEntry;
 use crate::services::pins::Pin;
 
 /// 内核里某个渠道对某个别名的一条服务记录。
@@ -256,11 +265,23 @@ pub struct FloorInputs<'a> {
     pub chains: &'a [FallbackChain],
     pub routes: &'a [ForcedRoute],
     pub kernel: Option<&'a KernelRoutes>,
+    /// 出口别名表。CLI 配置里写的可能是**我们自己起的名字**，而下面四张表全都
+    /// 按落点登记 —— 不先换过去，一个 `ccload-fast` 会一条都匹配不上，只拿到
+    /// 家族猜测的 128k 兜底，然后被写进 CLI，把桥接表刚写好的 500k 顶掉。
+    pub bridge: &'a [BridgeEntry],
 }
 
 /// 候选齐了之后定 `counted`：模型自己那条只在孤身一人、窗口是明确声明、或者确有
 /// 落点落在它身上时算数。
-fn finish(mut out: Vec<Candidate>) -> Vec<Candidate> {
+///
+/// `declared` 是出口别名那一行手填的窗口。它是对**这个名字**的明确声明 —— 和名字
+/// 里带 `[500k]` 同级，替掉按名字猜出来的那个数。仍然只是候选之一：内核真把请求
+/// 分流到更窄的上游时，取最窄照旧生效。
+fn finish(mut out: Vec<Candidate>, declared: Option<u64>) -> Vec<Candidate> {
+    if let (Some(w), Some(first)) = (declared, out.first_mut()) {
+        first.window = w;
+        first.source = WindowSource::Manual;
+    }
     let alone = out.len() == 1;
     for c in &mut out {
         c.counted = c.via != Via::Model
@@ -278,6 +299,10 @@ impl FloorInputs<'_> {
         if model.is_empty() {
             return Vec::new();
         }
+        // 先把出口别名换成落点：代理转发前做的就是这一步，所以「这个名字可能落到
+        // 哪些上游」问的其实是落点的那一套。没在桥接表里的名字原样往下走。
+        let bridged = self.bridge.iter().find(|b| same_alias(&b.alias, model));
+        let routed: &str = bridged.map_or(model, BridgeEntry::upstream_alias);
         let mut out: Vec<Candidate> = Vec::new();
         let mut push = |name: &str, via: Via, channel: Option<&str>| {
             let name = name.trim();
@@ -312,33 +337,34 @@ impl FloorInputs<'_> {
                 landed: false,
             });
         };
-        push(model, Via::Model, None);
+        push(routed, Via::Model, None);
+        let declared = bridged.map(|b| b.context_window).filter(|w| *w > 0);
         let mut only_pinned = false;
-        for pin in self.pins.iter().filter(|p| same_alias(&p.alias, model)) {
+        for pin in self.pins.iter().filter(|p| same_alias(&p.alias, routed)) {
             for tgt in &pin.targets {
                 push(&tgt.upstream, Via::Pinned, Some(&tgt.channel_name));
             }
             only_pinned |= !pin.fallback && !pin.targets.is_empty();
         }
         if only_pinned {
-            return finish(out);
+            return finish(out, declared);
         }
-        for chain in self.chains.iter().filter(|c| same_alias(&c.alias, model)) {
+        for chain in self.chains.iter().filter(|c| same_alias(&c.alias, routed)) {
             for hop in &chain.hops {
                 push(&hop.upstream, Via::Chain, hop.channel_name.as_deref());
             }
         }
-        for route in self.routes.iter().filter(|r| same_alias(&r.from, model)) {
+        for route in self.routes.iter().filter(|r| same_alias(&r.from, routed)) {
             for tgt in &route.targets {
                 push(&tgt.model, Via::ForcedRoute, tgt.channel_name.as_deref());
             }
         }
         if let Some(k) = self.kernel {
-            for hit in k.hits(model).into_iter().filter(|h| !h.disabled) {
+            for hit in k.hits(routed).into_iter().filter(|h| !h.disabled) {
                 push(&hit.upstream, Via::Kernel, Some(&hit.channel_name));
             }
         }
-        finish(out)
+        finish(out, declared)
     }
 
     /// 这个模型该写多大的窗口。`None` = 不写（Off 档，或者没有模型名）。
@@ -459,13 +485,106 @@ mod tests {
         assert!(haiku[0].disabled);
     }
 
+    fn bridged(alias: &str, target: &str, window: u64) -> BridgeEntry {
+        BridgeEntry {
+            alias: alias.into(),
+            target: target.into(),
+            context_window: window,
+            compact_percent: 0,
+            targets: Default::default(),
+            tier: None,
+        }
+    }
+
+    /// 出口别名必须先换成落点再找候选。
+    ///
+    /// CLI 配置里写的是我们自己起的 `ccload-fast`，钉住 / 链 / 路由 / 内核渠道全都
+    /// 按 `grok-4.6` 登记。不换名的话一条都匹配不上，只拿到家族猜测的 128k 兜底，
+    /// 然后被 `resync_windows` 写进 CLI，正好把桥接表刚写好的 500k 顶掉。
+    #[test]
+    fn an_egress_alias_resolves_through_its_target() {
+        let policy = ContextPolicy::default();
+        let bridge = [bridged("ccload-fast", "grok-4.6", 0)];
+        let inputs = FloorInputs {
+            policy: &policy,
+            pins: &[],
+            chains: &[],
+            routes: &[],
+            kernel: None,
+            bridge: &bridge,
+        };
+        let f = inputs.floor("ccload-fast").unwrap();
+        assert_eq!(f.tokens, 500_000, "换名之后才认得出这是 grok-4.6");
+        assert_eq!(f.compact_tokens, 450_000);
+        assert_eq!(f.candidates[0].model, "grok-4.6");
+        // 不在桥接表里的名字原样走，行为和以前一模一样。
+        assert_eq!(inputs.floor("claude-opus-5").unwrap().tokens, 1_000_000);
+    }
+
+    /// 换名之后，链上的窄口要照旧压得住它 —— 桥接不该把「取最窄」绕过去。
+    #[test]
+    fn a_bridged_alias_still_narrows_to_its_chain() {
+        let policy = ContextPolicy::default();
+        let bridge = [bridged("ccload-big", "claude-opus-5", 0)];
+        let chains = [chain(
+            "claude-opus-5",
+            &[("claude-opus-5", "Anthropic"), ("grok-4.6", "xAI")],
+        )];
+        let inputs = FloorInputs {
+            policy: &policy,
+            pins: &[],
+            chains: &chains,
+            routes: &[],
+            kernel: None,
+            bridge: &bridge,
+        };
+        let f = inputs.floor("ccload-big").unwrap();
+        assert_eq!(f.tokens, 500_000);
+        assert_eq!(f.narrowest.unwrap().model, "grok-4.6");
+    }
+
+    /// 那一行手填的窗口是对这个名字的**明确声明**，替掉按名字猜的数（和名字里带
+    /// `[500k]` 同级）—— 但仍然只是候选之一，真实落点更窄时照旧取最窄。
+    #[test]
+    fn a_hand_written_bridge_window_declares_but_does_not_win_outright() {
+        let policy = ContextPolicy::default();
+        // 落点 claude-opus-5 按名字是 1M，用户说这条中转其实只给 300k。
+        let bridge = [bridged("ccload-big", "claude-opus-5", 300_000)];
+        let inputs = FloorInputs {
+            policy: &policy,
+            pins: &[],
+            chains: &[],
+            routes: &[],
+            kernel: None,
+            bridge: &bridge,
+        };
+        let f = inputs.floor("ccload-big").unwrap();
+        assert_eq!(f.tokens, 300_000);
+        assert_eq!(f.candidates[0].source, WindowSource::Manual);
+
+        // 链上挂着一跳 200k 的 haiku：更窄的那个才算数。
+        let chains = [chain(
+            "claude-opus-5",
+            &[("claude-haiku-4-5-20251001", "Anthropic")],
+        )];
+        let narrower = FloorInputs {
+            policy: &policy,
+            pins: &[],
+            chains: &chains,
+            routes: &[],
+            kernel: None,
+            bridge: &bridge,
+        };
+        assert_eq!(narrower.floor("ccload-big").unwrap().tokens, 200_000);
+    }
+
     /// CLI 里写的是 `claude-opus-5[1M]`，链和内核里叫 `claude-opus-5`。以前这里逐字
     /// 比较，链的窄口从来没对上过 —— 「链上有 500k 的 grok，Claude Code 还是按 1M 写」。
     #[test]
     fn suffix_and_case_do_not_break_alias_matching() {
         let policy = ContextPolicy::default();
         let chains = [chain("claude-opus-5", &[("claude-opus-5", "Anthropic"), ("grok-4.6", "xAI")])];
-        let inputs = FloorInputs { policy: &policy, pins: &[], chains: &chains, routes: &[], kernel: None };
+        let inputs = FloorInputs { policy: &policy, pins: &[], chains: &chains, routes: &[], kernel: None, bridge: &[] };
         let f = inputs.floor("Claude-Opus-5[1M]").unwrap();
         assert_eq!(f.tokens, 500_000);
         let n = f.narrowest.unwrap();
@@ -484,7 +603,7 @@ mod tests {
         let chains = [chain("claude-opus-5", &[("claude-opus-5", "Anthropic"), ("glm-5.3-flash", "Z.ai")])];
         let routes = [route("claude-opus-5", &[("claude-opus-5", "Anthropic"), ("grok-4.6", "xAI")])];
         let k = kernel();
-        let inputs = FloorInputs { policy: &policy, pins: &[], chains: &chains, routes: &routes, kernel: Some(&k) };
+        let inputs = FloorInputs { policy: &policy, pins: &[], chains: &chains, routes: &routes, kernel: Some(&k), bridge: &[] };
         let f = inputs.floor("claude-opus-5").unwrap();
         assert_eq!(f.tokens, 500_000);
         assert_eq!(f.compact_tokens, 450_000);
@@ -513,20 +632,20 @@ mod tests {
     fn a_virtual_alias_does_not_count_once_real_upstreams_are_known() {
         let policy = ContextPolicy::default();
         let chains = [chain("gb-review", &[("claude-opus-5", "Anthropic"), ("grok-4.6", "xAI")])];
-        let inputs = FloorInputs { policy: &policy, pins: &[], chains: &chains, routes: &[], kernel: None };
+        let inputs = FloorInputs { policy: &policy, pins: &[], chains: &chains, routes: &[], kernel: None, bridge: &[] };
         let f = inputs.floor("gb-review").unwrap();
         assert_eq!(f.tokens, 500_000, "{:?}", f.candidates);
         assert!(!f.candidates[0].counted);
         assert!(f.candidates[1].counted);
 
         // 一个落点都不知道时，只能按名字算。
-        let inputs = FloorInputs { policy: &policy, pins: &[], chains: &[], routes: &[], kernel: None };
+        let inputs = FloorInputs { policy: &policy, pins: &[], chains: &[], routes: &[], kernel: None, bridge: &[] };
         let f = inputs.floor("gb-review").unwrap();
         assert_eq!(f.tokens, 128_000);
         assert!(f.candidates[0].counted);
 
         // 名字后缀是明确声明：`[300k]` 比链上任何一跳都窄，就按它。
-        let f = FloorInputs { policy: &policy, pins: &[], chains: &chains, routes: &[], kernel: None }
+        let f = FloorInputs { policy: &policy, pins: &[], chains: &chains, routes: &[], kernel: None, bridge: &[] }
             .floor("gb-review[300k]")
             .unwrap();
         assert_eq!(f.tokens, 300_000);
@@ -534,7 +653,7 @@ mod tests {
         // 手填也是明确声明。
         let mut manual = ContextPolicy::default();
         manual.overrides.insert("gb-review".into(), 250_000);
-        let f = FloorInputs { policy: &manual, pins: &[], chains: &chains, routes: &[], kernel: None }
+        let f = FloorInputs { policy: &manual, pins: &[], chains: &chains, routes: &[], kernel: None, bridge: &[] }
             .floor("gb-review")
             .unwrap();
         assert_eq!(f.tokens, 250_000);
@@ -547,7 +666,7 @@ mod tests {
     fn kernel_only_routes_still_lower_the_floor() {
         let policy = ContextPolicy::default();
         let k = kernel();
-        let inputs = FloorInputs { policy: &policy, pins: &[], chains: &[], routes: &[], kernel: Some(&k) };
+        let inputs = FloorInputs { policy: &policy, pins: &[], chains: &[], routes: &[], kernel: Some(&k), bridge: &[] };
         let f = inputs.floor("claude-opus-5").unwrap();
         assert_eq!(f.tokens, 500_000);
         let n = f.narrowest.unwrap();
@@ -558,7 +677,7 @@ mod tests {
     #[test]
     fn without_kernel_the_floor_is_local_only() {
         let policy = ContextPolicy::default();
-        let inputs = FloorInputs { policy: &policy, pins: &[], chains: &[], routes: &[], kernel: None };
+        let inputs = FloorInputs { policy: &policy, pins: &[], chains: &[], routes: &[], kernel: None, bridge: &[] };
         let f = inputs.floor("claude-opus-5").unwrap();
         assert_eq!(f.tokens, 1_000_000);
         assert_eq!(f.candidates.len(), 1);
@@ -571,7 +690,7 @@ mod tests {
         let mut policy = ContextPolicy::default();
         policy.overrides.insert("Qwen3.8-27B-Claude".into(), 200_000);
         let chains = [chain("gb-review", &[("claude-opus-5", "Anthropic"), ("Qwen3.8-27B-Claude", "local")])];
-        let inputs = FloorInputs { policy: &policy, pins: &[], chains: &chains, routes: &[], kernel: None };
+        let inputs = FloorInputs { policy: &policy, pins: &[], chains: &chains, routes: &[], kernel: None, bridge: &[] };
         let f = inputs.floor("gb-review").unwrap();
         assert_eq!(f.tokens, 200_000);
         assert_eq!(f.compact_tokens, 180_000);
@@ -601,7 +720,7 @@ mod tests {
         let chains = [chain("claude-opus-5", &[("claude-opus-5", "Anthropic"), ("grok-4.6", "xAI")])];
         let k = kernel();
         let pinned = [pin("claude-opus-5", &[(15, "Anthropic", "claude-opus-5")], false)];
-        let inputs = FloorInputs { policy: &policy, pins: &pinned, chains: &chains, routes: &[], kernel: Some(&k) };
+        let inputs = FloorInputs { policy: &policy, pins: &pinned, chains: &chains, routes: &[], kernel: Some(&k), bridge: &[] };
         let f = inputs.floor("claude-opus-5[1M]").unwrap();
         assert_eq!(f.tokens, 1_000_000, "{:?}", f.candidates);
         assert_eq!(f.candidates.len(), 1);
@@ -609,7 +728,7 @@ mod tests {
         assert_eq!(f.candidates[0].channel_name.as_deref(), Some("Anthropic"));
 
         let open = [pin("claude-opus-5", &[(15, "Anthropic", "claude-opus-5")], true)];
-        let inputs = FloorInputs { policy: &policy, pins: &open, chains: &chains, routes: &[], kernel: Some(&k) };
+        let inputs = FloorInputs { policy: &policy, pins: &open, chains: &chains, routes: &[], kernel: Some(&k), bridge: &[] };
         let f = inputs.floor("claude-opus-5[1M]").unwrap();
         assert_eq!(f.tokens, 500_000);
         assert_eq!(f.narrowest.unwrap().model, "grok-4.6");
@@ -622,7 +741,7 @@ mod tests {
     fn a_same_named_primary_landing_still_counts() {
         let policy = ContextPolicy::default();
         let chains = [chain("grok-4.6", &[("grok-4.6", "xAI"), ("claude-opus-5", "Anthropic")])];
-        let inputs = FloorInputs { policy: &policy, pins: &[], chains: &chains, routes: &[], kernel: None };
+        let inputs = FloorInputs { policy: &policy, pins: &[], chains: &chains, routes: &[], kernel: None, bridge: &[] };
         let f = inputs.floor("grok-4.6").unwrap();
         assert_eq!(f.tokens, 500_000, "{:?}", f.candidates);
         assert!(f.candidates[0].counted);
@@ -630,13 +749,13 @@ mod tests {
 
         // 只有内核知道：xAI 原样服务 grok-4.6，Z.ai 把它改写成 1M 的 glm。
         let k = kernel();
-        let inputs = FloorInputs { policy: &policy, pins: &[], chains: &[], routes: &[], kernel: Some(&k) };
+        let inputs = FloorInputs { policy: &policy, pins: &[], chains: &[], routes: &[], kernel: Some(&k), bridge: &[] };
         let f = inputs.floor("grok-4.6").unwrap();
         assert_eq!(f.tokens, 500_000, "{:?}", f.candidates);
 
         // 反例不变：虚拟别名没人落到它身上，仍然不算。
         let chains = [chain("gb-review", &[("claude-opus-5", "Anthropic")])];
-        let inputs = FloorInputs { policy: &policy, pins: &[], chains: &chains, routes: &[], kernel: None };
+        let inputs = FloorInputs { policy: &policy, pins: &[], chains: &chains, routes: &[], kernel: None, bridge: &[] };
         let f = inputs.floor("gb-review").unwrap();
         assert_eq!(f.tokens, 1_000_000);
         assert!(!f.candidates[0].counted);
@@ -647,7 +766,7 @@ mod tests {
     fn a_pinned_upstream_counts_as_a_landing() {
         let policy = ContextPolicy::default();
         let pinned = [pin("gb-review", &[(21, "xAI", "grok-4.6")], false)];
-        let inputs = FloorInputs { policy: &policy, pins: &pinned, chains: &[], routes: &[], kernel: None };
+        let inputs = FloorInputs { policy: &policy, pins: &pinned, chains: &[], routes: &[], kernel: None, bridge: &[] };
         let f = inputs.floor("gb-review").unwrap();
         assert_eq!(f.tokens, 500_000);
         let n = f.narrowest.unwrap();
@@ -661,23 +780,23 @@ mod tests {
     fn cap_fixed_and_off_behave() {
         let k = kernel();
         let capped = ContextPolicy { cap_tokens: 300_000, ..Default::default() };
-        let inputs = FloorInputs { policy: &capped, pins: &[], chains: &[], routes: &[], kernel: Some(&k) };
+        let inputs = FloorInputs { policy: &capped, pins: &[], chains: &[], routes: &[], kernel: Some(&k), bridge: &[] };
         let f = inputs.floor("claude-opus-5").unwrap();
         assert_eq!(f.tokens, 300_000);
         assert!(f.capped);
 
         let fixed = ContextPolicy { mode: ContextMode::Fixed, fixed_tokens: 400_000, ..Default::default() };
-        let inputs = FloorInputs { policy: &fixed, pins: &[], chains: &[], routes: &[], kernel: Some(&k) };
+        let inputs = FloorInputs { policy: &fixed, pins: &[], chains: &[], routes: &[], kernel: Some(&k), bridge: &[] };
         let f = inputs.floor("claude-opus-5").unwrap();
         assert_eq!(f.tokens, 400_000);
         assert!(f.narrowest.is_none());
 
         let off = ContextPolicy { mode: ContextMode::Off, ..Default::default() };
-        let inputs = FloorInputs { policy: &off, pins: &[], chains: &[], routes: &[], kernel: Some(&k) };
+        let inputs = FloorInputs { policy: &off, pins: &[], chains: &[], routes: &[], kernel: Some(&k), bridge: &[] };
         assert!(inputs.floor("claude-opus-5").is_none());
         // 没模型名也没得算。
         let auto = ContextPolicy::default();
-        let inputs = FloorInputs { policy: &auto, pins: &[], chains: &[], routes: &[], kernel: Some(&k) };
+        let inputs = FloorInputs { policy: &auto, pins: &[], chains: &[], routes: &[], kernel: Some(&k), bridge: &[] };
         assert!(inputs.floor("  ").is_none());
     }
 }

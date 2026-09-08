@@ -17,9 +17,8 @@ registerDict("en", {
   订阅用量: "Subscription usage",
   会话管理: "Session manager",
   "CLI 接管": "CLI takeover",
-  调度图: "Dispatch graph",
   模型链: "Model chain",
-  模型导入: "Model import",
+  模型桥接: "Model bridge",
   系统注入: "System injection",
   破禁: "Unlock",
   扩展管理: "Extensions",
@@ -120,14 +119,14 @@ registerDict("en", {
   时间: "Time",
   状态: "Status",
   模型: "Model",
-  "写入 config.toml 的 model。其它模型用 codex --profile，或去「模型导入」加 profile。":
-    "Writes config.toml `model`. Other models: `codex --profile`, or add profiles on Model import.",
+  "写入 config.toml 的 model。其它模型用 codex --profile，或去「模型桥接」加 profile。":
+    "Writes config.toml `model`. Other models: `codex --profile`, or add profiles on Model bridge.",
   "Gemini CLI 只有当前这一个槽位（model.name）。没有可追加的目录。":
     "Gemini CLI has only this one slot (model.name). There is no catalog to append to.",
-  "写入后新会话走这个内核别名。要让 /model 里也能切 opus-5 / glm-5.3-flash，再到「模型导入」勾上 Grok Build。":
-    "New sessions send this kernel alias. To also switch via /model to opus-5 / glm-5.3-flash, import them on Model import with Grok Build ticked.",
-  "写成 ccload/别名。其它模型去「模型导入」合并进 provider.ccload.models。":
-    "Written as ccload/<alias>. Other models: merge them into provider.ccload.models on Model import.",
+  "写入后新会话走这个内核别名。要让 /model 里也能切 opus-5 / glm-5.3-flash，再到「模型桥接」勾上 Grok Build。":
+    "New sessions send this kernel alias. To also switch via /model to opus-5 / glm-5.3-flash, import them on Model bridge with Grok Build ticked.",
+  "写成 ccload/别名。其它模型去「模型桥接」合并进 provider.ccload.models。":
+    "Written as ccload/<alias>. Other models: merge them into provider.ccload.models on Model bridge.",
   渠道: "Channel",
   耗时: "Duration",
   首字节: "TTFB",
@@ -367,8 +366,8 @@ registerDict("en", {
   看当前屏幕: "capture screen",
   生成图片: "generate image",
   修改图片: "edit image",
-  "还没有调用记录。装上「模型导入」页里的视觉辅助 MCP 之后，文本模型每次看图都会记一笔。":
-    "No calls recorded yet. Install the vision-assist MCP from the “Model import” page and every image a text-only model looks at gets logged here.",
+  "还没有调用记录。装上「模型桥接」页里的视觉辅助 MCP 之后，文本模型每次看图都会记一笔。":
+    "No calls recorded yet. Install the vision-assist MCP from the “Model bridge” page and every image a text-only model looks at gets logged here.",
   "只统计本客户端自带的 MCP 服务器（ccload-vision / ccload-image）。扩展管理里装的第三方 MCP 由 CLI 直接拉起，不经过内核也不经过客户端，无法计入。":
     "Covers only this app's own MCP servers (ccload-vision / ccload-image). Third-party MCP servers installed under Extensions are spawned directly by the CLI — they pass through neither the kernel nor this client, so they cannot be counted.",
   "共 {n} 次调用": "{n} calls",
@@ -1171,8 +1170,8 @@ registerDict("en", {
   写到哪几家: "Write to which CLIs",
   "上面勾的内容按下这一行的「写入 / 更新」才落到文件里":
     "What you ticked above only reaches the file when you press Write / Update on one of these rows",
-  "{server} 还没装到任何 CLI —— 只写说明不装服务器，等于教模型去调一个不存在的工具。先到「模型导入」页最下面的「{panel}」装一下。":
-    "{server} is not installed on any CLI — writing the guidance without the server teaches the model to call a tool that isn't there. Install it from “{panel}” at the bottom of the Model import page first.",
+  "{server} 还没装到任何 CLI —— 只写说明不装服务器，等于教模型去调一个不存在的工具。先到「模型桥接」页最下面的「{panel}」装一下。":
+    "{server} is not installed on any CLI — writing the guidance without the server teaches the model to call a tool that isn't there. Install it from “{panel}” at the bottom of the Model bridge page first.",
 
 
 // ---- CLI 代理 / Node 服务 / 用量面板(2026-08 批次) ----
@@ -1323,4 +1322,77 @@ registerDict("en", {
   "+ 加一条规则": "+ Add a rule",
   "还没有规则。点「+ 加一条规则」写第一条。":
     "No rules yet. Click \u201c+ Add a rule\u201d to write the first one.",
+
+  // ---- 模型桥接（出口别名）----
+  "已按内核别名补齐（同名落点，不依赖代理）。确认后点「保存」。":
+    "Filled in from the kernel's aliases (identity targets, so no proxy needed). Review, then hit Save.",
+  "正在编辑":
+    "Editing",
+  "先保存 —— 写进 CLI 用的是已保存的那份":
+    "Save first — writing to CLIs uses the saved table, not the draft",
+  "还没有任何一行勾了 CLI":
+    "No row is assigned to any CLI yet",
+  "写进 {n} 家 CLI":
+    "Write to {n} CLI(s)",
+  "有 {n} 行改了名，但 CLI 现在直连内核 —— 改写只发生在本地代理里，直连时内核收到的是这个新名字、根本不认它。请先去「CLI 接管」页打开「通过本地代理」，否则这些行保存不了。":
+    "{n} row(s) rename the model, but your CLIs talk to the kernel directly — the rewrite only happens in the local proxy. Direct, the kernel receives the new name and does not know it. Turn on “route through the local proxy” on the CLI takeover page first, or these rows cannot be saved.",
+  "把内核里还没进表的别名补进来，出口名和落点同名。已有的行不动。":
+    "Add kernel aliases that aren't in the table yet, egress name identical to the target. Existing rows are left alone.",
+  "从内核别名补齐":
+    "Fill from kernel aliases",
+  "加一行":
+    "Add row",
+  "全勾给 {cli}":
+    "Assign all to {cli}",
+  "全不给 {cli}":
+    "Unassign all from {cli}",
+  "顺手清掉这张表里没有的旧别名":
+    "Also drop stale aliases missing from this table",
+  "还没有出口别名。":
+    "No egress aliases yet.",
+  "点「从内核别名补齐」把内核现有的名字铺进来 —— 默认同名，行为和现在完全一样，之后再挑几条改名或改窗口。":
+    "Hit “Fill from kernel aliases” to lay down what the kernel already serves — identical names by default, so nothing changes behaviourally. Rename or retune a few rows afterwards.",
+  "写进这一家":
+    "Write to this CLI",
+  "出口别名":
+    "Egress alias",
+  "落点（内核别名）":
+    "Target (kernel alias)",
+  "压缩阈值":
+    "Compact at",
+  "把「{alias}」写进 {cli}":
+    "Write “{alias}” to {cli}",
+  "第 {n} 行的出口别名":
+    "Egress alias of row {n}",
+  "CLI 里看到的名字":
+    "The name the CLI shows",
+  "第 {n} 行的落点":
+    "Target of row {n}",
+  "内核里的别名":
+    "An alias in the kernel",
+  "内核里还没有别名，先去内核后台建渠道":
+    "The kernel has no aliases yet — add a channel in the kernel admin first",
+  "改了名 —— 只在 CLI 走本地代理时成立":
+    "Renamed — only works while CLIs route through the local proxy",
+  "改写":
+    "rewrite",
+  "第 {n} 行的上下文窗口":
+    "Context window of row {n}",
+  "第 {n} 行的压缩阈值百分比":
+    "Compact threshold percent of row {n}",
+  "第 {n} 行的 tier":
+    "Tier of row {n}",
+  "删掉第 {n} 行":
+    "Delete row {n}",
+  "共 {total} 行，{n} 行会写进 {cli}":
+    "{total} row(s); {n} will be written to {cli}",
+  "{n} 行改了名，转发前由本地代理换回落点名":
+    "{n} row(s) renamed — the local proxy swaps them back before forwarding",
+  "清空整张表":
+    "Clear the whole table",
+  "CLI 里能选到哪些模型名，以及那个名字到了内核会变成什么。客户端本来就是代理，所以出口那一侧的名字由我们定：写进 CLI 的可以是 ccload-fast，转发前换成内核认的 grok-4.6 —— 内核那边换渠道、改别名，五家 CLI 的配置都不用动。每一行自己带着「写给哪几家 CLI」「多大窗口」「几成压缩」，因为这三件事本来就逐行不同。":
+    "Which model names your CLIs can pick, and what each becomes once it reaches the kernel. The client is already a proxy, so the egress name is ours to choose: a CLI can be configured with ccload-fast and the proxy swaps in the kernel's grok-4.6 before forwarding — swap channels or rename aliases kernel-side and no CLI config has to change. Every row carries its own “which CLIs”, “how big a window” and “compact at what percent”, because those three differ row by row.",
+  "models.dev 拉取失败，上下文窗口暂用本地预设值（claude 20 万、gemini 100 万等），联网后重试。":
+    "Could not reach models.dev; context windows fall back to local presets (Claude 200k, Gemini 1M, ...). Retry once you're online.",
+  "读取出口别名表…": "Loading the egress alias table…",
 });

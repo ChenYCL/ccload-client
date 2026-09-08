@@ -654,7 +654,7 @@ function DefaultModelPicker({
       case "codex":
         return {
           label: t("模型"),
-          hint: t("写入 config.toml 的 model。其它模型用 codex --profile，或去「模型导入」加 profile。"),
+          hint: t("写入 config.toml 的 model。其它模型用 codex --profile，或去「模型桥接」加 profile。"),
           value: options.codex_model,
           set: (v) => onOptionsChange({ ...options, codex_model: v }),
         };
@@ -668,14 +668,14 @@ function DefaultModelPicker({
       case "grok-build":
         return {
           label: t("模型"),
-          hint: t("写入后新会话走这个内核别名。要让 /model 里也能切 opus-5 / glm-5.3-flash，再到「模型导入」勾上 Grok Build。"),
+          hint: t("写入后新会话走这个内核别名。要让 /model 里也能切 opus-5 / glm-5.3-flash，再到「模型桥接」勾上 Grok Build。"),
           value: options.grok_model,
           set: (v) => onOptionsChange({ ...options, grok_model: v }),
         };
       case "opencode":
         return {
           label: t("模型"),
-          hint: t("写成 ccload/别名。其它模型去「模型导入」合并进 provider.ccload.models。"),
+          hint: t("写成 ccload/别名。其它模型去「模型桥接」合并进 provider.ccload.models。"),
           value: options.opencode_model,
           set: (v) => onOptionsChange({ ...options, opencode_model: v }),
         };

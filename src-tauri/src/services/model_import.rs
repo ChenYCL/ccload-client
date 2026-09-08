@@ -53,6 +53,14 @@ pub struct ImportEntry {
     /// `None` / `""` / `"none"` means "just a catalog entry, don't bind" —
     /// which for Claude Code means the row is skipped entirely.
     pub tier: Option<String>,
+    /// 这一行自己的压缩阈值（占窗口的百分之几）。`None` 用调用方给的全局值。
+    ///
+    /// 阈值必须逐行可调，因为窗口本来就是逐行不同的：`grok-4.6` 是 500k、
+    /// `claude-opus-5` 是 1M，同一个百分比落在两个分母上得到的是 450k 和 900k。
+    /// 更进一步，窄模型往往还要更早触发（压缩请求自己也要占窗口），一份全局
+    /// 百分比表达不了。
+    #[serde(default)]
+    pub compact_percent: Option<u8>,
 }
 
 #[derive(Debug, Serialize)]
@@ -128,9 +136,18 @@ pub fn apply_import(
     stamp: &str,
     backups: &BackupStore,
     prune: bool,
-    // 总控的压缩百分比，跟着窗口一起写进目录项。`None` 用默认。
+    // 总控的压缩百分比，跟着窗口一起写进目录项。每一行可以用
+    // `ImportEntry::compact_percent` 盖过它；两个都没有就用默认的 90%。
     compact_percent: Option<u8>,
 ) -> Result<ImportResult, AppError> {
+    /// 这一行生效的百分比：行内的优先，其次调用方给的，最后是默认值。
+    /// 越界值（0 = 每条都压缩、>=100 = 永不压缩）一律当没填。
+    fn pct_of(e: &ImportEntry, global: Option<u8>) -> u8 {
+        e.compact_percent
+            .or(global)
+            .filter(|p| (1..100).contains(p))
+            .unwrap_or(crate::services::context_window::DEFAULT_COMPACT_PERCENT)
+    }
     let entries: Vec<&ImportEntry> = entries
         .iter()
         .filter(|e| !e.alias.trim().is_empty())
@@ -239,13 +256,12 @@ pub fn apply_import(
                 // 上下文上限在 Claude Code 里是**全局**一个开关，不是 per-model。
                 // 只有用户明确把某个模型绑到 default 槽位、且那一行填了窗口，才
                 // 跟着改；否则保留用户原值。
-                if let Some(w) = bind
-                    .iter()
-                    .find(|(k, _)| *k == "ANTHROPIC_MODEL")
-                    .and_then(|(_, e)| e.context_window)
-                    .filter(|n| *n > 0)
-                {
-                    write_claude_window_env(env, w as u64, compact_percent);
+                if let Some((_, main)) = bind.iter().find(|(k, _)| *k == "ANTHROPIC_MODEL") {
+                    if let Some(w) = main.context_window.filter(|n| *n > 0) {
+                        // 阈值取**主模型那一行**自己的：这个键是全局的，而全局值
+                        // 只能跟着实际在跑的那个模型走。
+                        write_claude_window_env(env, w as u64, Some(pct_of(main, compact_percent)));
+                    }
                 }
                 // 第 6 个槽：一个没绑 tier 的别名，留给 /model 选择器。已有值
                 // 是用户的，不覆盖。
@@ -298,9 +314,7 @@ pub fn apply_import(
                 tbl["model"] = toml_edit::value(e.alias.as_str());
                 if let Some(w) = e.context_window.filter(|n| *n > 0) {
                     tbl["model_context_window"] = toml_edit::value(w);
-                    let pct = compact_percent
-                        .filter(|p| (1..=100).contains(p))
-                        .unwrap_or(crate::services::context_window::DEFAULT_COMPACT_PERCENT);
+                    let pct = pct_of(e, compact_percent);
                     tbl["model_auto_compact_token_limit"] =
                         toml_edit::value(w.saturating_mul(i64::from(pct)) / 100);
                 }
@@ -445,7 +459,7 @@ pub fn apply_import(
                     &endpoint,
                     &token,
                     e.context_window,
-                    compact_percent,
+                    Some(pct_of(e, compact_percent)),
                 )?;
             }
             if prune {
@@ -491,6 +505,7 @@ mod tests {
                 alias: "kimi-k3".into(),
                 context_window: None,
                 tier: None,
+                compact_percent: None,
             }],
             "s1",
             &bk,
@@ -512,6 +527,7 @@ mod tests {
                 alias: "kimi-k3".into(),
                 context_window: None,
                 tier: None,
+                compact_percent: None,
             }],
             "s1",
             &bk,
@@ -541,6 +557,7 @@ mod tests {
             alias: alias.into(),
             context_window: w,
             tier: tier.map(str::to_string),
+            compact_percent: None,
         }
     }
 
@@ -808,6 +825,7 @@ mod tests {
                 alias: "amazon/nova-2-lite-v1".into(),
                 context_window: Some(1_000_000),
                 tier: None,
+                compact_percent: None,
             }],
             "s1",
             &bk,
@@ -858,11 +876,13 @@ mod tests {
                     alias: "kimi-k3".into(),
                     context_window: Some(262_144),
                     tier: None,
+                    compact_percent: None,
                 },
                 ImportEntry {
                     alias: "fable-5".into(),
                     context_window: None,
                     tier: None,
+                    compact_percent: None,
                 },
             ],
             "s1",

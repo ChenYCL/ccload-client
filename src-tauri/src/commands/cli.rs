@@ -121,6 +121,10 @@ pub(crate) struct WindowContext {
     chains: Vec<FallbackChain>,
     routes: Vec<ForcedRoute>,
     kernel: Option<KernelRoutes>,
+    /// 出口别名表。CLI 配置里写的名字可能是我们自己起的，要先换成落点再找候选。
+    /// 和钉住不同，这张表**直连时也要加载**：改名记录固然只在走代理时成立（保存
+    /// 时就拦住了），但同名记录上手填的窗口，直连的 CLI 一样该按它写。
+    bridge: Vec<crate::services::bridge::BridgeEntry>,
 }
 
 impl WindowContext {
@@ -150,12 +154,18 @@ impl WindowContext {
         } else {
             None
         };
+        let bridge = crate::services::bridge::BridgeStore::load(
+            &crate::commands::bridge::store_path(state),
+        )
+        .map(|s| s.entries)
+        .unwrap_or_default();
         Self {
             policy,
             pins,
             chains,
             routes,
             kernel,
+            bridge,
         }
     }
 
@@ -166,6 +176,7 @@ impl WindowContext {
             chains: &self.chains,
             routes: &self.routes,
             kernel: self.kernel.as_ref(),
+            bridge: &self.bridge,
         }
     }
 

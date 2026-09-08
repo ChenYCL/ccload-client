@@ -94,3 +94,17 @@ const VISION_PATTERNS: RegExp[] = [
 export function isVisionCapable(alias: string): boolean {
   return VISION_PATTERNS.some((re) => re.test(alias));
 }
+
+/// 分档表的键：和后端 `tier_key` 一样去厂商前缀、去 `[..]` 后缀、小写。用户填
+/// `qwen3.8-27b` 要能覆盖 `local/Qwen3.8-27B[1m]` 那一行。
+///
+/// 分档表（`ContextPolicy.overrides`）和桥接表都按它查，两处各写一份迟早漂 ——
+/// 漂的表现是「设置里明明填了 500k，桥接表却显示 1M」。
+export function tierKey(name: string): string {
+  let s = name.trim();
+  const slash = s.lastIndexOf("/");
+  if (slash >= 0) s = s.slice(slash + 1);
+  const open = s.lastIndexOf("[");
+  if (open >= 0 && s.endsWith("]")) s = s.slice(0, open);
+  return s.trim().toLowerCase();
+}

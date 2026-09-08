@@ -17,7 +17,6 @@ import { SessionManagePage } from "./pages/SessionManagePage";
 import { UnlockPage } from "./pages/UnlockPage";
 import { ExtensionsPage } from "./pages/ExtensionsPage";
 import { AutomationPage } from "./pages/AutomationPage";
-import { GraphPage } from "./pages/GraphPage";
 import { NodeServicesPage } from "./pages/NodeServicesPage";
 import { errText } from "./lib/err";
 import { useT } from "./i18n";
@@ -41,7 +40,6 @@ const PAGES: Record<Page, (props: PageProps) => JSX.Element> = {
   unlock: UnlockPage,
   extensions: ExtensionsPage,
   automation: AutomationPage,
-  graph: GraphPage,
   "node-services": NodeServicesPage,
 };
 

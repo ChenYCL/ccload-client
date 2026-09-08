@@ -71,7 +71,7 @@ export function McpToolPanel() {
     return (
       <p className="text-sm text-muted">
         {t(
-          "还没有调用记录。装上「模型导入」页里的视觉辅助 MCP 之后，文本模型每次看图都会记一笔。",
+          "还没有调用记录。装上「模型桥接」页里的视觉辅助 MCP 之后，文本模型每次看图都会记一笔。",
         )}
       </p>
     );

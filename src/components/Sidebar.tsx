@@ -22,7 +22,6 @@ import {
   Settings,
   Shuffle,
   PackagePlus,
-  Workflow,
   Zap,
 } from "lucide-react";
 import { useClientVersion, useUpdateCheck } from "../hooks/useUpdate";
@@ -40,9 +39,10 @@ import logoUrl from "@icons/128x128.png";
 // 分组按「你现在想干什么」，而且刻意把**两层**分开：
 //
 //   · 本地 CLI 配置 —— 写的是本机各 CLI 自己的配置文件（连哪儿、默认发哪个别名、
-//     `/model` 里能选到哪些、注入什么）。改的是「谁发什么名字」。
+//     `/model` 里能选到哪些、注入什么），外加**本地代理**那一跳的改写表。改的是
+//     「谁发什么名字，以及那个名字在出门前会被换成什么」。
 //   · 内核路由 —— 写的是**当前连着的那个内核**的渠道（那个名字到了内核之后去谁家、
-//     变成什么上游模型名）。改的是「名字发出去之后的事」。
+//     变成什么上游模型名）。改的是「名字进了内核之后的事」。
 //
 // 内核那一组的标题带「本地 / 远端」前缀，因为这一页改的东西**跟着内核跑**：连的是
 // 本机托管内核，改的是这台机器上的；连的是远端，改的是别人机器上那个 —— 同一套
@@ -72,7 +72,7 @@ const GROUPS: {
     title: "本地 CLI 配置",
     items: [
       { id: "cli", label: "CLI 接管", icon: Cable },
-      { id: "models", label: "模型导入", icon: PackagePlus },
+      { id: "models", label: "模型桥接", icon: PackagePlus },
       { id: "inject", label: "系统注入", icon: FileCode },
       { id: "unlock", label: "破禁", icon: Unlock },
       { id: "automation", label: "自动插件", icon: Zap },
@@ -82,10 +82,7 @@ const GROUPS: {
   {
     id: "kernel",
     title: "内核路由",
-    items: [
-      { id: "route", label: "模型路由", icon: Shuffle },
-      { id: "graph", label: "调度图", icon: Workflow },
-    ],
+    items: [{ id: "route", label: "模型路由", icon: Shuffle }],
   },
   {
     id: "system",

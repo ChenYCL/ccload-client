@@ -25,8 +25,9 @@ import type {
   ExtensionSupport,
   FallbackChain,
   ForcedRoute,
-  GraphDoc,
-  GraphValidation,
+  BridgeEntry,
+  BridgeOutcome,
+  BridgeWrite,
   ImageApi,
   ImageTargetState,
   ImportEntry,
@@ -221,14 +222,18 @@ export const api = {
   forcedRouteApply: (from: string) =>
     invoke<string[]>("forced_route_apply", { from }),
 
-  /* --- 调度图 ------------------------------------------------------------ */
+  /* --- 出口别名 ---------------------------------------------------------- */
 
-  graphList: () => invoke<GraphDoc[]>("graph_list"),
-  graphSave: (doc: GraphDoc) => invoke<GraphDoc[]>("graph_save", { doc }),
-  /** 纯计算，不落盘；UI 每次改动都调它做即时校验。 */
-  graphValidate: (doc: GraphDoc) => invoke<GraphValidation>("graph_validate", { doc }),
-  /** 校验不过时后端一个字都不写。 */
-  graphApply: (id: string) => invoke<string[]>("graph_apply", { id }),
+  bridgeList: () => invoke<BridgeEntry[]>("bridge_list"),
+  /** 整表替换。校验不过就一个字都不写，改名记录在 CLI 直连内核时会被拒。 */
+  bridgeSave: (entries: BridgeEntry[]) =>
+    invoke<BridgeOutcome>("bridge_save", { entries }),
+  /** 按已保存的表写进各 CLI 的配置文件。逐家独立成败。 */
+  bridgeApply: (targets: CliTarget[], prune: boolean) =>
+    invoke<BridgeWrite[]>("bridge_apply", { targets, prune }),
+  /** 给内核现有别名补一份同名记录，已有的行原样保留。 */
+  bridgeSeed: (aliases: string[], targets: CliTarget[], guessClaudeSlots: boolean) =>
+    invoke<BridgeEntry[]>("bridge_seed", { aliases, targets, guessClaudeSlots }),
 
   /* --- 配置迁移 ---------------------------------------------------------- */
 

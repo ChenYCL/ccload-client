@@ -158,7 +158,9 @@ python3 scripts/rescue-session.py <session.jsonl> --write  # 真的改
 预防靠「CLI 接管」页的**上下文窗口总控**（`services/context_window.rs` +
 `services/context_floor.rs`）：写进 CLI 的窗口取这个别名**所有可能落到的上游**里
 最窄的那个 —— 模型本身、模型链每一跳、强制路由每个目标、内核里服务这个别名的每个
-渠道（`GET /admin/channels`）—— 压缩阈值按百分比（默认 90%）跟着窗口走。Claude 是
+渠道（`GET /admin/channels`）—— 压缩阈值按百分比（默认 90%）跟着窗口走。
+CLI 里那个名字**可能是出口别名**（见下一节），所以第一步是先按 `bridge.json` 换成
+落点名再找候选：不换的话 `ccload-fast` 一条都匹配不上，只拿到 128k 兜底。Claude 是
 三个键一起写：`CLAUDE_CODE_MAX_CONTEXT_TOKENS`（天花板）、
 `CLAUDE_CODE_AUTO_COMPACT_WINDOW`（压缩分母，官方区间 100k–1M）、
 `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`（分母的百分之几触发）；Codex 是
@@ -176,6 +178,35 @@ python3 scripts/rescue-session.py <session.jsonl> --write  # 真的改
   都重写一遍、起来后再写回去。
 * 名字推不准的（本地 qwen、中转自起的别名）在分档表手填，手填盖过后缀、
   models.dev 和内置表。
+
+### 「CLI 里叫什么」由我们定：出口别名（模型桥接）
+
+客户端本来就是代理，CLI 全指向 `cli_proxy`。所以**出口那一侧的名字是我们的**：
+写进 CLI 配置的可以是 `ccload-fast`，转发前由代理换成内核认的 `grok-4.6`。
+代理里那张改写表（`ProxyRules.rewrites`）一直存在却从来没人往里写过 ——
+`services/bridge.rs` + `commands/bridge.rs` 就是它的配置面（`bridge.json`）。
+
+一条记录管三件事，都是**逐行**的：
+
+| 字段 | 落到哪 |
+| --- | --- |
+| `alias` | 写进各 CLI 的模型目录 / tier 槽位，用户 `/model` 里看到的就是它 |
+| `target` | 代理的改写表（`alias → target`），也是窗口推断的依据 |
+| `context_window` + `compact_percent` | 写进各 CLI 的窗口键和压缩阈值 |
+| `targets` | 哪几家 CLI 要写它。Claude Code 只有 5 个槽位，OpenCode 装得下全部 |
+
+几条别改回去的判断：
+
+* **窗口跟着 `target` 算，不跟着 `alias`。** 出口名是我们编的，什么都推不出来；
+  它背后的 `grok-4.6` 才是 500k。90% 落在 500k 和 1M 两个分母上是 450k 和 900k
+  —— 一份全局百分比表达不了，所以阈值必须逐行可调（`ImportEntry::compact_percent`）。
+* **改名依赖代理。** `alias != target` 的记录只在 `route_cli_through_proxy` 开着时
+  成立；直连时内核收到的是那个新名字、根本不认，每条请求 503。`bridge::validate`
+  在保存时就拒绝，不让人配好之后再去日志里找原因。同名记录没有这个问题。
+* **写进 CLI 的是 `alias`，不是 `target`。** target 只活在代理的改写表里。
+* 代理里的顺序是**先改写、再查钉住**：钉住表按落点登记，反过来的话钉住对所有
+  改过名的别名静默失灵。
+* `@chNN` 归钉住用，出口名不许长这个形状（两套机制会在代理里互相盖）。
 
 ### 「选了哪个渠道就默认走它」：首选渠道钉住
 

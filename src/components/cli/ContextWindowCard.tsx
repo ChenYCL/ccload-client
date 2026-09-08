@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useT, type Translate } from "../../i18n";
 import { api } from "../../lib/api";
-import { formatWindow } from "../../lib/modelMeta";
+import { formatWindow, tierKey } from "../../lib/modelMeta";
 import { TARGET_LABELS, TARGET_SHORT } from "../../lib/targets";
 import { Select, TextInput } from "../ui/Input";
 import type {
@@ -72,17 +72,6 @@ function describeCandidate(t: Translate, c: WindowCandidate): string {
   if (c.channel_name) parts.push(c.channel_name);
   if (c.via !== "model") parts.push(viaLabel(t, c.via));
   return parts.join(" · ");
-}
-
-/// 分档表的键：和后端 `tier_key` 一样去后缀、去厂商前缀、小写。用户填 `qwen3.8-27b`
-/// 要能覆盖 `local/Qwen3.8-27B[1m]` 那一行，前端删旧键时也得按同一套认。
-function tierKey(name: string): string {
-  let s = name.trim();
-  const slash = s.lastIndexOf("/");
-  if (slash >= 0) s = s.slice(slash + 1);
-  const open = s.lastIndexOf("[");
-  if (open >= 0 && s.endsWith("]")) s = s.slice(0, open);
-  return s.trim().toLowerCase();
 }
 
 /// 窗口选择：预设档位 + 「自定义」。当前值不在预设里时作为一项列出来，免得下拉

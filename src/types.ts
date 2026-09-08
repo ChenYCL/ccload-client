@@ -289,6 +289,8 @@ export type ImportEntry = {
   alias: string;
   contextWindow?: number | null;
   tier?: string | null;
+  /** 这一行自己的压缩阈值。空 = 用总控的百分比。 */
+  compactPercent?: number | null;
 };
 
 export type ImportResult = {
@@ -300,43 +302,37 @@ export type ImportResult = {
   removed?: string[];
 };
 
-export type GraphProvider = {
-  id: string;
-  label: string;
-  enabled: boolean;
-  channelId: number | null;
-  /** 档位 id → 该家在该档的真实上游模型名。 */
-  models: Record<string, string>;
-};
+/* ---------------------------------------------------------------------------
+   出口别名：我们自己那份模型名单，架在 CLI 和内核之间。
+   字段对照 src-tauri/src/services/bridge.rs。
+--------------------------------------------------------------------------- */
 
-export type GraphTier = {
-  id: string;
-  label: string;
-  /** CLI 侧实际请求的模型名。 */
+export type BridgeEntry = {
+  /** 写进 CLI 的名字 —— 用户在 /model 里看到的就是它。 */
   alias: string;
-  /** 有序候选队列，越靠前越先用。 */
-  providers: string[];
+  /** 转发给内核时换成这个。和 alias 相同 = 不改写，也就不依赖本地代理。 */
+  target: string;
+  /** 写进 CLI 的上下文窗口。0 = 按 target 自动推断。 */
+  contextWindow: number;
+  /** 自动压缩在窗口的百分之几触发。0 = 用总控默认（90）。 */
+  compactPercent: number;
+  /** 哪几家 CLI 要写它。 */
+  targets: CliTarget[];
+  /** Claude Code 的槽位。null / "none" = 不绑。 */
+  tier?: string | null;
 };
 
-export type GraphRole = { id: string; label: string; tier: string };
-
-export type GraphDoc = {
-  id: string;
-  label: string;
-  enabled: boolean;
-  providers: GraphProvider[];
-  tiers: GraphTier[];
-  roles: GraphRole[];
-  /** 用户钉住的全局顺序。空则从各档队列做拓扑排序。 */
-  providerOrder?: string[];
+export type BridgeOutcome = {
+  entries: BridgeEntry[];
+  /** 能存但用户该知道的话（比如选了槽位却没勾 Claude Code）。 */
+  warnings: string[];
+  log: string[];
 };
 
-/** 校验结果。ok=false 时禁止应用，后端也会再拦一次。 */
-export type GraphValidation = {
-  ok: boolean;
-  problems: string[];
-  globalOrder: string[];
-  priorities: Record<string, number>;
+export type BridgeWrite = {
+  target: CliTarget;
+  status: "ok" | "skipped" | "failed";
+  text: string;
 };
 
 export type Page =
@@ -353,7 +349,6 @@ export type Page =
   | "unlock"
   | "extensions"
   | "automation"
-  | "graph"
   | "node-services"
   | "settings";
 

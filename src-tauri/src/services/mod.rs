@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod bridge;
 pub mod channel_usage;
 pub mod channel_writer;
 pub mod cli_advanced;
@@ -17,7 +18,6 @@ pub mod dynamic_inject;
 pub mod embed_proxy;
 pub mod fallback;
 pub mod forced_route;
-pub mod graph;
 pub mod image_mcp;
 pub mod kernel;
 pub mod mcp_usage;
