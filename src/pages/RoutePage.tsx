@@ -4,8 +4,8 @@ import { Plus, Search } from "lucide-react";
 import { useT } from "../i18n";
 import { api } from "../lib/api";
 import { cn } from "../lib/cn";
-import { aliasKey, sameAlias } from "../lib/pins";
-import { channelsOf, kernelAliases, type ChannelModels } from "../lib/modelOptions";
+import { aliasKey, sameAlias, splitPinned } from "../lib/pins";
+import { channelsOf, type ChannelModels } from "../lib/modelOptions";
 import { Panel } from "../components/StateBlock";
 import { TextInput } from "../components/ui/Input";
 import { AliasRoutes } from "../components/routes/AliasRoutes";
@@ -76,7 +76,16 @@ export function RoutePage({ onNavigate }: { onNavigate?: (page: Page) => void })
       const k = aliasKey(s);
       if (!seen.has(k)) seen.set(k, s);
     };
-    kernelAliases(channelList).forEach(add);
+    // **所有**渠道上的别名，停用的也算。
+    //
+    // `kernelAliases` 刻意只看启用渠道 —— 它服务的是「给用户填的候选」，把停用
+    // 渠道上的名字推荐出去等于给一堆填了就 404 的选项。但这一页正相反：它就是
+    // 用来**修**这种别名的（那条渠道停用了、于是没人服务这个名字），列表里看不
+    // 到它就无从下手。
+    channelList
+      .flatMap((c) => (c.models ?? []).map((m) => m.model ?? ""))
+      .filter((n) => n && !splitPinned(n))
+      .forEach(add);
     (chains.data ?? []).forEach((c) => add(c.alias));
     (routes.data ?? []).forEach((r) => add(r.from));
     extra.forEach(add);

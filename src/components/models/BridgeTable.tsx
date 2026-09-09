@@ -152,10 +152,14 @@ export function BridgeTable({
     for (const r of rows) for (const x of r.targets) m.set(x, (m.get(x) ?? 0) + 1);
     return m;
   }, [rows]);
-  const writeTargets = IMPORT_TARGETS.filter((x) => (counts.get(x) ?? 0) > 0);
 
+  // 只写**当前 tab 那一家**。
+  //
+  // 「正在编辑 Claude Code」旁边摆一个「写进 2 家 CLI」是自相矛盾的：用户刚在
+  // 这一档里调完槽位，点下去却顺手把 Grok Build 的 95 条也落了盘。每家的配置
+  // 各自留在表里（切 tab 就看得见），写入也就该各写各的。
   const apply = useMutation({
-    mutationFn: () => api.bridgeApply(writeTargets, prune),
+    mutationFn: () => api.bridgeApply([tab], prune),
     onSuccess: (rs) =>
       onMessage(
         rs
@@ -249,20 +253,18 @@ export function BridgeTable({
         </button>
         <button
           onClick={() => apply.mutate()}
-          disabled={busy || dirty || writeTargets.length === 0}
+          disabled={busy || dirty || pickedHere === 0}
           title={
             dirty
               ? t("先保存 —— 写进 CLI 用的是已保存的那份")
-              : writeTargets.length === 0
-                ? t("还没有任何一行勾了 CLI")
-                : writeTargets.map((x) => TARGET_LABELS[x]).join("、")
+              : pickedHere === 0
+                ? t("这一家一行都没配")
+                : t("只写 {cli} 的配置文件，其它几家不动", { cli: TARGET_LABELS[tab] })
           }
           className="flex items-center gap-1 rounded-lg bg-accent px-3.5 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-accent/90 disabled:opacity-40"
         >
           <Download className="h-4 w-4" />
-          {apply.isPending
-            ? t("写入中…")
-            : t("写进 {n} 家 CLI", { n: writeTargets.length })}
+          {apply.isPending ? t("写入中…") : t("写进 {cli}", { cli: TARGET_LABELS[tab] })}
         </button>
       </div>
 
@@ -317,7 +319,7 @@ export function BridgeTable({
         <div className="flex-1" />
         {/* 只增不删会让 OpenCode / Grok 的目录一路涨：退役的名字留在选择器里，
             选中就是一个 404。默认关着 —— 删配置得是用户明确要的。 */}
-        {(writeTargets.includes("opencode") || writeTargets.includes("grok-build")) && (
+        {(tab === "opencode" || tab === "grok-build") && (
           <label className="flex cursor-pointer items-center gap-1.5 text-xs">
             <input type="checkbox" checked={prune} onChange={(e) => setPrune(e.target.checked)} />
             {t("顺手清掉这张表里没有的旧别名")}
@@ -508,7 +510,7 @@ function ClaudeSlots({
 }: {
   rows: BridgeEntry[];
   aliases: string[];
-  resolve: (r: BridgeEntry) => { window: number; percent: number; trigger: number };
+  resolve: (r: BridgeEntry) => { auto: number; window: number; percent: number; trigger: number };
   onChange: (next: BridgeEntry[]) => void;
 }) {
   const t = useT();
@@ -520,6 +522,10 @@ function ClaudeSlots({
     () => [...new Set([...rows.map((r) => r.alias.trim()).filter(Boolean), ...aliases])],
     [rows, aliases],
   );
+
+  /// 改某一行的窗口 / 阈值。槽位视图里手上只有 row 本身，没有表格那种下标。
+  const patchRow = (row: BridgeEntry, p: Partial<BridgeEntry>) =>
+    onChange(rows.map((r) => (r === row ? { ...r, ...p } : r)));
 
   /// 把某个槽位换成 `alias`。空字符串 = 空出这个槽位。
   ///
@@ -559,6 +565,13 @@ function ClaudeSlots({
     <div className="card divide-y divide-border">
       <p className="px-4 py-3 text-xs text-muted">
         {t("Claude Code 没有模型目录文件，能放模型的地方就是下面这 6 个。/model 菜单里看到的就是它们 —— 左边是槽位，右边是这个槽位会发出去的名字。")}
+        {/* 「为什么只有 6 个」是这一页最常被问的一句。限制来自 Claude Code
+            本身（5 个 tier 环境变量 + 1 个自定义项），不是我们的取舍；而
+            `--model` 不受它限制，所以要一起说，否则用户会以为剩下 89 个模型
+            在 Claude Code 里根本用不了。 */}
+        <span className="mt-1 block text-muted/80">
+          {t("6 个是 Claude Code 自己的上限（5 个 tier 环境变量 + 1 个自定义项），不是这一页的取舍。菜单外的模型仍然能用：启动时加 --model <名字>，或者在会话里 /model <名字>，任何一个出口别名都认。")}
+        </span>
       </p>
       {CLAUDE_SLOTS.map((s) => {
         const row = inSlot(s.id);
@@ -578,13 +591,14 @@ function ClaudeSlots({
               options={options}
               emptyHint={t("内核里还没有别名，先去内核后台建渠道")}
             />
-            <div className="w-44 shrink-0 text-right text-[11px] text-muted">
-              {info && info.window > 0
-                ? `${formatWindow(info.window)} · ${info.percent}% → ${formatWindow(info.trigger)}`
-                : row
-                  ? t("不写窗口")
-                  : t(s.hint)}
-            </div>
+            {/* 窗口和阈值在这里也要能改。表格视图有这两个输入框，槽位视图以前
+                只把算出来的数显示出来 —— 同一件事在两个 tab 里能力不一样，
+                用户会以为 Claude Code 这一档根本不支持。留空 = 跟总控走。 */}
+            {row ? (
+              <SlotWindow row={row} info={info} onPatch={(p) => patchRow(row, p)} />
+            ) : (
+              <div className="w-52 shrink-0 text-right text-[11px] text-muted">{t(s.hint)}</div>
+            )}
             {row && (
               <button
                 onClick={() => assign(s.id, "")}
@@ -615,9 +629,17 @@ function ClaudeSlots({
           options={options}
           emptyHint={t("内核里还没有别名，先去内核后台建渠道")}
         />
-        <div className="w-44 shrink-0 text-right text-[11px] text-muted">
-          {t("菜单末尾多出来的一行")}
-        </div>
+        {custom ? (
+          <SlotWindow
+            row={custom}
+            info={resolve(custom)}
+            onPatch={(p) => patchRow(custom, p)}
+          />
+        ) : (
+          <div className="w-52 shrink-0 text-right text-[11px] text-muted">
+            {t("菜单末尾多出来的一行")}
+          </div>
+        )}
       </div>
 
       {/* 勾了却没占槽位的那些。以前这一堆是隐形的 —— 用户勾了 82 个、看到
@@ -645,6 +667,50 @@ function ClaudeSlots({
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+/// 槽位那一行右边的「窗口 / 阈值」两个格子。
+///
+/// 和表格视图里的两列是同一件事，只是挤在一行里。两处都要能改 —— 只在表格里
+/// 给输入框、在槽位视图里显示只读文字，会让人以为 Claude Code 这一档不支持
+/// 逐模型的窗口。留空 = 跟总控走，占位符显示的就是总控会算出来的那个数。
+function SlotWindow({
+  row,
+  info,
+  onPatch,
+}: {
+  row: BridgeEntry;
+  info: { auto: number; window: number; percent: number; trigger: number } | null;
+  onPatch: (p: Partial<BridgeEntry>) => void;
+}) {
+  const t = useT();
+  return (
+    <div className="flex shrink-0 items-center gap-1">
+      <TextInput
+        small
+        type="number"
+        aria-label={t("「{alias}」的上下文窗口", { alias: row.alias })}
+        title={t("留空 = 跟上下文窗口总控走")}
+        value={row.contextWindow || ""}
+        onChange={(e) => onPatch({ contextWindow: Number(e.target.value) || 0 })}
+        placeholder={info?.auto ? String(info.auto) : t("自动")}
+        className="w-24 text-right tabular-nums"
+      />
+      <TextInput
+        small
+        type="number"
+        aria-label={t("「{alias}」的压缩阈值百分比", { alias: row.alias })}
+        title={t("窗口的百分之几触发自动压缩。留空 = 跟总控走")}
+        value={row.compactPercent || ""}
+        onChange={(e) => onPatch({ compactPercent: Number(e.target.value) || 0 })}
+        placeholder="90"
+        className="w-12 text-right tabular-nums"
+      />
+      <span className="w-16 whitespace-nowrap text-[11px] text-muted">
+        % {info && info.window > 0 ? `→ ${formatWindow(info.trigger)}` : ""}
+      </span>
     </div>
   );
 }

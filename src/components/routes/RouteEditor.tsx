@@ -326,92 +326,139 @@ export function RouteEditor({
           </div>
         </div>
       ) : (
-        <ol ref={reorder.listRef} className="space-y-2">
-          {targets.map((x, i) => {
-            const dragging = reorder.drag?.from === i;
-            return (
-              <li
-                key={i}
-                style={{ transform: `translateY(${reorder.offsetOf(i)}px)` }}
-                className={cn(
-                  "rounded-xl border bg-surface-raised p-2",
-                  dragging
-                    ? "z-10 border-accent/50 shadow-[var(--shadow-raised)]"
-                    : "border-border transition-transform duration-[180ms] ease-[cubic-bezier(0.32,0.72,0,1)]",
-                )}
-              >
-                <div className="flex items-center gap-2">
-                  <button
-                    onPointerDown={reorder.start(i)}
-                    onKeyDown={reorder.onKeyDown(i)}
-                    aria-label={t("第 {n} 条，拖动或按上下键调整顺序", { n: i + 1 })}
-                    title={t("拖动排序")}
-                    className="flex cursor-grab touch-none items-center rounded-md p-1 text-muted hover:bg-surface-2 active:cursor-grabbing"
-                  >
-                    <GripVertical className="h-4 w-4" />
-                  </button>
-                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-accent/10 text-[11px] font-medium text-accent">
-                    {i + 1}
-                  </span>
-                  <Select
-                    className="w-52 shrink-0"
-                    aria-label={t("第 {n} 条的渠道", { n: i + 1 })}
-                    value={x.channel_id ?? ""}
-                    onChange={(e) => {
-                      const id = e.target.value ? Number(e.target.value) : null;
-                      setAt(i, {
-                        channel_id: id,
-                        // 名字一并存下来，列表页不必再去查一次渠道表。
-                        channel_name: channels.find((c) => c.id === id)?.name ?? null,
-                      });
-                    }}
-                  >
-                    <option value="">{t("选择渠道")}</option>
-                    {channels.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name ?? t("渠道")} (#{c.id})
-                        {c.enabled === false ? t("（已禁用）") : ""}
-                      </option>
-                    ))}
-                  </Select>
-                  <ComboBox
-                    className="flex-1"
-                    aria-label={t("第 {n} 条的上游模型", { n: i + 1 })}
-                    value={x.model}
-                    onChange={(v) => setAt(i, { model: v })}
-                    placeholder={t("上游模型，例如 claude-opus-5")}
-                    options={candidatesFor(x.channel_id)}
-                    emptyHint={
-                      x.channel_id == null
-                        ? t("先选左边的渠道，这里会列出它能服务的模型")
-                        : t("这个渠道还没配模型；点「校验上游模型」去问一次上游")
-                    }
-                  />
-                  <button
-                    onClick={() => removeAt(i)}
-                    aria-label={t("删除第 {n} 条", { n: i + 1 })}
-                    className="shrink-0 rounded-md border border-border p-1.5 text-muted hover:bg-surface-2 hover:text-red-600"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-                <div className="mt-1 pl-[4.6rem] text-[11px] text-muted">
-                  {mode === "fallback" ? (
-                    <>
-                      {t("应用后会把该渠道的优先级写成")} {hopPriority(i)}
-                      <span className="text-muted/70">{t("（影响该渠道服务的所有模型）")}</span>
-                    </>
-                  ) : (
-                    <>{t("应用时算出的优先级会压过正在服务这个别名的其它渠道")}</>
+        /* 链式呈现：别名在最上面，往下一跳一跳走。
+           以前是一排等价的表单行，看不出「这是一条有方向的链」—— 而方向正是
+           这个功能的全部内容（第一跳是默认去处，它挂了才轮到第二跳）。现在
+           每一跳是一张卡片，卡片之间用一段带箭头的连线接起来，序号即优先级。
+           拖拽仍然走同一个 useReorder，只是把手挪进了卡片头。 */
+        <div className="space-y-0">
+          <div className="flex items-center gap-2 pb-1">
+            <span className="rounded-lg bg-accent/12 px-2 py-1 font-mono text-xs font-medium text-accent">
+              {alias}
+            </span>
+            <span className="text-[11px] text-muted">{t("CLI 发出去的名字")}</span>
+          </div>
+          <ol ref={reorder.listRef}>
+            {targets.map((x, i) => {
+              const dragging = reorder.drag?.from === i;
+              const ch = channelOf(x.channel_id);
+              return (
+                <li
+                  key={i}
+                  style={{ transform: `translateY(${reorder.offsetOf(i)}px)` }}
+                  className={cn(
+                    "relative",
+                    !dragging &&
+                      "transition-transform duration-[180ms] ease-[cubic-bezier(0.32,0.72,0,1)]",
                   )}
-                </div>
-                <VerdictLine
-                  verdict={verdictOf(x, channelOf(x.channel_id), x.channel_id == null ? undefined : probes[x.channel_id], t)}
-                />
-              </li>
-            );
-          })}
-        </ol>
+                >
+                  {/* 连接线。第一跳从别名那颗标签下来，之后每跳从上一张卡片下来。
+                      纯装饰，所以 aria-hidden —— 顺序对读屏用户由序号表达。 */}
+                  <div aria-hidden className="ml-[1.15rem] flex items-center gap-1.5 py-0.5">
+                    <div className="h-4 w-px bg-border" />
+                    <span className="text-[10px] text-muted/70">
+                      {i === 0
+                        ? t("默认走这条")
+                        : mode === "fallback"
+                          ? t("上一跳不可用时")
+                          : t("再往下")}
+                    </span>
+                  </div>
+                  <div
+                    className={cn(
+                      "rounded-xl border bg-surface-raised p-2",
+                      dragging
+                        ? "z-10 border-accent/50 shadow-[var(--shadow-raised)]"
+                        : "border-border",
+                    )}
+                  >
+                    <div className="flex items-center gap-2">
+                      <button
+                        onPointerDown={reorder.start(i)}
+                        onKeyDown={reorder.onKeyDown(i)}
+                        aria-label={t("第 {n} 跳，拖动或按上下键调整顺序", { n: i + 1 })}
+                        title={t("拖动排序")}
+                        className="flex cursor-grab touch-none items-center rounded-md p-1 text-muted hover:bg-surface-2 active:cursor-grabbing"
+                      >
+                        <GripVertical className="h-4 w-4" />
+                      </button>
+                      <span
+                        title={
+                          mode === "fallback"
+                            ? t("应用后写成优先级 {p}", { p: hopPriority(i) })
+                            : t("应用时算出的优先级会压过现有服务者")
+                        }
+                        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-accent/10 text-[11px] font-medium text-accent"
+                      >
+                        {i + 1}
+                      </span>
+                      <Select
+                        className="w-52 shrink-0"
+                        aria-label={t("第 {n} 跳的渠道", { n: i + 1 })}
+                        value={x.channel_id ?? ""}
+                        onChange={(e) => {
+                          const id = e.target.value ? Number(e.target.value) : null;
+                          setAt(i, {
+                            channel_id: id,
+                            // 名字一并存下来，列表页不必再去查一次渠道表。
+                            channel_name: channels.find((c) => c.id === id)?.name ?? null,
+                          });
+                        }}
+                      >
+                        <option value="">{t("选择渠道")}</option>
+                        {channels.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name ?? t("渠道")} (#{c.id})
+                            {c.enabled === false ? t("（已禁用）") : ""}
+                          </option>
+                        ))}
+                      </Select>
+                      <span aria-hidden className="shrink-0 text-muted/60">
+                        →
+                      </span>
+                      <ComboBox
+                        className="flex-1"
+                        aria-label={t("第 {n} 跳发给上游的模型名", { n: i + 1 })}
+                        value={x.model}
+                        onChange={(v) => setAt(i, { model: v })}
+                        placeholder={t("上游模型，例如 claude-opus-5")}
+                        options={candidatesFor(x.channel_id)}
+                        emptyHint={
+                          x.channel_id == null
+                            ? t("先选左边的渠道，这里会列出它能服务的模型")
+                            : t("这个渠道还没配模型；点「校验上游模型」去问一次上游")
+                        }
+                      />
+                      <button
+                        onClick={() => removeAt(i)}
+                        aria-label={t("删除第 {n} 跳", { n: i + 1 })}
+                        className="shrink-0 rounded-md border border-border p-1.5 text-muted hover:bg-surface-2 hover:text-red-600"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                    <div className="mt-1 flex flex-wrap items-center gap-x-2 pl-[4.6rem] text-[11px] text-muted">
+                      {mode === "fallback" ? (
+                        <span>
+                          {t("优先级")} <span className="font-medium">{hopPriority(i)}</span>
+                          <span className="text-muted/70">{t("（影响该渠道服务的所有模型）")}</span>
+                        </span>
+                      ) : (
+                        <span>{t("应用时算出的优先级会压过正在服务这个别名的其它渠道")}</span>
+                      )}
+                      {ch?.enabled === false && (
+                        <span className="text-amber-700">{t("· 渠道已禁用")}</span>
+                      )}
+                    </div>
+                    <VerdictLine
+                      verdict={verdictOf(x, ch, x.channel_id == null ? undefined : probes[x.channel_id], t)}
+                    />
+                  </div>
+                </li>
+              );
+            })}
+          </ol>
+        </div>
       )}
 
       <div className="flex flex-wrap items-center gap-2">

@@ -1441,4 +1441,42 @@ registerDict("en", {
     "Pin channel ids belong to the kernel they were exported from. Importing against a different kernel, check them on the Model routing page afterwards.",
   "出口别名只落盘 + 让代理改写生效；要写进各 CLI 的配置文件，导入后到「模型桥接」页点「写进 CLI」。":
     "Egress aliases are only saved and pushed to the proxy's rewrite table. To write them into each CLI's config file, use “Write to CLIs” on the Model bridge page afterwards.",
+  "这一家一行都没配":
+    "Nothing configured for this CLI yet",
+  "只写 {cli} 的配置文件，其它几家不动":
+    "Writes only {cli}'s config file; the others are untouched",
+  "写进 {cli}":
+    "Write to {cli}",
+  "6 个是 Claude Code 自己的上限（5 个 tier 环境变量 + 1 个自定义项），不是这一页的取舍。菜单外的模型仍然能用：启动时加 --model <名字>，或者在会话里 /model <名字>，任何一个出口别名都认。":
+    "Six is Claude Code's own ceiling (five tier env vars plus one custom option), not a choice this page made. Models outside the menu still work: pass --model <name> at launch, or /model <name> in a session — any egress alias is accepted.",
+  "「{alias}」的上下文窗口":
+    "Context window for “{alias}”",
+  "留空 = 跟上下文窗口总控走":
+    "Leave empty to follow the global context-window policy",
+  "「{alias}」的压缩阈值百分比":
+    "Compact threshold percent for “{alias}”",
+  "窗口的百分之几触发自动压缩。留空 = 跟总控走":
+    "What percent of the window triggers auto-compaction. Empty follows the global policy",
+  "CLI 发出去的名字":
+    "the name the CLI sends",
+  "默认走这条":
+    "goes here by default",
+  "上一跳不可用时":
+    "when the hop above is unavailable",
+  "再往下":
+    "then",
+  "第 {n} 跳，拖动或按上下键调整顺序":
+    "Hop {n}; drag or use arrow keys to reorder",
+  "应用后写成优先级 {p}":
+    "Applied as priority {p}",
+  "应用时算出的优先级会压过现有服务者":
+    "Applied with a priority computed to beat the current servers",
+  "第 {n} 跳的渠道":
+    "Channel for hop {n}",
+  "第 {n} 跳发给上游的模型名":
+    "Upstream model name sent on hop {n}",
+  "删除第 {n} 跳":
+    "Delete hop {n}",
+  "· 渠道已禁用":
+    "· channel disabled",
 });
