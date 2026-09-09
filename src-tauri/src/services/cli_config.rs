@@ -119,7 +119,44 @@ pub fn preview(
         current_endpoint: current,
         next_endpoint: next,
         current_model: current_model(root, target),
+        claude_slots: claude_slots(root, target),
     }
+}
+
+/// Claude Code 磁盘上那 6 个位置现在写着什么。别的 CLI 返回空表。
+///
+/// 读的是 `_MODEL`（真正发出去的 id），不是 `_MODEL_NAME`（菜单标签）——
+/// 界面上要对的是「实际会发什么」。两者不一致本身是个 bug，已经在
+/// `write_claude_slot` 那儿修掉了。
+fn claude_slots(
+    root: &ConfigRoot,
+    target: CliTarget,
+) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    if !matches!(target, CliTarget::ClaudeCode) {
+        return out;
+    }
+    let Ok(doc) = read_json(&root.join(".claude/settings.json")) else {
+        return out;
+    };
+    for (slot, key) in [
+        ("default", "ANTHROPIC_MODEL"),
+        ("opus", "ANTHROPIC_DEFAULT_OPUS_MODEL"),
+        ("sonnet", "ANTHROPIC_DEFAULT_SONNET_MODEL"),
+        ("haiku", "ANTHROPIC_DEFAULT_HAIKU_MODEL"),
+        ("fable", "ANTHROPIC_DEFAULT_FABLE_MODEL"),
+        ("custom", "ANTHROPIC_CUSTOM_MODEL_OPTION"),
+    ] {
+        if let Some(v) = doc
+            .pointer(&format!("/env/{key}"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            out.insert(slot.to_string(), v.to_string());
+        }
+    }
+    out
 }
 
 /// The model this CLI will send, for the takeover card's combo box.

@@ -79,6 +79,13 @@ export function BridgeTable({
   // 的数会不一样 —— 设置里把 grok 手填成 300k，这里却还显示 500k。而「看得见
   // 会写成多少」正是这张表存在的理由。
   const policy = useQuery({ queryKey: ["context-policy"], queryFn: api.contextPolicyGet });
+  // 磁盘上那几个槽位现在写着什么。导入是「追加不改写」的 —— 表里空着的槽位
+  // 不会被清掉，不显示出来的话用户会以为清空了就生效了。
+  const preview = useQuery({
+    queryKey: ["cli-preview"],
+    queryFn: api.cliPreviewAll,
+    refetchOnWindowFocus: true,
+  });
 
   // null = 还没动过，显示磁盘上那份。动过之后草稿才是真相 —— 中途 refetch
   // 把用户正在编的表换掉，是「我明明改了」那类 bug 里最气人的一种。
@@ -338,7 +345,15 @@ export function BridgeTable({
         /* Claude Code 没有模型目录文件，能承载模型的地方就是这 6 个位置。
            给它一张 82 行的勾选表，等于让人在 76 个不产生任何写入的复选框里
            找那 5 个有用的 —— 那正是用户说的「操作很不清晰」。 */
-        <ClaudeSlots rows={rows} aliases={aliases} resolve={resolve} onChange={set} />
+        <ClaudeSlots
+          rows={rows}
+          aliases={aliases}
+          resolve={resolve}
+          onChange={set}
+          onDisk={
+            (preview.data ?? []).find((x) => x.target === "claude-code")?.claude_slots ?? {}
+          }
+        />
       ) : (
         <div className="overflow-hidden card">
           <table className="w-full table-fixed text-sm">
@@ -507,11 +522,14 @@ function ClaudeSlots({
   aliases,
   resolve,
   onChange,
+  onDisk,
 }: {
   rows: BridgeEntry[];
   aliases: string[];
   resolve: (r: BridgeEntry) => { auto: number; window: number; percent: number; trigger: number };
   onChange: (next: BridgeEntry[]) => void;
+  /// 磁盘上这几个槽位现在写着什么。槽位 id → 模型名。
+  onDisk: Record<string, string>;
 }) {
   const t = useT();
   const mine = (r: BridgeEntry) => r.targets.includes("claude-code");
@@ -637,6 +655,7 @@ function ClaudeSlots({
               ) : (
                 <span className="text-[11px] text-muted">{t(s.hint)}</span>
               )}
+              <DiskNote slot={s.id} row={row} onDisk={onDisk} />
             </div>
           </div>
         );
@@ -679,6 +698,7 @@ function ClaudeSlots({
           ) : (
             <span className="text-[11px] text-muted">{t("菜单末尾多出来的一行")}</span>
           )}
+          <DiskNote slot="custom" row={custom} onDisk={onDisk} />
         </div>
       </div>
 
@@ -752,5 +772,41 @@ function SlotWindow({
         % {info && info.window > 0 ? `→ ${formatWindow(info.trigger)}` : ""}
       </span>
     </div>
+  );
+}
+
+/// 「磁盘上还写着 X」。
+///
+/// 写入是**追加不改写**的（`model_import` 模块头那条规矩）：这张表里没人认领的
+/// 槽位，写入时一个字都不动，磁盘上的旧值原样留着。不显示的话，用户在表里把
+/// 一个槽位清空、点了「写进 Claude Code」、然后发现 `/model` 里那一项还在 ——
+/// 而界面上没有任何东西能解释这件事。
+///
+/// 只在「磁盘上有、而表里和它不一样」时出现。一致时说了等于噪音。
+function DiskNote({
+  slot,
+  row,
+  onDisk,
+}: {
+  slot: string;
+  row: BridgeEntry | undefined;
+  onDisk: Record<string, string>;
+}) {
+  const t = useT();
+  const disk = (onDisk[slot] ?? "").trim();
+  if (!disk) return null;
+  if (row && row.alias.trim() === disk) return null;
+  return (
+    <span
+      title={
+        row
+          ? t("表里是这个名字，磁盘上还是旧的 —— 点「写进 Claude Code」才会覆盖")
+          : t("这一页没接管这个槽位，写入时不会动它。要清掉请在 CLI 接管页编辑配置。")
+      }
+      className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[10px] text-muted"
+    >
+      {t("磁盘：")}
+      {disk}
+    </span>
   );
 }

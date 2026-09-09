@@ -100,6 +100,15 @@ pub struct TakeoverPreview {
     /// routed id (`grok-4.6` / `glm-5.3-flash[1M]`), which is what the user
     /// actually wants to change.
     pub current_model: Option<String>,
+    /// Claude Code 磁盘上那 5 个 tier 槽位现在写着什么（键是 `default` / `opus`
+    /// / `sonnet` / `haiku` / `fable`，外加 `custom` = ANTHROPIC_CUSTOM_MODEL_OPTION）。
+    ///
+    /// 「模型桥接」页要拿它显示「这个槽位磁盘上还留着 X」。没有它的话，用户在
+    /// 表里清空一个槽位、点了写入、发现 `/model` 里那一项还在 —— 因为导入是
+    /// **追加不改写**的（见 `model_import` 模块头），没人认领的槽位不会被动。
+    /// 不显示出来就只能靠猜。
+    #[serde(default)]
+    pub claude_slots: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Serialize)]

@@ -147,6 +147,7 @@ export function CliPage({ onNavigate }: { onNavigate?: (page: Page) => void }) {
               p={p}
               disabled={!running || apply.isPending}
               pending={apply.isPending && apply.variables?.target === p.target}
+              onOpenModels={() => onNavigate?.("models")}
               onOpenRoute={(alias) => {
                 // 路由页自己按别名定位。用 sessionStorage 而不是 URL：这个应用的
                 // 路由就是一个 useState，没有可挂参数的地方（和日志页跳会话同一套）。
@@ -254,6 +255,7 @@ function CliCard({
   onApply,
   onEdit,
   onOpenRoute,
+  onOpenModels,
 }: {
   p: TakeoverPreview;
   disabled: boolean;
@@ -265,6 +267,8 @@ function CliCard({
   onEdit: () => void;
   /** 跳到「模型路由」并定位到这个别名。 */
   onOpenRoute: (alias: string) => void;
+  /// 跳到「模型桥接」。Claude 的 5 个 tier 槽位归那一页管，这里只留一个入口。
+  onOpenModels?: () => void;
 }) {
   const t = useT();
   const [expanded, setExpanded] = useState(false);
@@ -350,48 +354,26 @@ function CliCard({
         </button>
         {expanded && (
           <div className="px-4 pb-4">
+              {/* 5 个 tier 槽位**不在这里**了，它们归「模型桥接」。
+                  两处以前写的是同一批 env 键（ANTHROPIC_MODEL +
+                  ANTHROPIC_DEFAULT_{SONNET,OPUS,HAIKU,FABLE}_MODEL），谁后点谁
+                  赢：在这一页填好、去桥接页点一次「写进 Claude Code」就被改掉，
+                  反过来也一样。两个值还长得不一样（这边带 [1M] 后缀、那边不带），
+                  用户看到的就是「保存了但没生效」。
+                  别的 CLI 没有这个问题：它们有真正的模型目录，桥接写目录条目、
+                  这一页写「当前选中哪个」，是两件事。Claude Code 没有目录文件，
+                  它的「目录」就是这 5 个槽位 —— 所以只能有一个主人。 */}
               {isClaude && (
-                <div className="mb-4 grid grid-cols-2 gap-3">
-                  <ModelField
-                    label={t("默认模型 (ANTHROPIC_MODEL)")}
-                    envKey="ANTHROPIC_MODEL"
-                    target={p.target}
-                    value={options.anthropic_model}
-                    onChange={(v) => onOptionsChange({ ...options, anthropic_model: v })}
-                  />
-                  <ModelField
-                    label="Sonnet tier"
-                    envKey="ANTHROPIC_DEFAULT_SONNET_MODEL"
-                    target={p.target}
-                    value={options.sonnet_model}
-                    onChange={(v) => onOptionsChange({ ...options, sonnet_model: v })}
-                  />
-                  <ModelField
-                    label="Opus tier"
-                    envKey="ANTHROPIC_DEFAULT_OPUS_MODEL"
-                    target={p.target}
-                    value={options.opus_model}
-                    onChange={(v) => onOptionsChange({ ...options, opus_model: v })}
-                  />
-                  <ModelField
-                    label="Haiku tier"
-                    envKey="ANTHROPIC_DEFAULT_HAIKU_MODEL"
-                    target={p.target}
-                    value={options.haiku_model}
-                    onChange={(v) => onOptionsChange({ ...options, haiku_model: v })}
-                  />
-                  <ModelField
-                    label="Fable tier"
-                    envKey="ANTHROPIC_DEFAULT_FABLE_MODEL"
-                    target={p.target}
-                    value={options.extra_env?.ANTHROPIC_DEFAULT_FABLE_MODEL}
-                    onChange={(v) =>
-                      onOptionsChange({
-                        ...options,
-                        extra_env: { ...options.extra_env, ANTHROPIC_DEFAULT_FABLE_MODEL: v },
-                      })
-                    }
-                  />
+                <div className="mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-border bg-surface-2/40 px-3 py-2 text-xs">
+                  <span className="text-muted">
+                    {t("模型槽位（默认 / opus / sonnet / haiku / fable）和它们的落点、窗口都在「模型桥接」页 —— Claude Code 没有模型目录文件，那 6 个位置只能有一个主人，两处都能改就会互相覆盖。")}
+                  </span>
+                  <button
+                    onClick={() => onOpenModels?.()}
+                    className="ml-auto shrink-0 rounded-lg border border-border bg-surface-raised px-2.5 py-1 hover:bg-surface-2"
+                  >
+                    {t("去模型桥接")}
+                  </button>
                 </div>
               )}
               {isClaude && (
@@ -815,9 +797,9 @@ function FallbackFields({
           他们会先在这一格里找，找不到就以为客户端没这个能力。 */}
       <p className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-[11px] leading-relaxed text-amber-900">
         <strong>{t("总是跳到 claude-opus-4-8？")}</strong>{t("那不是上面这条链干的。请求被 Claude Code 的安全分类器标记时，它会跳到")}<strong>{t("写死的")}</strong> {t("Opus 4.8 / Opus 5，完全不看")}{" "}
-        <code>fallbackModel</code>{t("。而 ccLoad 上游没有")} <code>claude-opus-4-8</code> {t("这个名字，于是每次都跳进一个不存在的模型。唯一的改法是把上面的")}{" "}
-        <strong>Opus tier（ANTHROPIC_DEFAULT_OPUS_MODEL）</strong>
-        {t("钉成你自己有的模型 —— 设了它之后，所有有 fallback 的分类都改跑这一个。另外把 Fable tier 填上，Claude Code 才认得出当前模型是 Fable 5。")}
+        <code>fallbackModel</code>{t("。而 ccLoad 上游没有")} <code>claude-opus-4-8</code> {t("这个名字，于是每次都跳进一个不存在的模型。唯一的改法是到「模型桥接」页把")}{" "}
+        <strong>opus 槽位（ANTHROPIC_DEFAULT_OPUS_MODEL）</strong>
+        {t("钉成你自己有的模型 —— 设了它之后，所有有 fallback 的分类都改跑这一个。顺手把 fable 槽位也填上，Claude Code 才认得出当前模型是 Fable 5。")}
       </p>
 
       <label className="mt-2 flex items-center gap-2 text-[11px]">

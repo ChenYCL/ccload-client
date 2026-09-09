@@ -43,6 +43,12 @@ export type TakeoverPreview = {
   token_stale: boolean;
   /** Model this CLI will send on the next launch, if we can read one. */
   current_model?: string | null;
+  /**
+   * Claude Code 磁盘上那 6 个位置现在写着什么（default/opus/sonnet/haiku/fable/custom）。
+   * 导入是「追加不改写」的，没人认领的槽位不会被动 —— 界面要把这件事显示出来，
+   * 否则用户清空一个槽位、点了写入，发现 /model 里那一项还在。
+   */
+  claude_slots?: Record<string, string>;
 };
 
 export type TakeoverResult = {

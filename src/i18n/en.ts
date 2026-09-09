@@ -1489,4 +1489,18 @@ registerDict("en", {
     "Pick one on the left first",
   "自定义项落到哪个内核别名":
     "Which kernel alias the extra entry lands on",
+  "模型槽位（默认 / opus / sonnet / haiku / fable）和它们的落点、窗口都在「模型桥接」页 —— Claude Code 没有模型目录文件，那 6 个位置只能有一个主人，两处都能改就会互相覆盖。":
+    "The model slots (default / opus / sonnet / haiku / fable), their targets and their windows all live on the Model bridge page. Claude Code has no model catalog file, so those six places can only have one owner — editable in two places means they overwrite each other.",
+  "去模型桥接":
+    "Go to Model bridge",
+  "这个名字，于是每次都跳进一个不存在的模型。唯一的改法是到「模型桥接」页把":
+    "which ccLoad's upstreams do not have, so every fallback lands on a model that does not exist. The only fix is to pin, on the Model bridge page, the",
+  "钉成你自己有的模型 —— 设了它之后，所有有 fallback 的分类都改跑这一个。顺手把 fable 槽位也填上，Claude Code 才认得出当前模型是 Fable 5。":
+    "to a model you actually have — once set, every fallback-eligible classification runs that one instead. Fill the fable slot too, or Claude Code will not recognise the current model as Fable 5.",
+  "磁盘：":
+    "on disk: ",
+  "表里是这个名字，磁盘上还是旧的 —— 点「写进 Claude Code」才会覆盖":
+    "The table says one thing, the disk still has the old value — “Write to Claude Code” is what overwrites it",
+  "这一页没接管这个槽位，写入时不会动它。要清掉请在 CLI 接管页编辑配置。":
+    "This page does not own that slot, so writing leaves it alone. To clear it, edit the config on the CLI takeover page.",
 });
