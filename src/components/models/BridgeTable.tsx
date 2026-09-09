@@ -564,7 +564,7 @@ function ClaudeSlots({
   return (
     <div className="card divide-y divide-border">
       <p className="px-4 py-3 text-xs text-muted">
-        {t("Claude Code 没有模型目录文件，能放模型的地方就是下面这 6 个。/model 菜单里看到的就是它们 —— 左边是槽位，右边是这个槽位会发出去的名字。")}
+        {t("Claude Code 没有模型目录文件，能放模型的地方就是下面这 6 个，/model 菜单里看到的就是它们。每一行三段：槽位 · 写进 CLI 的名字 → 它到了内核落在哪个别名上。两个框都能改。")}
         {/* 「为什么只有 6 个」是这一页最常被问的一句。限制来自 Claude Code
             本身（5 个 tier 环境变量 + 1 个自定义项），不是我们的取舍；而
             `--model` 不受它限制，所以要一起说，否则用户会以为剩下 89 个模型
@@ -577,69 +577,109 @@ function ClaudeSlots({
         const row = inSlot(s.id);
         const info = row ? resolve(row) : null;
         return (
-          <div key={s.id} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-2.5">
-            <div className="w-28 shrink-0">
-              <div className="text-sm font-medium">{t(s.label)}</div>
-              <div className="font-mono text-[10px] leading-tight text-muted/70">{s.env}</div>
+          <div key={s.id} className="px-4 py-2.5">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+              <div className="w-28 shrink-0">
+                <div className="text-sm font-medium">{t(s.label)}</div>
+                <div className="font-mono text-[10px] leading-tight text-muted/70">{s.env}</div>
+              </div>
+              <ComboBox
+                className="min-w-0 flex-1"
+                aria-label={t("{slot} 槽位发哪个名字", { slot: s.label })}
+                value={row?.alias ?? ""}
+                onChange={(v) => assign(s.id, v)}
+                placeholder={t("空着 —— 不写这个槽位")}
+                options={options}
+                emptyHint={t("内核里还没有别名，先去内核后台建渠道")}
+              />
+              {/* 落点。表格视图有这一列，槽位视图以前没有 —— 于是这 6 个槽位只能
+                  挑别名、不能改它落到哪，而「换上游」恰恰是换模型最常做的事。
+                  两个框的含义不同：左边写进 CLI（/model 里显示的名字），右边是
+                  代理转发前换成的内核别名。 */}
+              <span aria-hidden className="shrink-0 text-muted/60">
+                →
+              </span>
+              <ComboBox
+                className="min-w-0 flex-1"
+                aria-label={t("{slot} 槽位落到哪个内核别名", { slot: s.label })}
+                value={row?.target ?? ""}
+                onChange={(v) => row && patchRow(row, { target: v })}
+                placeholder={row ? t("内核里的别名") : t("先在左边选一个")}
+                options={aliases}
+                emptyHint={t("内核里还没有别名，先去内核后台建渠道")}
+              />
+              {row && (
+                <button
+                  onClick={() => assign(s.id, "")}
+                  aria-label={t("空出 {slot} 槽位", { slot: s.label })}
+                  className="shrink-0 rounded-md border border-border p-1 text-muted hover:bg-surface-2 hover:text-red-600"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              )}
             </div>
-            <ComboBox
-              className="min-w-0 flex-1"
-              aria-label={t("{slot} 槽位发哪个模型", { slot: s.label })}
-              value={row?.alias ?? ""}
-              onChange={(v) => assign(s.id, v)}
-              placeholder={t("空着 —— 不写这个槽位")}
-              options={options}
-              emptyHint={t("内核里还没有别名，先去内核后台建渠道")}
-            />
             {/* 窗口和阈值在这里也要能改。表格视图有这两个输入框，槽位视图以前
                 只把算出来的数显示出来 —— 同一件事在两个 tab 里能力不一样，
                 用户会以为 Claude Code 这一档根本不支持。留空 = 跟总控走。 */}
-            {row ? (
-              <SlotWindow row={row} info={info} onPatch={(p) => patchRow(row, p)} />
-            ) : (
-              <div className="w-52 shrink-0 text-right text-[11px] text-muted">{t(s.hint)}</div>
-            )}
-            {row && (
-              <button
-                onClick={() => assign(s.id, "")}
-                aria-label={t("空出 {slot} 槽位", { slot: s.label })}
-                className="shrink-0 rounded-md border border-border p-1 text-muted hover:bg-surface-2 hover:text-red-600"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            )}
+            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 pl-[7.5rem]">
+              {row ? (
+                <>
+                  <SlotWindow row={row} info={info} onPatch={(p) => patchRow(row, p)} />
+                  {row.alias.trim() !== (row.target || row.alias).trim() && (
+                    <span
+                      title={t("改了名 —— 只在 CLI 走本地代理时成立")}
+                      className="rounded bg-accent/15 px-1.5 py-0.5 text-[10px] text-accent"
+                    >
+                      {t("改写")}
+                    </span>
+                  )}
+                </>
+              ) : (
+                <span className="text-[11px] text-muted">{t(s.hint)}</span>
+              )}
+            </div>
           </div>
         );
       })}
 
       {/* 第 6 个位置。它不是槽位，是 /model 菜单末尾多出来的那一行。 */}
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-2.5">
-        <div className="w-28 shrink-0">
-          <div className="text-sm font-medium">{t("自定义项")}</div>
-          <div className="font-mono text-[10px] leading-tight text-muted/70">
-            ANTHROPIC_CUSTOM_MODEL_OPTION
+      <div className="px-4 py-2.5">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+          <div className="w-28 shrink-0">
+            <div className="text-sm font-medium">{t("自定义项")}</div>
+            <div className="font-mono text-[10px] leading-tight text-muted/70">
+              ANTHROPIC_CUSTOM_MODEL_OPTION
+            </div>
           </div>
-        </div>
-        <ComboBox
-          className="min-w-0 flex-1"
-          aria-label={t("/model 菜单里额外的一行")}
-          value={custom?.alias ?? ""}
-          onChange={(v) => assign(null, v)}
-          placeholder={t("空着 —— /model 里不多这一行")}
-          options={options}
-          emptyHint={t("内核里还没有别名，先去内核后台建渠道")}
-        />
-        {custom ? (
-          <SlotWindow
-            row={custom}
-            info={resolve(custom)}
-            onPatch={(p) => patchRow(custom, p)}
+          <ComboBox
+            className="min-w-0 flex-1"
+            aria-label={t("/model 菜单里额外的一行")}
+            value={custom?.alias ?? ""}
+            onChange={(v) => assign(null, v)}
+            placeholder={t("空着 —— /model 里不多这一行")}
+            options={options}
+            emptyHint={t("内核里还没有别名，先去内核后台建渠道")}
           />
-        ) : (
-          <div className="w-52 shrink-0 text-right text-[11px] text-muted">
-            {t("菜单末尾多出来的一行")}
-          </div>
-        )}
+          <span aria-hidden className="shrink-0 text-muted/60">
+            →
+          </span>
+          <ComboBox
+            className="min-w-0 flex-1"
+            aria-label={t("自定义项落到哪个内核别名")}
+            value={custom?.target ?? ""}
+            onChange={(v) => custom && patchRow(custom, { target: v })}
+            placeholder={custom ? t("内核里的别名") : t("先在左边选一个")}
+            options={aliases}
+            emptyHint={t("内核里还没有别名，先去内核后台建渠道")}
+          />
+        </div>
+        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 pl-[7.5rem]">
+          {custom ? (
+            <SlotWindow row={custom} info={resolve(custom)} onPatch={(p) => patchRow(custom, p)} />
+          ) : (
+            <span className="text-[11px] text-muted">{t("菜单末尾多出来的一行")}</span>
+          )}
+        </div>
       </div>
 
       {/* 勾了却没占槽位的那些。以前这一堆是隐形的 —— 用户勾了 82 个、看到

@@ -1479,4 +1479,14 @@ registerDict("en", {
     "Delete hop {n}",
   "· 渠道已禁用":
     "· channel disabled",
+  "Claude Code 没有模型目录文件，能放模型的地方就是下面这 6 个，/model 菜单里看到的就是它们。每一行三段：槽位 · 写进 CLI 的名字 → 它到了内核落在哪个别名上。两个框都能改。":
+    "Claude Code has no model catalog file — these six places are the only ones that can hold a model, and they are exactly what the /model menu shows. Each row has three parts: the slot · the name written into the CLI → the kernel alias it lands on. Both boxes are editable.",
+  "{slot} 槽位发哪个名字":
+    "Which name the {slot} slot sends",
+  "{slot} 槽位落到哪个内核别名":
+    "Which kernel alias the {slot} slot lands on",
+  "先在左边选一个":
+    "Pick one on the left first",
+  "自定义项落到哪个内核别名":
+    "Which kernel alias the extra entry lands on",
 });
