@@ -9,7 +9,7 @@ import { lookupMeta } from "../../lib/modelCatalog";
 import { formatWindow, tierKey } from "../../lib/modelMeta";
 import { TARGET_LABELS } from "../../lib/targets";
 import { ComboBox } from "../ui/ComboBox";
-import { Select, TextInput } from "../ui/Input";
+import { TextInput } from "../ui/Input";
 import type { BridgeEntry, CliTarget } from "../../types";
 
 /// 出口别名表 —— 这一页真正的内容。
@@ -40,19 +40,15 @@ import type { BridgeEntry, CliTarget } from "../../types";
 
 const IMPORT_TARGETS: CliTarget[] = ["claude-code", "codex", "opencode", "grok-build"];
 
-/// Claude Code 的 5 个槽位。`none` = 只是目录条目，不占槽位。
-const TIERS = ["none", "default", "fable", "sonnet", "opus", "haiku"] as const;
-const TIER_LABELS: Record<string, string> = {
-  none: "不绑定",
-  default: "default（主模型）",
-  fable: "fable",
-  sonnet: "sonnet",
-  opus: "opus",
-  haiku: "haiku",
-};
-
 /// 总控没填时的阈值。和后端 `DEFAULT_COMPACT_PERCENT` 是同一个数。
 const DEFAULT_PERCENT = 90;
+
+/// 这一行占的 Claude 槽位。`""` / `"none"` 和 `null` 都是「没占槽位」。
+/// 和后端 `BridgeEntry::slot()` 同一套判断。
+function slotOf(r: BridgeEntry): string | null {
+  const s = (r.tier ?? "").trim();
+  return s === "" || s === "none" ? null : s;
+}
 
 const blank = (targets: CliTarget[]): BridgeEntry => ({
   alias: "",
@@ -121,9 +117,19 @@ export function BridgeTable({
 
   const resolve = (r: BridgeEntry) => {
     const target = (r.target || r.alias).trim();
-    let auto = target ? (overrides.get(tierKey(target)) ?? lookupMeta(target, catalog).context) : 0;
-    const cap = policy.data?.cap_tokens ?? 0;
-    if (cap > 0 && auto > cap) auto = cap;
+    const mode = policy.data?.mode ?? "auto";
+    let auto: number;
+    if (mode === "off") {
+      // 「不写入」档：这一行不带窗口，CLI 保持自己的默认。
+      auto = 0;
+    } else if (mode === "fixed") {
+      // 「固定」档：不看模型名，五家一律这个数。
+      auto = policy.data?.fixed_tokens ?? 0;
+    } else {
+      auto = target ? (overrides.get(tierKey(target)) ?? lookupMeta(target, catalog).context) : 0;
+      const cap = policy.data?.cap_tokens ?? 0;
+      if (cap > 0 && auto > cap) auto = cap;
+    }
     const window = r.contextWindow > 0 ? r.contextWindow : auto;
     const percent =
       r.compactPercent > 0 ? r.compactPercent : policy.data?.compact_percent || DEFAULT_PERCENT;
@@ -164,11 +170,22 @@ export function BridgeTable({
     onError: (e) => onMessage(errText(e)),
   });
 
+  // 「补齐」= 把内核现有的别名铺进表里（同名落点，不依赖代理）。
+  //
+  // Claude Code 那一档**不勾任何行**，只让后端按名字认领 5 个槽位 —— 它没有目录
+  // 文件，勾 83 行里的 78 行一个字都写不进去，只会让人在一堆没用的复选框里找。
   const seed = useMutation({
-    mutationFn: (guessSlots: boolean) => api.bridgeSeed(aliases, [tab], guessSlots),
+    mutationFn: () =>
+      tab === "claude-code"
+        ? api.bridgeSeed(aliases, [], true)
+        : api.bridgeSeed(aliases, [tab], false),
     onSuccess: (entries) => {
       setDraft(entries);
-      onMessage(t("已按内核别名补齐（同名落点，不依赖代理）。确认后点「保存」。"));
+      onMessage(
+        tab === "claude-code"
+          ? t("已把内核别名铺进表里，并按名字认领了 Claude Code 的槽位。确认后点「保存」。")
+          : t("已按内核别名补齐（同名落点，不依赖代理）。确认后点「保存」。"),
+      );
     },
     onError: (e) => onMessage(errText(e)),
   });
@@ -262,31 +279,41 @@ export function BridgeTable({
 
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-surface-2/40 px-3 py-2">
         <button
-          onClick={() => seed.mutate(tab === "claude-code")}
+          onClick={() => seed.mutate()}
           disabled={busy || aliases.length === 0}
           title={t("把内核里还没进表的别名补进来，出口名和落点同名。已有的行不动。")}
           className="flex items-center gap-1 rounded-lg border border-border bg-surface-raised px-2.5 py-1 text-xs hover:bg-surface-2 disabled:opacity-40"
         >
           <Wand2 className="h-3.5 w-3.5" /> {t("从内核别名补齐")}
         </button>
-        <button
-          onClick={() => set([...rows, blank([tab])])}
-          className="flex items-center gap-1 rounded-lg border border-border bg-surface-raised px-2.5 py-1 text-xs hover:bg-surface-2"
-        >
-          <Plus className="h-3.5 w-3.5" /> {t("加一行")}
-        </button>
-        <button
-          onClick={() => set(rows.map((r) => ({ ...r, targets: [...new Set([...r.targets, tab])] })))}
-          className="rounded-lg border border-border bg-surface-raised px-2.5 py-1 text-xs hover:bg-surface-2"
-        >
-          {t("全勾给 {cli}", { cli: TARGET_LABELS[tab] })}
-        </button>
-        <button
-          onClick={() => set(rows.map((r) => ({ ...r, targets: r.targets.filter((x) => x !== tab) })))}
-          className="rounded-lg border border-border bg-surface-raised px-2.5 py-1 text-xs hover:bg-surface-2"
-        >
-          {t("全不给 {cli}", { cli: TARGET_LABELS[tab] })}
-        </button>
+        {/* 下面三个只对「装得下很多模型」的 CLI 有意义。Claude Code 是 6 个固定
+            位置，批量勾选在那边没有任何含义 —— 摆着只会让人以为勾了就有用。 */}
+        {tab !== "claude-code" && (
+          <>
+            <button
+              onClick={() => set([...rows, blank([tab])])}
+              className="flex items-center gap-1 rounded-lg border border-border bg-surface-raised px-2.5 py-1 text-xs hover:bg-surface-2"
+            >
+              <Plus className="h-3.5 w-3.5" /> {t("加一行")}
+            </button>
+            <button
+              onClick={() =>
+                set(rows.map((r) => ({ ...r, targets: [...new Set([...r.targets, tab])] })))
+              }
+              className="rounded-lg border border-border bg-surface-raised px-2.5 py-1 text-xs hover:bg-surface-2"
+            >
+              {t("全勾给 {cli}", { cli: TARGET_LABELS[tab] })}
+            </button>
+            <button
+              onClick={() =>
+                set(rows.map((r) => ({ ...r, targets: r.targets.filter((x) => x !== tab) })))
+              }
+              className="rounded-lg border border-border bg-surface-raised px-2.5 py-1 text-xs hover:bg-surface-2"
+            >
+              {t("全不给 {cli}", { cli: TARGET_LABELS[tab] })}
+            </button>
+          </>
+        )}
         <div className="flex-1" />
         {/* 只增不删会让 OpenCode / Grok 的目录一路涨：退役的名字留在选择器里，
             选中就是一个 404。默认关着 —— 删配置得是用户明确要的。 */}
@@ -305,6 +332,11 @@ export function BridgeTable({
             {t("点「从内核别名补齐」把内核现有的名字铺进来 —— 默认同名，行为和现在完全一样，之后再挑几条改名或改窗口。")}
           </p>
         </div>
+      ) : tab === "claude-code" ? (
+        /* Claude Code 没有模型目录文件，能承载模型的地方就是这 6 个位置。
+           给它一张 82 行的勾选表，等于让人在 76 个不产生任何写入的复选框里
+           找那 5 个有用的 —— 那正是用户说的「操作很不清晰」。 */
+        <ClaudeSlots rows={rows} aliases={aliases} resolve={resolve} onChange={set} />
       ) : (
         <div className="overflow-hidden card">
           <table className="w-full table-fixed text-sm">
@@ -317,7 +349,6 @@ export function BridgeTable({
                 <th className="px-2 py-2">{t("落点（内核别名）")}</th>
                 <th className="w-40 px-2 py-2">{t("上下文窗口")}</th>
                 <th className="w-44 px-2 py-2">{t("压缩阈值")}</th>
-                {tab === "claude-code" && <th className="w-32 px-2 py-2">Tier</th>}
                 <th className="w-10 px-2 py-2" />
               </tr>
             </thead>
@@ -401,25 +432,6 @@ export function BridgeTable({
                         </span>
                       </div>
                     </td>
-                    {tab === "claude-code" && (
-                      <td className="px-2 py-2">
-                        <Select
-                          small
-                          aria-label={t("第 {n} 行的 tier", { n: i + 1 })}
-                          className="w-full"
-                          value={r.tier ?? "none"}
-                          onChange={(e) =>
-                            patch(i, { tier: e.target.value === "none" ? null : e.target.value })
-                          }
-                        >
-                          {TIERS.map((x) => (
-                            <option key={x} value={x}>
-                              {TIER_LABELS[x]}
-                            </option>
-                          ))}
-                        </Select>
-                      </td>
-                    )}
                     <td className="px-2 py-2">
                       <button
                         onClick={() => drop(i)}
@@ -460,6 +472,179 @@ export function BridgeTable({
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+/// Claude Code 的槽位编辑器。
+///
+/// # 为什么这一家不给表格
+///
+/// Claude Code **没有模型目录文件**。它能承载模型的位置一共 6 个：5 个环境变量
+/// 槽位（`ANTHROPIC_MODEL` + `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU,FABLE}_MODEL`）
+/// 加一个 `ANTHROPIC_CUSTOM_MODEL_OPTION`。`/model` 菜单里看到的就是这 6 行。
+///
+/// 所以「勾 82 个模型给 Claude Code」是个没有意义的操作：76 个会被静默跳过，
+/// 用户却要在 82 个复选框里找那 5 个真的有用的。这里直接把菜单的形状画出来 ——
+/// 左边是槽位，右边选一个别名，旁边写清楚它会写成多大窗口、在哪儿触发压缩。
+///
+/// # 一个槽位只能有一行
+///
+/// 两行认领同一个槽位在后端是硬错误（静默后来居上是修过的老 bug）。这里从形状上
+/// 就杜绝了：一个槽位一个下拉，选新的自动把旧的那行摘下来。
+const CLAUDE_SLOTS: { id: string; label: string; env: string; hint: string }[] = [
+  { id: "default", label: "主模型", env: "ANTHROPIC_MODEL", hint: "不选模型时用的那个" },
+  { id: "opus", label: "opus", env: "ANTHROPIC_DEFAULT_OPUS_MODEL", hint: "/model 里的 Custom Opus" },
+  { id: "sonnet", label: "sonnet", env: "ANTHROPIC_DEFAULT_SONNET_MODEL", hint: "/model 里的 Custom Sonnet" },
+  { id: "haiku", label: "haiku", env: "ANTHROPIC_DEFAULT_HAIKU_MODEL", hint: "子代理和后台任务走它" },
+  { id: "fable", label: "fable", env: "ANTHROPIC_DEFAULT_FABLE_MODEL", hint: "/model 里的 Custom Fable" },
+];
+
+function ClaudeSlots({
+  rows,
+  aliases,
+  resolve,
+  onChange,
+}: {
+  rows: BridgeEntry[];
+  aliases: string[];
+  resolve: (r: BridgeEntry) => { window: number; percent: number; trigger: number };
+  onChange: (next: BridgeEntry[]) => void;
+}) {
+  const t = useT();
+  const mine = (r: BridgeEntry) => r.targets.includes("claude-code");
+  const inSlot = (slot: string) => rows.find((r) => mine(r) && slotOf(r) === slot);
+
+  // 候选：表里已有的出口别名 + 内核别名。前者在前 —— 那是用户自己配过的。
+  const options = useMemo(
+    () => [...new Set([...rows.map((r) => r.alias.trim()).filter(Boolean), ...aliases])],
+    [rows, aliases],
+  );
+
+  /// 把某个槽位换成 `alias`。空字符串 = 空出这个槽位。
+  ///
+  /// 旧占用者要**摘干净**：只清 tier 不清 targets 的话它会掉进「勾了 Claude Code
+  /// 但没占槽位」那一堆里，然后悄悄变成 `/model` 的自定义项。
+  const assign = (slot: string | null, alias: string) => {
+    const want = alias.trim();
+    let next = rows.map((r) => {
+      const isOld = mine(r) && slotOf(r) === slot;
+      const isNew = want !== "" && r.alias.trim() === want;
+      let out = r;
+      if (isOld && !isNew) {
+        out = { ...out, tier: null, targets: out.targets.filter((x) => x !== "claude-code") };
+      }
+      if (isNew) {
+        const with_cc: CliTarget[] = [...new Set<CliTarget>([...out.targets, "claude-code"])];
+        out = { ...out, tier: slot, targets: with_cc };
+      }
+      return out;
+    });
+    // 选了一个表里还没有的名字：补一行（同名落点，不依赖代理）。
+    if (want && !rows.some((r) => r.alias.trim() === want)) {
+      next = [
+        ...next,
+        { alias: want, target: want, contextWindow: 0, compactPercent: 0, targets: ["claude-code"] as CliTarget[], tier: slot },
+      ];
+    }
+    onChange(next);
+  };
+
+  // 勾了 Claude Code 却没占槽位的那些。第一个会成为 /model 里的自定义项，
+  // 其余**一个字都不会被写入** —— 不说的话用户会以为它们生效了。
+  const unslotted = rows.filter((r) => mine(r) && slotOf(r) === null);
+  const custom = unslotted[0];
+
+  return (
+    <div className="card divide-y divide-border">
+      <p className="px-4 py-3 text-xs text-muted">
+        {t("Claude Code 没有模型目录文件，能放模型的地方就是下面这 6 个。/model 菜单里看到的就是它们 —— 左边是槽位，右边是这个槽位会发出去的名字。")}
+      </p>
+      {CLAUDE_SLOTS.map((s) => {
+        const row = inSlot(s.id);
+        const info = row ? resolve(row) : null;
+        return (
+          <div key={s.id} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-2.5">
+            <div className="w-28 shrink-0">
+              <div className="text-sm font-medium">{t(s.label)}</div>
+              <div className="font-mono text-[10px] leading-tight text-muted/70">{s.env}</div>
+            </div>
+            <ComboBox
+              className="min-w-0 flex-1"
+              aria-label={t("{slot} 槽位发哪个模型", { slot: s.label })}
+              value={row?.alias ?? ""}
+              onChange={(v) => assign(s.id, v)}
+              placeholder={t("空着 —— 不写这个槽位")}
+              options={options}
+              emptyHint={t("内核里还没有别名，先去内核后台建渠道")}
+            />
+            <div className="w-44 shrink-0 text-right text-[11px] text-muted">
+              {info && info.window > 0
+                ? `${formatWindow(info.window)} · ${info.percent}% → ${formatWindow(info.trigger)}`
+                : row
+                  ? t("不写窗口")
+                  : t(s.hint)}
+            </div>
+            {row && (
+              <button
+                onClick={() => assign(s.id, "")}
+                aria-label={t("空出 {slot} 槽位", { slot: s.label })}
+                className="shrink-0 rounded-md border border-border p-1 text-muted hover:bg-surface-2 hover:text-red-600"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+        );
+      })}
+
+      {/* 第 6 个位置。它不是槽位，是 /model 菜单末尾多出来的那一行。 */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-2.5">
+        <div className="w-28 shrink-0">
+          <div className="text-sm font-medium">{t("自定义项")}</div>
+          <div className="font-mono text-[10px] leading-tight text-muted/70">
+            ANTHROPIC_CUSTOM_MODEL_OPTION
+          </div>
+        </div>
+        <ComboBox
+          className="min-w-0 flex-1"
+          aria-label={t("/model 菜单里额外的一行")}
+          value={custom?.alias ?? ""}
+          onChange={(v) => assign(null, v)}
+          placeholder={t("空着 —— /model 里不多这一行")}
+          options={options}
+          emptyHint={t("内核里还没有别名，先去内核后台建渠道")}
+        />
+        <div className="w-44 shrink-0 text-right text-[11px] text-muted">
+          {t("菜单末尾多出来的一行")}
+        </div>
+      </div>
+
+      {/* 勾了却没占槽位的那些。以前这一堆是隐形的 —— 用户勾了 82 个、看到
+          「已写入」，然后发现 /model 里还是那 5 个。 */}
+      {unslotted.length > 1 && (
+        <div className="flex flex-wrap items-center gap-2 bg-amber-500/10 px-4 py-2.5 text-xs text-amber-900">
+          <span>
+            {t("还有 {n} 行勾了 Claude Code 但没有槽位可放 —— 它们不会被写入任何配置。", {
+              n: unslotted.length - 1,
+            })}
+          </span>
+          <button
+            onClick={() =>
+              onChange(
+                rows.map((r) =>
+                  mine(r) && slotOf(r) === null && r !== custom
+                    ? { ...r, targets: r.targets.filter((x) => x !== "claude-code") }
+                    : r,
+                ),
+              )
+            }
+            className="ml-auto rounded-lg border border-amber-500/40 bg-surface-raised px-2.5 py-1 hover:bg-surface-2"
+          >
+            {t("把这 {n} 行取消勾选", { n: unslotted.length - 1 })}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

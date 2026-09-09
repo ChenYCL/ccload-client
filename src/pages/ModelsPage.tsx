@@ -568,8 +568,19 @@ function RefreshPanel({
   const ids = channels.map((c) => c.id).filter((id): id is number => id !== undefined);
 
   const run = useMutation({
-    mutationFn: () => api.channelsRefreshModels(ids, mode),
-    onSuccess: (env) => {
+    mutationFn: async () => {
+      const env = await api.channelsRefreshModels(ids, mode);
+      // 刷完必须把钉住的私有别名补回去。
+      //
+      // 私有别名（claude-opus-5@ch15）住在渠道的 models[] 里，而覆盖档就是拿上游
+      // 返回的清单**整体替换**那张表 —— 上游当然不会返回我们编的 @ch15。没了之后
+      // 钉住不报错，只是每条请求先挨一个 503（代理发私有别名 → 内核说没人服务它
+      // → 用原名重发才成功）。日志里就是一对对的「503 首选 / 200」，0ms、$0，
+      // 纯浪费一个往返，而且把日志刷满红色。
+      const pins = await api.pinResync().catch((e) => [errText(e)]);
+      return { env, pins };
+    },
+    onSuccess: ({ env, pins }) => {
       const r = env.data;
       const lines = (r?.results ?? []).map((it) => {
         const name = it.channel_name || `#${it.channel_id}`;
@@ -581,9 +592,10 @@ function RefreshPanel({
             : t("新增 {n} 个", { n: it.added ?? 0 });
         return `${name}：${delta}，${t("现在共 {n} 个", { n: it.total })}`;
       });
-      onDone(lines.join("\n"));
+      onDone([...lines, ...pins].join("\n"));
       // 渠道的模型变了，别名表、ComboBox 候选都要跟着重取。
       qc.invalidateQueries({ queryKey: ["channels"] });
+      qc.invalidateQueries({ queryKey: ["pins"] });
     },
     onError: (e) => onDone(errText(e)),
   });

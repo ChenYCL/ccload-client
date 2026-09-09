@@ -1395,4 +1395,44 @@ registerDict("en", {
   "models.dev 拉取失败，上下文窗口暂用本地预设值（claude 20 万、gemini 100 万等），联网后重试。":
     "Could not reach models.dev; context windows fall back to local presets (Claude 200k, Gemini 1M, ...). Retry once you're online.",
   "读取出口别名表…": "Loading the egress alias table…",
+
+  // ---- Claude 槽位编辑器 / 钉住修复 / 两层命名的说明 ----
+  "已把内核别名铺进表里，并按名字认领了 Claude Code 的槽位。确认后点「保存」。":
+    "Laid the kernel's aliases into the table and claimed Claude Code's slots by name. Review, then hit Save.",
+  "Claude Code 没有模型目录文件，能放模型的地方就是下面这 6 个。/model 菜单里看到的就是它们 —— 左边是槽位，右边是这个槽位会发出去的名字。":
+    "Claude Code has no model catalog file — these six places are the only ones that can hold a model, and they are exactly what the /model menu shows. Slot on the left, the name that slot will send on the right.",
+  "{slot} 槽位发哪个模型":
+    "Which model the {slot} slot sends",
+  "空着 —— 不写这个槽位":
+    "Empty — leave this slot alone",
+  "不写窗口":
+    "no window written",
+  "空出 {slot} 槽位":
+    "Clear the {slot} slot",
+  "自定义项":
+    "Extra entry",
+  "/model 菜单里额外的一行":
+    "The extra row in the /model menu",
+  "空着 —— /model 里不多这一行":
+    "Empty — no extra row in /model",
+  "菜单末尾多出来的一行":
+    "One more row at the end of the menu",
+  "还有 {n} 行勾了 Claude Code 但没有槽位可放 —— 它们不会被写入任何配置。":
+    "{n} more row(s) are ticked for Claude Code but have no slot to sit in — they will not be written anywhere.",
+  "把这 {n} 行取消勾选":
+    "Untick those {n}",
+  "CLI 发出去的名字。右边配的是它落到某个渠道之后、发给上游的真实模型名。":
+    "The name the CLI sends. On the right you configure the real upstream model name it becomes once it lands on a channel.",
+  "每一条 = 一个渠道 + 发给它的上游真实模型名（候选来自那个渠道自己的模型清单）。":
+    "Each row = one channel plus the real upstream model name sent to it (candidates come from that channel's own model list).",
+  "钉住的私有别名不在内核渠道里了（刷过模型清单之后常见）。现在每条请求都先白挨一个 503 再用原名重发 —— 日志里那一对对的「503 首选 / 200」就是它。":
+    "The pin's private alias is gone from the kernel channel (common after refreshing model lists). Every request now eats a wasted 503 before being resent under the plain name — those paired “503 preferred / 200” rows in the log are exactly this.",
+  "写回中…":
+    "Writing back…",
+  "写回内核":
+    "Write back to the kernel",
+  "新别名":
+    "New alias",
+  "首选":
+    "preferred",
 });

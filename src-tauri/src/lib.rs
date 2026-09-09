@@ -316,6 +316,7 @@ pub fn run() {
             commands::pins::pin_list,
             commands::pins::pin_save,
             commands::pins::pin_delete,
+            commands::pins::pin_resync,
             commands::rescue::rescue_get,
             commands::rescue::rescue_set,
             commands::rescue::rescue_default_prompt,

@@ -133,6 +133,59 @@ pub async fn pin_delete(state: State<'_, AppState>, alias: String) -> AppResult<
     })
 }
 
+/// 把 `pins.json` 里每一条的私有别名重新写回内核。
+///
+/// # 为什么需要它
+///
+/// 私有别名（`claude-opus-5@ch15`）活在渠道的 `models[]` 里，而那张表**会被别人
+/// 整体重写**：「同步渠道模型清单」的覆盖档（`POST /admin/channels/models/refresh-batch`
+/// 的 `replace`）按上游返回的清单收敛，上游当然不会返回我们编的 `@ch15`；
+/// 有人在内核后台改渠道、导入 CSV 也一样。
+///
+/// 没了之后钉住不会报错，只会**每条请求先挨一个 503**：代理先发私有别名（内核：
+/// 没有渠道服务它 → 503），再用原名重发才成功。实测日志里就是一对一对的
+/// 「503 首选 / 200」，0ms、0 token、$0，纯浪费一个往返，而且把日志刷满红色。
+///
+/// 所以刷完模型清单要顺手补一次。补不回来的（渠道没了 / 权限不够）只记日志，
+/// 钉住本身照旧退让，不该让整次操作失败。
+#[tauri::command]
+pub async fn pin_resync(state: State<'_, AppState>) -> AppResult<Vec<String>> {
+    let store = PinStore::load(&store_path(&state))?;
+    if store.pins.is_empty() {
+        return Ok(vec!["没有钉住的别名，无需修复。".into()]);
+    }
+    let mut log = Vec::new();
+    let mut fixed = 0usize;
+    for pin in &store.pins {
+        for t in &pin.targets {
+            let alias = pinned_alias(&pin.alias, t.channel_id);
+            match patch_channel(
+                &state,
+                t.channel_id,
+                None,
+                &[(alias.clone(), t.upstream.clone())],
+            )
+            .await
+            {
+                Ok(p) => {
+                    fixed += 1;
+                    log.push(format!(
+                        "渠道 {}（{}）：{alias} → {}",
+                        t.channel_id, p.channel_name, t.upstream
+                    ));
+                }
+                Err(e) => log.push(format!(
+                    "渠道 {}（{}）：{alias} 没能写回（{e}）—— 这条钉住会继续走退让",
+                    t.channel_id, t.channel_name
+                )),
+            }
+        }
+    }
+    log.insert(0, format!("已把 {fixed} 条私有别名写回内核。"));
+    refresh_proxy_pins(&state).await;
+    Ok(log)
+}
+
 async fn cleanup(state: &AppState, alias: &str, channel_id: i64) -> String {
     let private = pinned_alias(alias, channel_id);
     match remove_models(state, channel_id, std::slice::from_ref(&private)).await {

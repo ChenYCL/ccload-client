@@ -96,13 +96,21 @@ impl BridgeEntry {
         !a.is_empty() && !t.is_empty() && a != t
     }
 
-    /// 写进 CLI 的窗口。手填优先，没填就按 **target** 推断 —— `ccload-fast`
-    /// 这个名字什么都推不出来，它背后的 `grok-4.6` 才是 500k 的那个。
+    /// 写进 CLI 的窗口。
+    ///
+    /// 手填的那一行最优先 —— 那是用户对着这一行敲的数。没填就**交给总控**
+    /// （`ContextPolicy::resolve`）：自动档按 target 推断（`ccload-fast` 这个名字
+    /// 什么都推不出来，它背后的 `grok-4.6` 才是 500k 的那个）、固定档一律写那个
+    /// 固定值、不写档返回 0（这一行就不带窗口，CLI 保持自己的默认）。
+    ///
+    /// 必须走 `resolve` 而不是自己 `window_of` + `cap`：总控和这张表写的是**同一
+    /// 批键**，各算各的就会出现「总控说固定 1M、桥接表写 200k，谁后跑谁赢」——
+    /// 用户看到的就是「保存了但没生效」。总控是默认值，这一行是覆盖，只有一层。
     pub fn window(&self, policy: &ContextPolicy) -> u64 {
         if self.context_window > 0 {
             return self.context_window;
         }
-        policy.cap(policy.window_of(self.upstream_alias()))
+        policy.resolve(self.upstream_alias()).unwrap_or(0)
     }
 
     /// 生效的压缩百分比。0 和越界值退回总控 —— 0% 是「每条都压缩」、100% 是
@@ -271,17 +279,22 @@ pub fn seed(aliases: &[String], targets: &BTreeSet<CliTarget>) -> Vec<BridgeEntr
         .collect()
 }
 
-/// 按名字猜 Claude 的槽位。每个槽位只认领一次，已经被占的跳过。
+/// 按名字把 Claude 的空槽位填上。每个槽位只认领一次，已经被占的不动。
 ///
-/// 只在「填充槽位」按钮里用。猜错的代价是用户把它改回来，猜不出来的代价是那一行
-/// 不写 —— 都比让人对着 83 行手点五次强。
+/// 认领的同时**把 Claude Code 勾上** —— 槽位是它唯一的承载方式（没有目录文件），
+/// 认领了槽位却不勾等于白认领。反过来也成立：这就是为什么「补齐」给 Claude Code
+/// 铺表时不该把 83 行全勾上 —— 其中 78 行没有槽位可占，一个字都写不进去，只会让
+/// 用户在 83 个复选框里找那 5 个真的有用的。
+///
+/// 猜错的代价是用户在槽位那一行换一个；猜不出来的代价是那个槽位空着。都比让人
+/// 对着 83 行手点五次强。
 pub fn guess_slots(entries: &mut [BridgeEntry]) {
     let mut used: BTreeSet<String> = entries
         .iter()
         .filter_map(|e| e.slot().map(str::to_string))
         .collect();
     for e in entries.iter_mut() {
-        if e.slot().is_some() || !e.targets.contains(&CliTarget::ClaudeCode) {
+        if e.slot().is_some() {
             continue;
         }
         let n = e.alias.to_ascii_lowercase();
@@ -291,6 +304,7 @@ pub fn guess_slots(entries: &mut [BridgeEntry]) {
         if let Some(g) = guess {
             used.insert(g.to_string());
             e.tier = Some(g.to_string());
+            e.targets.insert(CliTarget::ClaudeCode);
         }
     }
 }
@@ -338,6 +352,38 @@ mod tests {
         let mut manual = entry("ccload-fast", "grok-4.6");
         manual.context_window = 300_000;
         assert_eq!(manual.window(&p), 300_000);
+    }
+
+    /// 总控和这张表写的是同一批键，所以窗口只有一层：总控是默认值，行内是覆盖。
+    ///
+    /// 各算各的就会出现用户报的那个「保存了但没生效」——「CLI 接管」页写着
+    /// 「固定 1M，五家一律写这个数」，桥接表却按模型名给 haiku 写 200k，
+    /// 谁后跑谁赢。
+    #[test]
+    fn an_unfilled_row_follows_the_global_policy_including_fixed_mode() {
+        use crate::services::context_window::ContextMode;
+        let fixed = ContextPolicy {
+            mode: ContextMode::Fixed,
+            fixed_tokens: 1_000_000,
+            ..Default::default()
+        };
+        // 落点按名字只有 200k，但总控说固定 1M —— 听总控的。
+        let row = entry("ccload-haiku", "claude-haiku-4-5-20251001");
+        assert_eq!(row.window(&fixed), 1_000_000);
+
+        // 行内手填仍然最优先：那是用户对着这一行敲的数。
+        let mut manual = row.clone();
+        manual.context_window = 200_000;
+        assert_eq!(manual.window(&fixed), 200_000);
+
+        // 「不写入」档就是不写：这一行不带窗口，CLI 保持自己的默认。
+        let off = ContextPolicy { mode: ContextMode::Off, ..Default::default() };
+        assert_eq!(row.window(&off), 0);
+        assert_eq!(manual.window(&off), 200_000, "手填盖过「不写入」");
+
+        // 自动档照旧按落点推断，并且尊重上限夹子。
+        let capped = ContextPolicy { cap_tokens: 500_000, ..Default::default() };
+        assert_eq!(entry("ccload-big", "claude-opus-5").window(&capped), 500_000);
     }
 
     /// 阈值：留 0 用总控的 90%，填了就用自己的，越界退回默认。
@@ -467,23 +513,43 @@ mod tests {
         assert!(BridgeStore { entries: seeded }.rewrites().is_empty());
     }
 
-    /// 槽位猜测：每个槽位只认领一次，已经绑好的不动，没勾 Claude 的不猜。
+    /// 槽位猜测：每个槽位只认领一次，已经绑好的不动，认领了就顺手勾上 Claude Code。
+    ///
+    /// 勾上这一步是必须的：Claude Code 没有目录文件，槽位是它唯一的承载方式，
+    /// 认领了槽位却不勾，导入时这一行会被当成「没勾这家」直接跳过。
     #[test]
-    fn slot_guessing_claims_each_slot_once() {
+    fn slot_guessing_claims_each_slot_once_and_ticks_claude_code() {
         let mut es = vec![
             entry("my-opus-5", "claude-opus-5"),
             entry("another-opus", "claude-opus-4-8"),
             entry("my-haiku", "claude-haiku-4-5"),
-            entry("ignored-sonnet", "claude-sonnet-5"),
+            entry("some-sonnet", "claude-sonnet-5"),
+            entry("grok-4.6", "grok-4.6"),
         ];
-        for e in es.iter_mut().take(3) {
-            e.targets = BTreeSet::from([CliTarget::ClaudeCode]);
-        }
         guess_slots(&mut es);
         assert_eq!(es[0].slot(), Some("opus"));
+        assert!(es[0].targets.contains(&CliTarget::ClaudeCode));
         assert_eq!(es[1].slot(), None, "opus 已经被认领了");
+        assert!(
+            !es[1].targets.contains(&CliTarget::ClaudeCode),
+            "没认领到槽位的不该被勾上 —— 它一个字都写不进 Claude Code"
+        );
         assert_eq!(es[2].slot(), Some("haiku"));
-        assert_eq!(es[3].slot(), None, "没勾 Claude Code 的不猜");
+        assert_eq!(es[3].slot(), Some("sonnet"));
+        // 名字里没有档位关键字的猜不出来，也就不勾。
+        assert_eq!(es[4].slot(), None);
+        assert!(!es[4].targets.contains(&CliTarget::ClaudeCode));
+    }
+
+    /// 已经手绑好的槽位不能被再猜一次盖掉。
+    #[test]
+    fn slot_guessing_leaves_existing_bindings_alone() {
+        let mut mine = entry("my-pick", "claude-opus-5");
+        mine.tier = Some("opus".into());
+        let mut es = vec![mine, entry("another-opus", "claude-opus-4-8")];
+        guess_slots(&mut es);
+        assert_eq!(es[0].slot(), Some("opus"));
+        assert_eq!(es[1].slot(), None);
     }
 
     /// 老 bridge.json 里没有新字段时读成默认值，不是反序列化失败。

@@ -208,6 +208,47 @@ pub(crate) fn current_context_tokens(root: &ConfigRoot, target: CliTarget) -> Op
 ///
 /// 还有 `CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1`：网关别名不在官方
 /// 目录里，不解除强制校验的话天花板会被 Claude Code 按「未知模型」重新夹回去。
+/// 写一个 Claude 槽位：模型 id 和 `/model` 菜单里的**标签**必须一起写。
+///
+/// `ANTHROPIC_DEFAULT_*_MODEL` 是真正发出去的 id；`..._MODEL_NAME` 是菜单里那一行
+/// 显示的字，Claude Code 只读后者来渲染。只写前者的后果是标签停在上一次的值上，
+/// 实测过的样子：
+///
+/// ```text
+///   2. claude-opus-5[1M]   Custom Opus model     ← 实际发 claude-opus-4-5-20251101
+///   4. claude-opus-5[1M]   Custom Sonnet model   ← 实际发 claude-opus-5[1M]
+///   5. claude-opus-5[1M]   Custom Haiku model    ← 实际发 claude-haiku-4-5-20251001
+/// ```
+///
+/// 三行显示同一个名字、发三个不同的模型。菜单是用户唯一能看见的地方，它在骗人。
+///
+/// 传 `None` 表示这个槽位没人认领：id 和标签一起删掉，不留半条。
+pub(crate) fn write_claude_slot(
+    env: &mut serde_json::Map<String, Value>,
+    key: &str,
+    model: Option<&str>,
+) {
+    // `ANTHROPIC_MODEL`（主模型）和 `ANTHROPIC_CUSTOM_MODEL_OPTION` 没有 `_NAME`
+    // 伴生键 —— 菜单里它们显示自己的值。只有 `ANTHROPIC_DEFAULT_*_MODEL` 有。
+    let name_key = key
+        .starts_with("ANTHROPIC_DEFAULT_")
+        .then(|| format!("{key}_NAME"));
+    match model.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(m) => {
+            env.insert(key.into(), Value::String(m.to_string()));
+            if let Some(nk) = name_key {
+                env.insert(nk, Value::String(m.to_string()));
+            }
+        }
+        None => {
+            env.remove(key);
+            if let Some(nk) = name_key {
+                env.remove(&nk);
+            }
+        }
+    }
+}
+
 pub(crate) fn write_claude_window_env(
     env: &mut serde_json::Map<String, Value>,
     window: u64,
@@ -270,17 +311,19 @@ pub fn apply_takeover(
                 // Optional model tier overrides. Empty string is intentionally
                 // skipped — an empty model name is not "unset", it is a
                 // literal empty string that the CLI would use verbatim.
-                if let Some(m) = opts.anthropic_model.filter(|s| !s.is_empty()) {
-                    env.insert("ANTHROPIC_MODEL".into(), Value::String(m));
-                }
-                if let Some(m) = opts.sonnet_model.filter(|s| !s.is_empty()) {
-                    env.insert("ANTHROPIC_DEFAULT_SONNET_MODEL".into(), Value::String(m));
-                }
-                if let Some(m) = opts.opus_model.filter(|s| !s.is_empty()) {
-                    env.insert("ANTHROPIC_DEFAULT_OPUS_MODEL".into(), Value::String(m));
-                }
-                if let Some(m) = opts.haiku_model.filter(|s| !s.is_empty()) {
-                    env.insert("ANTHROPIC_DEFAULT_HAIKU_MODEL".into(), Value::String(m));
+                // 每个槽位都走 write_claude_slot：id 和菜单标签是一对，分开写
+                // 就会出现「三行显示同一个名字、发三个不同模型」。
+                for (key, picked) in [
+                    ("ANTHROPIC_MODEL", opts.anthropic_model),
+                    ("ANTHROPIC_DEFAULT_SONNET_MODEL", opts.sonnet_model),
+                    ("ANTHROPIC_DEFAULT_OPUS_MODEL", opts.opus_model),
+                    ("ANTHROPIC_DEFAULT_HAIKU_MODEL", opts.haiku_model),
+                ] {
+                    // 空串**不是**「清空」，是「这次表单没带这个槽位」——
+                    // 写进去 CLI 会原样拿它当模型名用。和这段原来的判断一致。
+                    if let Some(m) = picked.filter(|s| !s.is_empty()) {
+                        write_claude_slot(env, key, Some(&m));
+                    }
                 }
                 // 上下文窗口总控。Claude Code 的窗口是**全局一个键**，不是
                 // per-model —— 换模型不跟着改，就会留着上次导入写的那个数（症状：

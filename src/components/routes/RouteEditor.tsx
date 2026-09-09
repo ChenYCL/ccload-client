@@ -279,6 +279,12 @@ export function RouteEditor({
             ? t("写进内核时按 100 / 90 / 80… 依次降级")
             : t("写进内核时压过正在服务这个别名的其它渠道")}
         </span>
+        {/* 每一条填的是「哪家渠道 + 发给它的上游真实模型名」，候选来自那个渠道
+            自己的模型清单 —— 不是左边那种别名。这两种名字看起来一样，要的东西
+            正好相反，填反了要等发请求那一刻才炸。 */}
+        <span className="basis-full text-[11px] text-muted/70">
+          {t("每一条 = 一个渠道 + 发给它的上游真实模型名（候选来自那个渠道自己的模型清单）。")}
+        </span>
         {dirty && (
           <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-700">
             {t("未保存")}

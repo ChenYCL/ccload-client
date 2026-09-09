@@ -174,6 +174,8 @@ export function AliasRoutes({
   });
   const savePin = useMutation({ mutationFn: (p: Pin) => api.pinSave(p), onSuccess: invalidate });
   const deletePin = useMutation({ mutationFn: () => api.pinDelete(name), onSuccess: invalidate });
+  /// 把钉住的私有别名重新写回内核。整表重写，不只这一条 —— 会被清掉的从来不止一条。
+  const repairPin = useMutation({ mutationFn: () => api.pinResync(), onSuccess: invalidate });
   const write = useMutation({
     mutationFn: (v: { channel: number; entry: string; upstream: string }) =>
       api.channelModelSet(v.channel, v.entry, v.upstream),
@@ -224,6 +226,23 @@ export function AliasRoutes({
   // 钉住的渠道在内核里已经没了（删了 / 停用了 / 不再服务这个别名）：下拉里没有它，
   // 原生 select 会默默显示第一项「不钉住」，和实际状态相反。补一个占位项把真相摆出来。
   const orphan = pinnedId !== null && !choices.some((h) => h.channel_id === pinnedId);
+  // 钉住写进内核的那条私有别名（`claude-opus-5@ch15`）还在不在。
+  //
+  // 它住在渠道的 `models[]` 里，而那张表**会被别人整体重写**：「模型桥接」页的
+  // 「同步渠道模型清单 · 覆盖」拿上游返回的清单替换它，上游当然不会返回我们编的
+  // `@ch15`；在内核后台改渠道、导 CSV 也一样。没了之后钉住不报错，只是每条请求
+  // 先白挨一个 503 再用原名重发 —— 日志里就是一对对的「503 首选 / 200」，
+  // 0ms、0 token、$0，纯浪费一个往返，还把日志刷满红色。
+  const brokenPin =
+    pin?.targets.some((tg) => {
+      const ch = (channels ?? []).find((c) => c.id === tg.channel_id);
+      // 渠道整个没了归上面的 orphan 管，这里只判「渠道在、私有条目没了」。
+      if (!ch) return false;
+      // 两边都小写再比：写进内核的那条保留原大小写（routing_base 不改），
+      // aliasKey 会小写。
+      const want = `${aliasKey(pin.alias)}@ch${tg.channel_id}`;
+      return !(ch.models ?? []).some((m) => (m.model ?? "").trim().toLowerCase() === want);
+    }) ?? false;
   // 钉住表里存的落点是点下拉那一刻的快照；渠道条目之后在内核后台被改过，快照就过期了。
   const stale = (() => {
     if (!pin || pinnedId === null) return null;
@@ -526,6 +545,18 @@ export function AliasRoutes({
       {orphan && (
         <p className="mt-1 text-amber-700">
           {t("钉住的渠道已不在内核里：开着退让时每次请求都先白挨一个 503 再退回默认顺序，关着退让时请求会一直失败。换一个首选渠道或取消钉住。")}
+        </p>
+      )}
+      {!orphan && brokenPin && (
+        <p className="mt-1 flex flex-wrap items-center gap-1.5 text-amber-700">
+          {t("钉住的私有别名不在内核渠道里了（刷过模型清单之后常见）。现在每条请求都先白挨一个 503 再用原名重发 —— 日志里那一对对的「503 首选 / 200」就是它。")}
+          <button
+            onClick={() => repairPin.mutate()}
+            disabled={repairPin.isPending}
+            className="rounded border border-amber-500/50 px-1.5 py-0 text-[10px] hover:bg-amber-500/15 disabled:opacity-40"
+          >
+            {repairPin.isPending ? t("写回中…") : t("写回内核")}
+          </button>
         </p>
       )}
       {pin && proxyOn && (

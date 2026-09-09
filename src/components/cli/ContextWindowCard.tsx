@@ -151,9 +151,12 @@ export function ContextWindowCard() {
   const t = useT();
   const qc = useQueryClient();
   const policy = useQuery({ queryKey: ["context-policy"], queryFn: api.contextPolicyGet });
+  // 和 cli-preview 同一个理由：这张表读的是**磁盘上现在的值**，而那几个文件
+  // 我们不独占。不重读的话，用户在别处换了模型再回来，这里还显示上一次的窗口。
   const windows = useQuery({
     queryKey: ["context-window-preview"],
     queryFn: api.contextWindowPreview,
+    refetchOnWindowFocus: true,
   });
   const tiers = useQuery({ queryKey: ["context-tiers"], queryFn: api.contextTiers });
   const [notice, setNotice] = useState<string | null>(null);

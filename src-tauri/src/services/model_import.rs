@@ -37,7 +37,9 @@ use serde_json::Value;
 
 use crate::error::AppError;
 use crate::services::cli_backup::BackupStore;
-use crate::services::cli_config::{current_endpoint, current_token, write_claude_window_env};
+use crate::services::cli_config::{
+    current_endpoint, current_token, write_claude_slot, write_claude_window_env,
+};
 use crate::services::cli_grok;
 use crate::services::cli_io::{object_at, read_json, write_atomic, write_pretty_json};
 use crate::services::cli_types::{CliTarget, ConfigRoot};
@@ -230,7 +232,10 @@ pub fn apply_import(
             {
                 let env = object_at(&mut doc, "env")?;
                 for (key, e) in &bind {
-                    env.insert((*key).into(), Value::String(e.alias.clone()));
+                    // 走 write_claude_slot：它连 `_MODEL_NAME`（/model 菜单里显示
+                    // 的标签）一起写。只写 id 的话标签会停在上一次的值上，菜单里
+                    // 三行显示同一个名字却发三个不同模型。
+                    write_claude_slot(env, key, Some(&e.alias));
                     // ANTHROPIC_MODEL 没有 *_SUPPORTED_CAPABILITIES 这个键，
                     // 主模型靠 CLAUDE_CODE_ALWAYS_ENABLE_EFFORT 发 effort。
                     if *key != "ANTHROPIC_MODEL" {
@@ -546,10 +551,48 @@ mod tests {
             &settings,
             r#"{"env":{"ANTHROPIC_BASE_URL":"http://x",
                        "ANTHROPIC_DEFAULT_OPUS_MODEL":"my-opus",
+                       "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME":"一个过时的标签",
                        "CLAUDE_CODE_MAX_CONTEXT_TOKENS":"777"}}"#,
         )
         .unwrap();
         (root, bk, settings)
+    }
+
+    /// 菜单标签必须跟着模型 id 一起改。
+    ///
+    /// 用户实测撞到的样子：settings.json 里 `_MODEL` 被我们改了、`_MODEL_NAME`
+    /// 停在上一次的值上，于是 `/model` 里三行都显示 `claude-opus-5[1M]`，选中
+    /// 之后发出去的却是 opus-4-5 / haiku-4-5 / opus-5 三个不同的模型。
+    #[test]
+    fn a_stale_menu_label_is_overwritten_not_left_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, bk, settings) = claude_root(&dir);
+        apply_import(
+            &root,
+            CliTarget::ClaudeCode,
+            &[entry("glm-5.3", None, Some("haiku"))],
+            "s1",
+            &bk,
+            false,
+            None,
+        )
+        .unwrap();
+        let doc: Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        assert_eq!(
+            doc.pointer("/env/ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME").unwrap(),
+            "glm-5.3",
+            "菜单标签还停在旧值上 —— 用户看到的名字和实际发出去的模型对不上"
+        );
+        assert_eq!(
+            doc.pointer("/env/ANTHROPIC_DEFAULT_HAIKU_MODEL").unwrap(),
+            "glm-5.3"
+        );
+        // 没人认领的槽位连同它的标签一起保持原样。
+        assert_eq!(
+            doc.pointer("/env/ANTHROPIC_DEFAULT_OPUS_MODEL").unwrap(),
+            "my-opus"
+        );
     }
 
     fn entry(alias: &str, w: Option<i64>, tier: Option<&str>) -> ImportEntry {
@@ -597,6 +640,15 @@ mod tests {
                 .unwrap(),
             "effort,thinking"
         );
+        // `_MODEL_NAME` 是 /model 菜单里显示的那一行。不跟着写的话标签会停在上次
+        // 的值上 —— 实测过三个槽位同时显示 `claude-opus-5[1M]`、实际发三个不同的
+        // 模型。菜单是用户唯一能看见的地方。
+        assert_eq!(
+            doc.pointer("/env/ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME").unwrap(),
+            "glm-5.3"
+        );
+        // 主模型没有 `_NAME` 伴生键（菜单里它显示自己的值），别凭空造一个。
+        assert!(doc.pointer("/env/ANTHROPIC_MODEL_NAME").is_none());
         assert_eq!(
             doc.pointer("/env/ANTHROPIC_CUSTOM_MODEL_OPTION").unwrap(),
             "gpt-5.6"

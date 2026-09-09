@@ -28,7 +28,17 @@ export function CliPage({ onNavigate }: { onNavigate?: (page: Page) => void }) {
   const qc = useQueryClient();
   const kernel = useQuery({ queryKey: ["kernel"], queryFn: api.kernelStatus });
   const settings = useQuery({ queryKey: ["app-settings"], queryFn: api.settingsGet });
-  const preview = useQuery({ queryKey: ["cli-preview"], queryFn: api.cliPreviewAll });
+  // 这几个配置文件**不归我们独占**：Claude Code 在 `/model` 里换个模型就会写回
+  // 自己的 settings.json，Grok 会改 `[models] default`，用户也可能直接编辑。
+  // 一次性快照意味着界面显示的是打开这一页那一刻的样子 —— 用户报的「不是真实
+  // 配置」就是它。改成轮询 + 回到窗口时重读；命令本身只读本地五个小文件，
+  // 不碰内核，4 秒一次的代价可以忽略。
+  const preview = useQuery({
+    queryKey: ["cli-preview"],
+    queryFn: api.cliPreviewAll,
+    refetchInterval: 4000,
+    refetchOnWindowFocus: true,
+  });
   const backups = useQuery({ queryKey: ["cli-backups"], queryFn: () => api.cliBackups() });
   const apply = useMutation({
     mutationFn: ({ target, options }: { target: CliTarget; options: TakeoverOptions }) =>

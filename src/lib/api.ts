@@ -181,6 +181,8 @@ export const api = {
   pinList: () => invoke<Pin[]>("pin_list"),
   pinSave: (pin: Pin) => invoke<PinOutcome>("pin_save", { pin }),
   pinDelete: (alias: string) => invoke<PinOutcome>("pin_delete", { alias }),
+  /** 把钉住的私有别名重新写回内核。刷过渠道模型清单之后必须补，否则每条请求先挨一个 503。 */
+  pinResync: () => invoke<string[]>("pin_resync"),
   cliApply: (target: CliTarget, options?: TakeoverOptions) =>
     invoke<TakeoverResult>("cli_apply", { target, options: options ?? null }),
   cliBackups: (target?: CliTarget) =>

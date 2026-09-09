@@ -280,6 +280,13 @@ function AliasList({
           <span className="t-title text-sm">{t("别名")}</span>
           <span className="text-[11px] text-muted">{total}</span>
         </div>
+        {/* 这一列到底是什么，必须写在脸上：它和右边那些下拉里填的**不是同一种
+            东西**。这里是别名（CLI 发出去的名字、内核拿它选渠道），右边填的是
+            上游真实模型名（发给那家渠道时用的名字）。取反了不会当场报错，要等
+            真正发请求那一刻才炸。 */}
+        <p className="mt-0.5 text-[10px] leading-snug text-muted/70">
+          {t("CLI 发出去的名字。右边配的是它落到某个渠道之后、发给上游的真实模型名。")}
+        </p>
 
         <div className="relative mt-2">
           <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted" />
