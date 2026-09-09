@@ -581,9 +581,15 @@ pub async fn context_window_preview(state: State<'_, AppState>) -> AppResult<Vec
         let opts = TakeoverOptions::default();
         let model = current_model(&root, target);
         let floor = ctx.floor_for_target(&root, target, &opts);
+        let real_window = model
+            .as_deref()
+            .map(|m| ctx.policy.window_of(m))
+            .and_then(|w| i64::try_from(w).ok())
+            .filter(|w| *w > 0);
         out.push(WindowPreview {
             target,
             source: model.as_deref().map(|m| ctx.policy.source_of(m)),
+            real_window,
             model,
             tokens: floor.as_ref().and_then(|f| i64::try_from(f.tokens).ok()),
             compact_tokens: floor
@@ -763,6 +769,14 @@ pub struct WindowPreview {
     pub capped: bool,
     /// false = 内核没连上，只按本地的链和路由算，可能偏宽。
     pub kernel_checked: bool,
+    /// 这个模型**名义上**的真实上限：手填分档 → 名字后缀 → models.dev → 猜测表。
+    /// **不看总控档位** —— 它回答的是「这个模型到底能吃多少」，不是「我们打算写多少」。
+    ///
+    /// `tokens` 比它宽就是高估，而高估是会死锁的那个方向：CLI 以为有 1M，压缩要到
+    /// 900k 才触发，而上游 500k 就开始 400，`/compact` 自己也发不出去。实测撞到过：
+    /// 总控设成「固定 1M」之后 Grok Build 给 grok-4.6（真实 500k）写了 1M，界面上
+    /// 一路涨到 470K/1.0M。手填过分档的不算高估 —— 那是用户明确说了「我知道」。
+    pub real_window: Option<i64>,
 }
 
 #[derive(serde::Serialize)]

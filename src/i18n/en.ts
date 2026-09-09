@@ -1435,4 +1435,10 @@ registerDict("en", {
     "New alias",
   "首选":
     "preferred",
+  "强制路由 {a} 条 · 首选渠道钉住 {b} 条 · 出口别名 {c} 条":
+    "{a} forced route(s) · {b} channel pin(s) · {c} egress alias(es)",
+  "钉住里的渠道编号跟着导出那台内核走。换一台内核导入的话，导入后到「模型路由」页确认一遍。":
+    "Pin channel ids belong to the kernel they were exported from. Importing against a different kernel, check them on the Model routing page afterwards.",
+  "出口别名只落盘 + 让代理改写生效；要写进各 CLI 的配置文件，导入后到「模型桥接」页点「写进 CLI」。":
+    "Egress aliases are only saved and pushed to the proxy's rewrite table. To write them into each CLI's config file, use “Write to CLIs” on the Model bridge page afterwards.",
 });

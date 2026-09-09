@@ -132,12 +132,55 @@ impl ContextPolicy {
         }
     }
 
+    /// 我们对这个模型**有把握**的上限。没把握就 `None`。
+    ///
+    /// 和 [`Self::window_of`] 的区别只有兜底那一档：那个认不出名字时给 128k，
+    /// 这个给 `None`。因为 128k 兜底的含义是「不知道」，不是「知道它是 128k」——
+    /// 拿一个猜测去夹用户明确设定的固定值，会把所有不认识的别名（本地模型、
+    /// 中转自起的名字）全压到 128k。
+    ///
+    /// 优先级和 `window_of` 一致：手填分档 → 名字后缀 → models.dev → 家族规则。
+    /// 手填排第一，所以「我知道我这条中转的 grok 能吃 1M」永远压得住下面几档。
+    pub fn known_window(&self, name: &str) -> Option<u64> {
+        if let Some(w) = self.override_for(name) {
+            return Some(w);
+        }
+        let bare = strip_vendor(name);
+        suffix_window(bare)
+            .or_else(|| crate::services::model_catalog::lookup(bare))
+            .or_else(|| family_window_opt(bare))
+    }
+
+    /// 固定档实际写出去的数：**不能比这个模型真实吃得下的还宽**。
+    ///
+    /// 高估是会死锁的那个方向 —— CLI 以为有 1M、压缩要到 900k 才触发，而上游
+    /// 500k 就开始 400，到那时 `/compact` 自己也发不出去。实测撞到过：总控设成
+    /// 「固定 1M」之后 Grok Build 给 grok-4.6（真实 500k）写了 1M，会话一路涨到
+    /// 470K/1.0M 然后没救。
+    ///
+    /// 夹子只往下夹。真要写得比名字宽（自建中转确实给得多），在分档表里给那个
+    /// 模型手填一个数 —— `known_window` 把手填排在第一位，夹子就成了空操作。
+    /// 认不出的名字不夹：那时我们没有把握，不该拿猜测推翻用户的明确设定。
+    fn fixed_for(&self, model: &str) -> Option<u64> {
+        if self.fixed_tokens == 0 {
+            return None;
+        }
+        let m = model.trim();
+        if m.is_empty() {
+            return Some(self.fixed_tokens);
+        }
+        Some(match self.known_window(m) {
+            Some(real) => self.fixed_tokens.min(real),
+            None => self.fixed_tokens,
+        })
+    }
+
     /// 只看**一个**模型名时该写多少。`None` = 不写（Off 档，或者 Auto 档但没有
     /// 模型名）。多个落点取最窄是 [`crate::services::context_floor`] 的事。
     pub fn resolve(&self, model: &str) -> Option<u64> {
         match self.mode {
             ContextMode::Off => None,
-            ContextMode::Fixed => (self.fixed_tokens > 0).then_some(self.fixed_tokens),
+            ContextMode::Fixed => self.fixed_for(model),
             ContextMode::Auto => {
                 let m = model.trim();
                 if m.is_empty() {
@@ -269,57 +312,66 @@ fn parse_size(raw: &str) -> Option<u64> {
 /// 兜底猜测。**只在 models.dev 查不到时用**，所以规则宁可保守：估小了最多提前
 /// compact，估大了会死锁。下面每条都拿 models.dev 的第一方数据核对过。
 fn family_window(name: &str) -> u64 {
+    family_window_opt(name).unwrap_or(128_000)
+}
+
+/// 家族猜测，**匹配不上就 None**。
+///
+/// 和 [`family_window`] 的区别只在兜底：那个给 128k，这个给 None。区分它俩是
+/// 为了回答「我们对这个模型到底有没有把握」—— 128k 兜底是「不知道」，不是
+/// 「知道它是 128k」，拿它去夹用户明确设的固定值会把不认识的别名全压到 128k。
+fn family_window_opt(name: &str) -> Option<u64> {
     let n = name.to_ascii_lowercase();
     // grok-4.6/4.5 实测卡在 500k；4.2x/4.3 那批是 1M；grok-build 是 256k。
     // 必须按从具体到宽泛的顺序，不然全被后面的 `grok` 一把吃成 256k。
     if n.contains("grok-4.6") || n.contains("grok-4.5") || n.contains("grok-4-6") {
-        return 500_000;
+        return Some(500_000);
     }
     if n.contains("grok-4.2") || n.contains("grok-4.3") {
-        return 1_000_000;
+        return Some(1_000_000);
     }
     if n.contains("grok") {
-        return 256_000;
+        return Some(256_000);
     }
     // v4 才是 1M。v3 系列是 128k~164k —— 以前这两条并在一起写成 1M，是**高估**，
     // 也就是会死锁的那个方向。
     if n.contains("deepseek-v4") {
-        return 1_000_000;
+        return Some(1_000_000);
     }
     if n.contains("deepseek") {
-        return 128_000;
+        return Some(128_000);
     }
     // glm-5.2/5.3 上游标的是 1M，5.0/5.1 仍是 200k 档，4.5 那批只有 131k。
     if n.contains("glm-5.2") || n.contains("glm-5.3") {
-        return 1_000_000;
+        return Some(1_000_000);
     }
     if n.contains("glm-4.5") {
-        return 131_072;
+        return Some(131_072);
     }
     if n.contains("glm") {
-        return 200_000;
+        return Some(200_000);
     }
     if n.contains("kimi-k3") {
-        return 1_000_000;
+        return Some(1_000_000);
     }
     if n.contains("kimi") {
-        return 262_144;
+        return Some(262_144);
     }
     if n.contains("gemini") {
-        return 1_000_000;
+        return Some(1_000_000);
     }
     if n.contains("gpt-4.1") {
-        return 1_000_000;
+        return Some(1_000_000);
     }
     // gpt-5 是 400k，不是 1M —— 5.4 起才回到 1M 档。以前一刀切 1M 是高估。
     if n.contains("gpt-5.4") || n.contains("gpt-5.5") || n.contains("gpt-5.6") {
-        return 1_000_000;
+        return Some(1_000_000);
     }
     if n.contains("gpt-5") {
-        return 400_000;
+        return Some(400_000);
     }
     if n.contains("o1") || n.contains("o3") || n.contains("o4-mini") {
-        return 200_000;
+        return Some(200_000);
     }
     // Claude 家族：haiku 和 opus-4.5 是 200k，其余（sonnet-4.5 起、4.6+、
     // opus-5 / fable-5 / sonnet-5）都是 1M。
@@ -329,14 +381,14 @@ fn family_window(name: &str) -> u64 {
     // 说的就是它。
     if n.contains("claude") || n.contains("opus") || n.contains("sonnet") || n.contains("fable") {
         if n.contains("haiku") {
-            return 200_000;
+            return Some(200_000);
         }
         if n.contains("opus") && (n.contains("-4-5") || n.contains("-4.5")) {
-            return 200_000;
+            return Some(200_000);
         }
-        return 1_000_000;
+        return Some(1_000_000);
     }
-    128_000
+    None
 }
 
 /// 链上每一跳的窗口（按总控里的分档算）。空跳跳过。
@@ -448,6 +500,7 @@ mod tests {
     /// 这个顺序错了，用户在名字里写 `[500k]` 的意图就会被目录悄悄推翻。
     #[test]
     fn catalog_outranks_presets_but_the_suffix_outranks_everything() {
+        let _g = crate::services::model_catalog::test_guard();
         crate::services::model_catalog::set_for_test(&[("mystery-model", 777_000)]);
         // 猜测表根本不认识它，只会给 128k 兜底；目录说 777k。
         assert_eq!(parse_window("mystery-model"), 777_000);
@@ -508,6 +561,52 @@ mod tests {
         assert_eq!(off.resolve("claude-opus-5"), None);
     }
 
+    /// 固定档**不能比模型真实吃得下的还宽**。
+    ///
+    /// 用户实测撞到的：总控设成「固定 1M」，Grok Build 于是给 grok-4.6（真实
+    /// 500k）写了 `context_window = 1000000`，会话一路涨到 470K/1.0M —— 压缩要
+    /// 到 900k 才触发，而上游 500k 就开始 400，到那时 `/compact` 自己也发不出去。
+    /// 高估是唯一会死锁的方向，所以固定档只能往下夹。
+    #[test]
+    fn fixed_mode_never_writes_wider_than_the_model_really_takes() {
+        let _g = crate::services::model_catalog::test_guard();
+        let p = ContextPolicy {
+            mode: ContextMode::Fixed,
+            fixed_tokens: 1_000_000,
+            ..Default::default()
+        };
+        assert_eq!(p.resolve("grok-4.6"), Some(500_000), "就是用户报的那一条");
+        assert_eq!(p.resolve("claude-haiku-4-5-20251001"), Some(200_000));
+        // 真实上限更宽时不往上抬 —— 夹子只往下夹。
+        assert_eq!(p.resolve("claude-opus-5"), Some(1_000_000));
+
+        // 认不出的名字**不夹**：128k 兜底的含义是「不知道」，不是「知道它是
+        // 128k」。拿一个猜测去推翻用户明确设的固定值，会把所有自建中转的别名
+        // 全压到 128k。
+        assert_eq!(p.known_window("some-private-relay-model"), None);
+        assert_eq!(p.resolve("some-private-relay-model"), Some(1_000_000));
+
+        // 分档表手填排在第一位，所以「我知道我这条 grok 能吃 1M」压得住夹子。
+        let mut told = p.clone();
+        told.overrides.insert("grok-4.6".into(), 1_000_000);
+        assert_eq!(told.resolve("grok-4.6"), Some(1_000_000));
+
+        // 没有模型名时无从夹起，照写固定值。
+        assert_eq!(p.resolve(""), Some(1_000_000));
+    }
+
+    /// `known_window` 和 `window_of` 只差兜底那一档，别把两者搞混。
+    #[test]
+    fn known_window_is_none_only_when_we_are_actually_guessing() {
+        let _g = crate::services::model_catalog::test_guard();
+        let p = ContextPolicy::default();
+        assert_eq!(p.known_window("grok-4.6"), Some(500_000), "家族规则匹配上了");
+        assert_eq!(p.known_window("whatever[300k]"), Some(300_000), "名字自带声明");
+        assert_eq!(p.known_window("totally-unknown-thing"), None);
+        // window_of 对同一个名字仍然给 128k 兜底 —— 那条路要的是「总得有个数」。
+        assert_eq!(p.window_of("totally-unknown-thing"), 128_000);
+    }
+
     /// 名字声称 1M、但这条中转其实只给 500k：夹子必须生效，否则就是模块开头
     /// 讲的那个死锁（等 compact 触发时早已越过真实天花板）。
     #[test]
@@ -537,6 +636,7 @@ mod tests {
     /// 出来（128k 兜底），中转给的 `[1m]` 也可能是假的，用户亲手填的数才是他要的。
     #[test]
     fn manual_overrides_beat_suffix_catalog_and_presets() {
+        let _g = crate::services::model_catalog::test_guard();
         crate::services::model_catalog::set_for_test(&[("mystery-model", 777_000)]);
         let mut p = ContextPolicy::default();
         p.overrides.insert("Qwen3.8-27B".into(), 200_000);

@@ -293,6 +293,17 @@ fn finish(mut out: Vec<Candidate>, declared: Option<u64>) -> Vec<Candidate> {
 }
 
 impl FloorInputs<'_> {
+    /// 出口别名换成落点名。不在桥接表里的原样返回。
+    ///
+    /// 抽成方法是因为**固定档也要用**：拿 `ccload-fast` 去查「这个模型真实吃得下
+    /// 多少」什么都查不到，上限夹子就成了空操作，而它背后的 grok-4.6 才是 500k。
+    fn routed<'a>(&'a self, model: &'a str) -> &'a str {
+        self.bridge
+            .iter()
+            .find(|b| same_alias(&b.alias, model))
+            .map_or(model, BridgeEntry::upstream_alias)
+    }
+
     /// 这个模型名所有可能落到的上游。第一条永远是它自己。
     pub fn candidates(&self, model: &str) -> Vec<Candidate> {
         let model = model.trim();
@@ -302,7 +313,7 @@ impl FloorInputs<'_> {
         // 先把出口别名换成落点：代理转发前做的就是这一步，所以「这个名字可能落到
         // 哪些上游」问的其实是落点的那一套。没在桥接表里的名字原样往下走。
         let bridged = self.bridge.iter().find(|b| same_alias(&b.alias, model));
-        let routed: &str = bridged.map_or(model, BridgeEntry::upstream_alias);
+        let routed: &str = self.routed(model);
         let mut out: Vec<Candidate> = Vec::new();
         let mut push = |name: &str, via: Via, channel: Option<&str>| {
             let name = name.trim();
@@ -373,13 +384,17 @@ impl FloorInputs<'_> {
         match policy.mode {
             ContextMode::Off => None,
             ContextMode::Fixed => {
-                let tokens = policy.fixed_tokens;
+                // 固定档也要被这个模型**真实吃得下的**夹住 —— 高估会死锁，见
+                // `ContextPolicy::fixed_for`。`capped` 置位让界面说得出「你设了
+                // 1M，但按 grok-4.6 的真实上限写成了 500k」。
+                let routed = self.routed(model);
+                let tokens = policy.resolve(routed)?;
                 (tokens > 0).then(|| Floor {
                     tokens,
                     compact_tokens: policy.compact_tokens(tokens),
                     narrowest: None,
                     candidates: Vec::new(),
-                    capped: false,
+                    capped: tokens < policy.fixed_tokens,
                 })
             }
             ContextMode::Auto => {

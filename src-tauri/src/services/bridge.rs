@@ -367,9 +367,19 @@ mod tests {
             fixed_tokens: 1_000_000,
             ..Default::default()
         };
-        // 落点按名字只有 200k，但总控说固定 1M —— 听总控的。
+        // 总控说固定 1M，可落点真实只有 200k —— **听真实上限的**。
+        // 高估会死锁（CLI 以为 1M、900k 才压缩，上游 200k 就 400），见
+        // `ContextPolicy::fixed_for`。
         let row = entry("ccload-haiku", "claude-haiku-4-5-20251001");
-        assert_eq!(row.window(&fixed), 1_000_000);
+        assert_eq!(row.window(&fixed), 200_000);
+        // 认得出的模型都夹：grok-4.6 真实 500k。用户报的那个 bug 就是这一条 ——
+        // Grok Build 被写了 1M，会话涨到 470K/1.0M 之后没救。
+        assert_eq!(entry("ccload-fast", "grok-4.6").window(&fixed), 500_000);
+        // 真实上限比固定值宽时不往上抬：夹子只往下夹。
+        let narrow = ContextPolicy { fixed_tokens: 300_000, ..fixed.clone() };
+        assert_eq!(entry("ccload-big", "claude-opus-5").window(&narrow), 300_000);
+        // 认不出的名字不夹 —— 那时我们没把握，不该拿 128k 猜测推翻用户的设定。
+        assert_eq!(entry("ccload-x", "some-private-relay-model").window(&fixed), 1_000_000);
 
         // 行内手填仍然最优先：那是用户对着这一行敲的数。
         let mut manual = row.clone();

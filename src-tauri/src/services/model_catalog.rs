@@ -274,6 +274,20 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
+/// 测试之间共享 `CATALOG` 这个全局，所以动它的测试必须串行。
+///
+/// 不加这把锁的表现是**偶发**失败：A 清空目录、断言「查不到就回落猜测表」，
+/// 而 B 在这两步之间把目录设了回去，A 于是读到 Catalog。跟改动无关，只跟线程
+/// 调度有关 —— 加几个测试就可能让它稳定复现。
+#[cfg(test)]
+pub(crate) static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 拿住目录这把锁。锁中毒时照常继续：上一个测试 panic 了不该让后面全变红。
+#[cfg(test)]
+pub(crate) fn test_guard() -> std::sync::MutexGuard<'static, ()> {
+    TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[cfg(test)]
 pub(crate) fn set_for_test(pairs: &[(&str, u64)]) {
     let windows = pairs
@@ -315,6 +329,7 @@ mod tests {
     /// 它自己截断后的值 —— 拿它当模型上限，等于替所有人把窗口砍掉。
     #[test]
     fn first_party_beats_a_relay_for_the_same_id() {
+        let _g = test_guard();
         let body = HashMap::from([
             ("some-relay".to_string(), provider(&[("glm-5.2", 262_144)])),
             ("zhipuai".to_string(), provider(&[("glm-5.2", 1_000_000)])),
@@ -326,6 +341,7 @@ mod tests {
     /// 会让同一份输入每次跑出不同的窗口。
     #[test]
     fn first_party_wins_regardless_of_iteration_order() {
+        let _g = test_guard();
         for _ in 0..8 {
             let body = HashMap::from([
                 ("zhipuai".to_string(), provider(&[("glm-5.2", 1_000_000)])),
@@ -339,6 +355,7 @@ mod tests {
     /// 都不是第一方时取最大：小的那个通常是某家自己的截断。
     #[test]
     fn without_a_first_party_entry_the_widest_wins() {
+        let _g = test_guard();
         let body = HashMap::from([
             ("relay-a".to_string(), provider(&[("mystery-1", 128_000)])),
             ("relay-b".to_string(), provider(&[("mystery-1", 400_000)])),
@@ -348,6 +365,7 @@ mod tests {
 
     #[test]
     fn lookup_matches_exact_then_longest_delimited_prefix() {
+        let _g = test_guard();
         set_for_test(&[
             ("claude-opus-5", 1_000_000),
             ("glm-5.3-flash", 1_000_000),
@@ -375,6 +393,7 @@ mod tests {
     /// 高估，死锁的那个方向。所以：不做子串；纯单词键连作前缀都不认。
     #[test]
     fn generic_word_keys_never_match_user_aliases() {
+        let _g = test_guard();
         set_for_test(&[("fast", 1_000_000), ("auto", 2_000_000), ("custom", 128_000)]);
         assert_eq!(lookup("my-fast-model"), None, "子串命中了通用词");
         assert_eq!(lookup("ccload-auto"), None);
@@ -389,6 +408,7 @@ mod tests {
     /// 或者给一个 0。离线首次启动就是这个状态。
     #[test]
     fn an_empty_catalog_defers_to_the_caller() {
+        let _g = test_guard();
         clear_for_test();
         assert_eq!(lookup("claude-opus-5"), None);
         assert!(is_stale(), "没有目录时必须算过期，否则永远不会去拉");

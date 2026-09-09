@@ -1,6 +1,7 @@
 //! 客户端配置的导出 / 导入。
 //!
-//! 导出的是**这个客户端自己的**配置：内核连接方式、模型链。渠道和令牌是内核的
+//! 导出的是**这个客户端自己的**配置：内核连接方式、模型链、强制路由、首选渠道
+//! 钉住、出口别名（模型桥接）。渠道和令牌是内核的
 //! 数据，内核后台自带 CSV 导入导出，不在这里重复一遍（重复一份就要跟着内核的
 //! 字段变化走，迟早对不上）。
 //!
@@ -13,8 +14,11 @@ use tauri::State;
 
 use crate::error::{AppError, AppResult};
 use crate::services::cli_io::write_atomic;
+use crate::services::bridge::{BridgeEntry, BridgeStore};
 use crate::services::fallback::{FallbackChain, FallbackStore};
+use crate::services::forced_route::{ForcedRoute, ForcedRouteStore};
 use crate::services::kernel::KernelConfig;
+use crate::services::pins::{Pin, PinStore};
 use crate::state::AppState;
 
 /// 文件格式版本。字段不兼容时靠它给出人话错误，而不是让 serde 抛一串英文。
@@ -31,6 +35,20 @@ pub struct ConfigBundle {
     pub sandbox_cli_writes: bool,
     pub client_api_token: Option<String>,
     pub fallback_chains: Vec<FallbackChain>,
+    /// 下面三张表都是**后加的**，所以全带 `#[serde(default)]`：老版本导出的文件
+    /// 里没有这些键，不给默认值的话整份文件会读不进来（而它可能是用户唯一一份
+    /// 备份）。`format_version` 不动 —— 加可选字段是向后兼容的。
+    #[serde(default)]
+    pub forced_routes: Vec<ForcedRoute>,
+    /// 首选渠道钉住。落点里的 `channel_id` 是**那台内核**的编号，换一台内核导入
+    /// 就会指向别的渠道 —— 导入时按 id 原样收下，界面上有「钉住的渠道已不在内核
+    /// 里」那条提示兜底。
+    #[serde(default)]
+    pub pins: Vec<Pin>,
+    /// 出口别名（模型桥接）。只带表本身，不带「已经写进哪几个 CLI」——
+    /// 那要在目标机器上显式点「写进 CLI」。
+    #[serde(default)]
+    pub bridge: Vec<BridgeEntry>,
 }
 
 /// 导入前的预览：先让用户看清会覆盖什么，再决定要不要写。
@@ -44,6 +62,10 @@ pub struct ImportPreview {
     pub chain_aliases: Vec<String>,
     /// 会被覆盖掉的本机链（同名的那些）。
     pub overwritten_aliases: Vec<String>,
+    /// 这份文件里另外三张表各有多少条。0 = 文件里没有（老格式）或本来就是空的。
+    pub forced_route_count: usize,
+    pub pin_count: usize,
+    pub bridge_count: usize,
 }
 
 fn store_path(state: &AppState) -> std::path::PathBuf {
@@ -74,6 +96,15 @@ pub async fn config_export(
         sandbox_cli_writes: s.sandbox_cli_writes,
         client_api_token: token,
         fallback_chains: FallbackStore::load(&store_path(&state))?.chains,
+        forced_routes: ForcedRouteStore::load(&crate::commands::forced_route::store_path(&state))
+            .map(|s| s.routes)
+            .unwrap_or_default(),
+        pins: PinStore::load(&crate::commands::pins::store_path(&state))
+            .map(|s| s.pins)
+            .unwrap_or_default(),
+        bridge: BridgeStore::load(&crate::commands::bridge::store_path(&state))
+            .map(|s| s.entries)
+            .unwrap_or_default(),
     };
     drop(s);
 
@@ -123,6 +154,9 @@ pub async fn config_import_preview(
         kernel_endpoint: bundle.kernel.base_url(),
         chain_aliases: incoming,
         overwritten_aliases: overwritten,
+        forced_route_count: bundle.forced_routes.len(),
+        pin_count: bundle.pins.len(),
+        bridge_count: bundle.bridge.len(),
     })
 }
 
@@ -147,6 +181,62 @@ pub async fn config_import(
     let n = chains.len();
     FallbackStore { chains }.save(&path)?;
     done.push(format!("模型链已合并，现共 {n} 条"));
+
+    // 另外三张表同样是**合并**（同名覆盖），不是整表替换：导入别人的一份配置
+    // 不该把本机自己攒的那些删掉。空的就整段跳过，免得在日志里留一堆「现共 0 条」。
+    if !bundle.forced_routes.is_empty() {
+        let p = crate::commands::forced_route::store_path(&state);
+        let mut routes = ForcedRouteStore::load(&p)?.routes;
+        for r in bundle.forced_routes {
+            match routes.iter().position(|x| x.from == r.from) {
+                Some(i) => routes[i] = r,
+                None => routes.push(r),
+            }
+        }
+        let n = routes.len();
+        ForcedRouteStore { routes }.save(&p)?;
+        done.push(format!("强制路由已合并，现共 {n} 条"));
+    }
+
+    if !bundle.pins.is_empty() {
+        let p = crate::commands::pins::store_path(&state);
+        let mut store = PinStore::load(&p)?;
+        for pin in bundle.pins {
+            store.upsert(pin);
+        }
+        let n = store.pins.len();
+        store.save(&p)?;
+        // 落点里的 channel_id 是**导出那台内核**的编号。换一台内核导入就会指向
+        // 别的渠道，所以不在这里替用户写内核 —— 让他去「模型路由」页确认，
+        // 那儿有「钉住的渠道已不在内核里」和「写回内核」两条兜底。
+        done.push(format!(
+            "首选渠道钉住已合并，现共 {n} 条（渠道编号跟着导出那台内核走，请到「模型路由」页确认一遍）"
+        ));
+    }
+
+    if !bundle.bridge.is_empty() {
+        let p = crate::commands::bridge::store_path(&state);
+        let mut store = BridgeStore::load(&p)?;
+        for e in bundle.bridge {
+            let key = crate::services::context_floor::alias_key(&e.alias);
+            match store
+                .entries
+                .iter()
+                .position(|x| crate::services::context_floor::alias_key(&x.alias) == key)
+            {
+                Some(i) => store.entries[i] = e,
+                None => store.entries.push(e),
+            }
+        }
+        let n = store.entries.len();
+        store.save(&p)?;
+        // 只落盘 + 刷代理改写表。**不写 CLI 配置** —— 那会动用户 home 下的真实
+        // 文件，必须是他自己点「写进 CLI」的那一下。
+        crate::commands::bridge::refresh_proxy_rewrites(&state).await;
+        done.push(format!(
+            "出口别名已合并，现共 {n} 条（改写表已生效；要写进各 CLI 请到「模型桥接」页点「写进 CLI」）"
+        ));
+    }
 
     if apply_kernel {
         let mut kernel = bundle.kernel;
@@ -258,5 +348,69 @@ mod redaction_tests {
         );
         assert_eq!(strip_userinfo("http://127.0.0.1:7890"), "http://127.0.0.1:7890");
         assert_eq!(strip_userinfo("not a url"), "not a url");
+    }
+
+    /// 老版本导出的文件里没有后加的那三张表 —— 必须能读进来，而且读成空。
+    ///
+    /// 这是最要紧的一条：那份文件可能是用户唯一一份备份。缺 `#[serde(default)]`
+    /// 的话整份文件会因为「缺字段」直接解析失败，而错误信息只会说某个键不存在。
+    #[test]
+    fn a_v1_bundle_without_the_new_tables_still_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("old.json");
+        std::fs::write(
+            &p,
+            r#"{"format_version":1,"client_kernel_version":"v4.10.0",
+                "includes_secrets":false,
+                "kernel":{"mode":"remote","port":15722,"remote_url":"https://x:8992",
+                          "admin_password":"","data_dir":null},
+                "sandbox_cli_writes":false,"client_api_token":null,
+                "fallback_chains":[]}"#,
+        )
+        .unwrap();
+        let b = read_bundle(p.to_str().unwrap()).unwrap();
+        assert!(b.forced_routes.is_empty());
+        assert!(b.pins.is_empty());
+        assert!(b.bridge.is_empty());
+    }
+
+    /// 新格式来回一趟，三张表都要原样回来。
+    #[test]
+    fn the_new_tables_survive_a_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("new.json");
+        let bundle = ConfigBundle {
+            format_version: FORMAT_VERSION,
+            client_kernel_version: "v4.10.4".into(),
+            includes_secrets: false,
+            kernel: KernelConfig::default(),
+            sandbox_cli_writes: false,
+            client_api_token: None,
+            fallback_chains: Vec::new(),
+            forced_routes: Vec::new(),
+            pins: vec![Pin {
+                alias: "claude-opus-5".into(),
+                targets: vec![crate::services::pins::PinTarget {
+                    channel_id: 15,
+                    channel_name: "Anthropic".into(),
+                    upstream: "claude-opus-5".into(),
+                }],
+                fallback: true,
+            }],
+            bridge: vec![BridgeEntry {
+                alias: "ccload-fast".into(),
+                target: "grok-4.6".into(),
+                context_window: 0,
+                compact_percent: 0,
+                targets: Default::default(),
+                tier: None,
+            }],
+        };
+        std::fs::write(&p, serde_json::to_string(&bundle).unwrap()).unwrap();
+        let back = read_bundle(p.to_str().unwrap()).unwrap();
+        assert_eq!(back.pins.len(), 1);
+        assert_eq!(back.pins[0].targets[0].channel_id, 15);
+        assert_eq!(back.bridge.len(), 1);
+        assert_eq!(back.bridge[0].target, "grok-4.6");
     }
 }

@@ -556,6 +556,24 @@ function MigrationCard() {
                 {t("会覆盖同名的本机链：")}{preview.info.overwritten_aliases.join(t("、"))}
               </li>
             )}
+            {/* 这三张表是后加进导出格式的，老文件里没有 —— 那时全是 0。 */}
+            <li>
+              {t("强制路由 {a} 条 · 首选渠道钉住 {b} 条 · 出口别名 {c} 条", {
+                a: preview.info.forced_route_count,
+                b: preview.info.pin_count,
+                c: preview.info.bridge_count,
+              })}
+            </li>
+            {preview.info.pin_count > 0 && (
+              <li className="text-muted">
+                {t("钉住里的渠道编号跟着导出那台内核走。换一台内核导入的话，导入后到「模型路由」页确认一遍。")}
+              </li>
+            )}
+            {preview.info.bridge_count > 0 && (
+              <li className="text-muted">
+                {t("出口别名只落盘 + 让代理改写生效；要写进各 CLI 的配置文件，导入后到「模型桥接」页点「写进 CLI」。")}
+              </li>
+            )}
           </ul>
           <label className="mt-2.5 flex items-center gap-2">
             <input

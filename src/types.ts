@@ -873,6 +873,10 @@ export type ImportPreview = {
   kernel_endpoint: string;
   chain_aliases: string[];
   overwritten_aliases: string[];
+  /** 这份文件里另外三张表各有多少条。0 = 老格式的文件，或者本来就是空的。 */
+  forced_route_count: number;
+  pin_count: number;
+  bridge_count: number;
 };
 
 /* ---------------------------------------------------------------------------
