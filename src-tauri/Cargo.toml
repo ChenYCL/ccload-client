@@ -38,6 +38,10 @@ base64 = "0.22"
 rand = "0.8"
 dirs = "5"
 tracing = "0.1"
+# 诊断日志必须有订阅者，否则 tracing::info/warn 全是空操作。上一轮 Dock 唤窗
+# 的日志一条都没落地，就是因为从来没 init 过 subscriber。写到 ~/.ccload-client/app.log，
+# Console.app 搜不到也还能 cat。
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "env-filter"] }
 # 版本比较。自己写一个「按点分段比大小」几乎必错在预发布这一段上：我们发的
 # 全是 `0.1.0-beta.20260822.4` 这种，semver 规定带预发布的**小于**同号正式版，
 # 而段内数字要按数值比（`beta.20260822.10` > `beta.20260822.9`，字典序会反）。
@@ -53,7 +57,7 @@ similar = { version = "3.2.0", default-features = false, features = ["text"] }
 # 最小化状态下实测不还原窗口（issue tauri#????），用户表现为「点 Dock 没反应」。
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSUserDefaults", "NSString"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSUserDefaults", "NSString", "NSArray"] }
 objc2-app-kit = "0.3"
 
 [dev-dependencies]

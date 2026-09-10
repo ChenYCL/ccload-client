@@ -558,10 +558,9 @@ pub async fn context_policy_set(
         .retain(|k, v| !k.trim().is_empty() && *v > 0);
     state.settings.write().await.context_policy = policy.clone();
     state.persist().await?;
-    if let Some(proxy) = state.cli_proxy.read().await.as_ref() {
-        let root = state.config_root().await?;
-        proxy.set_window_sync(policy.clone(), root).await;
-    }
+    // 策略变了就重装一次代理的窗口表：它按新策略重算每个出口别名的窗口，
+    // 会话里 /model 换模型时写的就是新数。
+    crate::commands::bridge::refresh_proxy_rewrites(&state).await;
     let root = state.config_root().await?;
     let mut stale = 0usize;
     for t in TARGETS {

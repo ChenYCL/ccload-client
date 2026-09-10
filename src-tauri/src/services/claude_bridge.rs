@@ -52,10 +52,6 @@ pub const PICKER_MARK: &str = "ccLoad";
 /// 从这个版本起 Claude Code 才认 `modelPicker`；更早的版本静默忽略这个键。
 pub const PICKER_MIN_VERSION: &str = "2.1.243";
 
-/// 不认识的 id 借哪个已知模型的客户端档（effort / thinking 开关、提示词档）。
-/// 只给会推理的非 Claude 模型；Claude 自家的 id 它本来就认识。
-const BEHAVES_AS_REASONING: &str = "claude-opus-5";
-
 const SETTINGS: &str = ".claude/settings.json";
 
 /// 磁盘上 6 个槽位现在写着什么（槽位名 → 模型名）。读不到文件就是空表。
@@ -149,11 +145,12 @@ fn capabilities_of(e: &BridgeEntry) -> Option<&'static str> {
     claude_capabilities(e.upstream_alias())
 }
 
-fn behaves_as(e: &BridgeEntry) -> Option<&'static str> {
-    // 厂商前缀不算名字的一部分：`anthropic/claude-sonnet-5` 也是 Claude 自家的。
-    let key = alias_key(&e.alias);
-    let family = key.rsplit('/').next().unwrap_or(&key);
-    (!family.starts_with("claude") && capabilities_of(e).is_some()).then_some(BEHAVES_AS_REASONING)
+fn behaves_as(_e: &BridgeEntry) -> Option<&'static str> {
+    // 不再写 behavesAs。写了 `claude-opus-5` 之后 Claude Code 把 grok/glm 当成
+    // 已知 Opus：窗口走目录的 200k，而且 BL() 对「已知模型」不读
+    // CLAUDE_CODE_MAX_CONTEXT_TOKENS —— 代理按请求改那个键也没用。effort 菜单
+    // 已经靠 CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1 撑着，不必再借档。
+    None
 }
 
 /// 写进 Claude Code 的模型 id：按窗口补 `[1M]` / `[1m]` / `[500k]`。
@@ -535,11 +532,11 @@ mod tests {
         // 我们的行：label 是出口名，描述带记号，改名的写落点。
         assert_eq!(options[1]["description"], "ccLoad");
         assert_eq!(options[2]["description"], "ccLoad → grok-4.6");
-        // behavesAs 只给会推理的非 Claude 模型。
-        assert_eq!(options[1]["behavesAs"], "claude-opus-5");
-        assert_eq!(options[2]["behavesAs"], "claude-opus-5");
-        assert!(options[3].get("behavesAs").is_none(), "Claude 自家的 id 不用借档");
-        assert!(options[4].get("behavesAs").is_none(), "tts 不推理");
+        // behavesAs 不能写：写了 Claude Code 把 grok 当已知 Opus，窗口锁 200k。
+        assert!(options[1].get("behavesAs").is_none());
+        assert!(options[2].get("behavesAs").is_none());
+        assert!(options[3].get("behavesAs").is_none());
+        assert!(options[4].get("behavesAs").is_none());
         // 其它键原样。
         assert_eq!(doc.pointer("/modelPicker/replaceBuiltInOptions"), Some(&Value::Bool(false)));
 

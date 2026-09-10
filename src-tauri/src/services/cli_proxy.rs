@@ -205,6 +205,10 @@ struct ProxyState {
     /// Claude Code 的窗口总控。代理看到 `/model` 切到 grok 时按这个算新的
     /// `CLAUDE_CODE_MAX_CONTEXT_TOKENS`。没装上（start 当时还不知道配置根）就跳过。
     window_policy: Arc<RwLock<ContextPolicy>>,
+    /// 出口别名 → 窗口。窗口按**落点**算（`ccload-fast` 什么都推不出来，背后的
+    /// `grok-4.6` 才是 500k），而 CLI 发来的是别名 —— 不查这张表就会把
+    /// `ccload-fast` 算成 128k 兜底值。键是 `alias_key`（去过后缀、小写）。
+    windows: Arc<RwLock<HashMap<String, u64>>>,
     config_root: Arc<RwLock<Option<ConfigRoot>>>,
     last_claude_window: Arc<std::sync::atomic::AtomicU64>,
 }
@@ -237,6 +241,7 @@ impl CliProxy {
             records: Arc::new(RwLock::new(Vec::new())),
             http: Arc::new(RwLock::new(cli_proxy_client(cfg)?)),
             window_policy: Arc::new(RwLock::new(ContextPolicy::default())),
+            windows: Arc::new(RwLock::new(HashMap::new())),
             config_root: Arc::new(RwLock::new(None)),
             last_claude_window: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         });
@@ -306,9 +311,16 @@ impl CliProxy {
         *self.state.inject.write().await = cfg.normalized();
     }
 
-    /// 装上窗口同步要用的策略和配置根。`last` 清零，好让下一条请求按新策略写一次。
-    pub async fn set_window_sync(&self, policy: ContextPolicy, root: ConfigRoot) {
+    /// 装上窗口同步要用的策略、别名表、配置根。`last` 清零，好让下一条请求按
+    /// 新策略写一次。
+    pub async fn set_window_sync(
+        &self,
+        policy: ContextPolicy,
+        windows: HashMap<String, u64>,
+        root: ConfigRoot,
+    ) {
         *self.state.window_policy.write().await = policy;
+        *self.state.windows.write().await = windows;
         *self.state.config_root.write().await = Some(root);
         self.state
             .last_claude_window
@@ -333,6 +345,22 @@ impl Drop for CliProxy {
     }
 }
 
+/// CLI 发来的模型名该用多大窗口。
+///
+/// 先查出口别名表 —— 窗口是按**落点**算的（`ccload-fast` 什么都推不出来，它
+/// 背后的 `grok-4.6` 才是 500k），而 CLI 发来的恰恰是别名。查不到才按名字纯推断。
+/// 名字带 `[1M]` / `[500k]` 后缀也认：查表用 `alias_key`（去后缀、小写）。
+fn window_for(
+    model: &str,
+    windows: &HashMap<String, u64>,
+    policy: &ContextPolicy,
+) -> u64 {
+    windows
+        .get(&alias_key(model))
+        .copied()
+        .unwrap_or_else(|| policy.resolve(model).unwrap_or(0))
+}
+
 /// Claude Code 会话里换模型时，按这个模型的窗口改 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`。
 ///
 /// 不阻塞转发：CLI 这一轮的状态栏多半已经按旧窗口算过了，改文件是给下一轮
@@ -345,15 +373,21 @@ fn kick_claude_window_sync(state: &Arc<ProxyState>, model: &str) {
         let Some(root) = state.config_root.read().await.clone() else {
             return;
         };
-        let policy = state.window_policy.read().await.clone();
-        let w = policy.window_of(&model);
+        // 先查出口别名表（窗口按落点算出来的那个数），查不到再按名字纯推断。
+        let (w, pct) = {
+            let windows = state.windows.read().await;
+            let policy = state.window_policy.read().await;
+            (
+                window_for(&model, &windows, &policy),
+                policy.percent(),
+            )
+        };
         if w == 0 {
             return;
         }
         if state.last_claude_window.load(std::sync::atomic::Ordering::Relaxed) == w {
             return;
         }
-        let pct = policy.percent();
         let last = Arc::clone(&state.last_claude_window);
         let wrote = tokio::task::spawn_blocking(move || sync_claude_window_env(&root, w, Some(pct)))
             .await;
@@ -1835,6 +1869,39 @@ mod tests {
             .collect()
     }
 
+    /// 出口别名按**落点**的窗口算：`ccload-fast` 背后是 grok-4.6（500k），
+    /// 不查表就会按这个名字推断 —— 那是个我们编的词，什么都推不出来。
+    /// 带窗口后缀的写法（`grok-4.6[500k]`）也要命中同一条。
+    #[test]
+    fn the_window_of_an_egress_alias_comes_from_its_landing_model() {
+        let policy = ContextPolicy::default();
+        let mut windows = HashMap::new();
+        windows.insert(alias_key("ccload-fast"), 500_000);
+        windows.insert(alias_key("grok-4.6"), 500_000);
+        assert_eq!(window_for("ccload-fast", &windows, &policy), 500_000);
+        assert_eq!(window_for("grok-4.6[500k]", &windows, &policy), 500_000);
+        assert_eq!(window_for("Claude-Opus-5[1M]", &windows, &policy), 1_000_000);
+        assert_eq!(window_for("unknown-alias", &windows, &policy), 128_000);
+        // 总控「不写入」时不该报一个凭空的数。
+        let off = ContextPolicy { mode: crate::services::context_window::ContextMode::Off, ..policy };
+        assert_eq!(window_for("unknown-alias", &windows, &off), 0);
+    }
+
+    /// 表里存的是「出口别名 → 窗口」，代理拿到的却是带后缀的名字 —— 两边都要
+    /// 命中同一条，否则 /model 里选 `grok-4.6[500k]` 会掉进名字推断那一档。
+    #[test]
+    fn suffix_and_case_do_not_miss_the_alias_table() {
+        let mut windows = HashMap::new();
+        windows.insert(alias_key("ccload-fast"), 500_000);
+        for name in ["ccload-fast", "CCLOAD-FAST", "ccload-fast[1M]", "ccload-fast[1m]"] {
+            assert_eq!(
+                window_for(name, &windows, &ContextPolicy::default()),
+                500_000,
+                "{name} 没命中"
+            );
+        }
+    }
+
     #[test]
     fn claude_code_is_detected_by_its_session_header() {
         let hs = h(&[
@@ -1999,6 +2066,7 @@ mod e2e {
                     inject: Arc::new(RwLock::new(InjectConfig::default())),
                     http: test_proxy_http(),
                     window_policy: Arc::new(RwLock::new(Default::default())),
+                    windows: Arc::new(RwLock::new(Default::default())),
                     config_root: Arc::new(RwLock::new(None)),
                     last_claude_window: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 }),
@@ -2134,6 +2202,7 @@ mod sse {
                     inject: Arc::new(RwLock::new(InjectConfig::default())),
                     http: test_proxy_http(),
                     window_policy: Arc::new(RwLock::new(Default::default())),
+                    windows: Arc::new(RwLock::new(Default::default())),
                     config_root: Arc::new(RwLock::new(None)),
                     last_claude_window: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 }),
@@ -2236,6 +2305,7 @@ mod chunked_req {
                     inject: Arc::new(RwLock::new(InjectConfig::default())),
                     http: test_proxy_http(),
                     window_policy: Arc::new(RwLock::new(Default::default())),
+                    windows: Arc::new(RwLock::new(Default::default())),
                     config_root: Arc::new(RwLock::new(None)),
                     last_claude_window: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 }),
@@ -2482,6 +2552,7 @@ mod availability_tests {
                     inject: Arc::new(RwLock::new(InjectConfig::default())),
                     http: test_proxy_http(),
                     window_policy: Arc::new(RwLock::new(Default::default())),
+                    windows: Arc::new(RwLock::new(Default::default())),
                     config_root: Arc::new(RwLock::new(None)),
                     last_claude_window: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 }),
@@ -2534,6 +2605,7 @@ mod availability_tests {
                     inject: Arc::new(RwLock::new(InjectConfig::default())),
                     http: test_proxy_http(),
                     window_policy: Arc::new(RwLock::new(Default::default())),
+                    windows: Arc::new(RwLock::new(Default::default())),
                     config_root: Arc::new(RwLock::new(None)),
                     last_claude_window: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 }),
@@ -2833,6 +2905,7 @@ mod pin_tests {
                     inject: Arc::new(RwLock::new(InjectConfig::default())),
                     http: test_proxy_http(),
                     window_policy: Arc::new(RwLock::new(Default::default())),
+                    windows: Arc::new(RwLock::new(Default::default())),
                     config_root: Arc::new(RwLock::new(None)),
                     last_claude_window: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 }),
@@ -3144,6 +3217,7 @@ mod rescue_tests {
                     inject: Arc::new(RwLock::new(InjectConfig::default())),
                     http: test_proxy_http(),
                     window_policy: Arc::new(RwLock::new(Default::default())),
+                    windows: Arc::new(RwLock::new(Default::default())),
                     config_root: Arc::new(RwLock::new(None)),
                     last_claude_window: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 }),
@@ -3263,6 +3337,7 @@ mod rescue_tests {
             })),
             http: test_proxy_http(),
             window_policy: Arc::new(RwLock::new(Default::default())),
+            windows: Arc::new(RwLock::new(Default::default())),
             config_root: Arc::new(RwLock::new(None)),
             last_claude_window: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         });
@@ -3345,6 +3420,7 @@ mod ws_tunnel {
                     inject: Arc::new(RwLock::new(InjectConfig::default())),
                     http: test_proxy_http(),
                     window_policy: Arc::new(RwLock::new(Default::default())),
+                    windows: Arc::new(RwLock::new(Default::default())),
                     config_root: Arc::new(RwLock::new(None)),
                     last_claude_window: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 }),
@@ -3429,6 +3505,7 @@ mod ws_tunnel {
                     inject: Arc::new(RwLock::new(InjectConfig::default())),
                     http: test_proxy_http(),
                     window_policy: Arc::new(RwLock::new(Default::default())),
+                    windows: Arc::new(RwLock::new(Default::default())),
                     config_root: Arc::new(RwLock::new(None)),
                     last_claude_window: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 }),
@@ -3676,6 +3753,7 @@ mod ws_tunnel {
                     inject: Arc::new(RwLock::new(InjectConfig::default())),
                     http: test_proxy_http(),
                     window_policy: Arc::new(RwLock::new(Default::default())),
+                    windows: Arc::new(RwLock::new(Default::default())),
                     config_root: Arc::new(RwLock::new(None)),
                     last_claude_window: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 }),
@@ -3746,6 +3824,7 @@ mod ws_tunnel {
                     inject: Arc::new(RwLock::new(InjectConfig::default())),
                     http: test_proxy_http(),
                     window_policy: Arc::new(RwLock::new(Default::default())),
+                    windows: Arc::new(RwLock::new(Default::default())),
                     config_root: Arc::new(RwLock::new(None)),
                     last_claude_window: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 }),
@@ -3817,6 +3896,7 @@ mod ws_tunnel {
                     inject: Arc::new(RwLock::new(InjectConfig::default())),
                     http: test_proxy_http(),
                     window_policy: Arc::new(RwLock::new(Default::default())),
+                    windows: Arc::new(RwLock::new(Default::default())),
                     config_root: Arc::new(RwLock::new(None)),
                     last_claude_window: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 }),

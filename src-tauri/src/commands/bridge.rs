@@ -65,15 +65,36 @@ pub struct BridgeWrite {
 /// warn：代理照常转发，只是没有改写（同名记录本来就不需要改写，改名的那些会
 /// 落到内核的 404，用户在日志里看得见）。
 pub(crate) async fn refresh_proxy_rewrites(state: &AppState) {
-    let rewrites = match BridgeStore::load(&store_path(state)) {
-        Ok(store) => store.rewrites(),
+    let store = match BridgeStore::load(&store_path(state)) {
+        Ok(store) => store,
         Err(e) => {
             tracing::warn!("bridge: store unreadable, proxy runs without rewrites: {e}");
             return;
         }
     };
+    let rewrites = store.rewrites();
+    // 顺带把「出口别名 → 窗口」推进代理：Claude Code 会话里 /model 换模型时
+    // 要按这个数改 CLAUDE_CODE_MAX_CONTEXT_TOKENS。窗口按**落点**算，所以别名
+    // 和落点两个键都要有 —— CLI 发来的是别名。
+    let policy = state.settings.read().await.context_policy.clone();
+    let mut windows = std::collections::HashMap::new();
+    for e in &store.entries {
+        if !e.targets.contains(&CliTarget::ClaudeCode) {
+            continue;
+        }
+        let w = e.window(&policy);
+        if w == 0 {
+            continue;
+        }
+        use crate::services::context_floor::alias_key;
+        windows.insert(alias_key(e.alias.trim()), w);
+        windows.insert(alias_key(e.upstream_alias()), w);
+    }
     if let Some(proxy) = state.cli_proxy.read().await.as_ref() {
         proxy.set_rewrites(rewrites).await;
+        if let Ok(root) = state.config_root().await {
+            proxy.set_window_sync(policy, windows, root).await;
+        }
     }
 }
 

@@ -16,69 +16,83 @@ fn show_main_window(app: &tauri::AppHandle) {
     #[cfg(target_os = "macos")]
     {
         let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
-        // ⌘H / Dock 右键「隐藏」是**应用级**隐藏：窗口自己还是 visible，被藏起来
-        // 的是整个 NSApplication。那种状态下 `window.show()` 是空操作 —— 托盘的
-        // 「显示窗口」点了没反应就是这么来的。先把 app 自己 unhide 回来。
-        let _ = app.show();
+        // 不走 Tauri 的 w.show()/ns_window()：Reopen 回调已经在事件循环里，
+        // 那些 API 会 send_user_message 再进主线程，实测就是 AppKit 日志里的
+        // 「order all windows front 0」—— activate 跑了，那扇被 orderOut 的
+        // TaoWindow 没被点名。直接扫 NSApp.windows 才碰得到它。
+        show_windows_via_appkit();
     }
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
-        // tao 的 unminimize 在窗口最小化时实测不还原（发 deminiaturize 但窗口
-        // 纹丝不动），先保留它管非 macOS，macOS 走下面那条原生路径。
         let _ = w.unminimize();
-        #[cfg(target_os = "macos")]
-        force_window_front(&w);
         let _ = w.set_focus();
-        let _ = w.request_user_attention(Some(tauri::UserAttentionType::Informational));
         tracing::info!(
-            "show_main_window: window shown (visible={:?})",
+            "show_main_window: tauri handle visible={:?}",
             w.is_visible().ok()
         );
     } else {
-        // 窗口 manager 里没有 "main" 了 —— 说明窗口被销毁而不是隐藏。此时任何
-        // show 都无从谈起；没有日志的话用户点 Dock 就是纯粹的没反应。
         tracing::warn!("show_main_window: main window handle is gone");
     }
 }
 
-/// macOS：绕开运行时封装，直接对 NSWindow 做 deminiaturize + makeKeyAndOrderFront。
-///
-/// 本函数只从主线程的事件回调里调（托盘菜单/托盘点击/RunEvent::Reopen），
-/// `MainThreadMarker::new()` 失败说明调用点挪了位置，此时退回上面那组封装调用，
-/// 不做不安全假设。
+/// 遍历 NSApp 的窗口，跳过状态栏，对其余的 deminiaturize + makeKeyAndOrderFront。
 #[cfg(target_os = "macos")]
-fn force_window_front(w: &tauri::WebviewWindow) {
-    use objc2::rc::Retained;
+fn show_windows_via_appkit() {
     use objc2::MainThreadMarker;
-    use objc2_app_kit::{NSApplication, NSWindow};
+    use objc2_app_kit::NSApplication;
 
     let Some(mtm) = MainThreadMarker::new() else {
+        tracing::warn!("show_windows_via_appkit: not on main thread");
         return;
     };
-    let Ok(ptr) = w.ns_window() else {
-        return;
-    };
-    let Some(ptr) = std::ptr::NonNull::new(ptr.cast::<NSWindow>()) else {
-        return;
-    };
-    // +1 引用计数；ns_window() 给的是借来的指针。
-    let ns: Option<Retained<NSWindow>> = unsafe { Retained::retain(ptr.as_ptr()) };
-    let Some(ns) = ns else {
-        return;
-    };
-    if ns.isMiniaturized() {
-        ns.deminiaturize(None);
-    }
-    ns.makeKeyAndOrderFront(None);
-    // objc2 0.3 里 activate() 无参且标记为安全（老式 activateIgnoringOtherApps
-    // 已废弃）。macOS 14+ 的 activate() 是「尽力而为」：从 Dock 点击进来时本 app
-    // 还不是 active，协同激活常被系统拒绝 —— 拒了之后窗口只在背后 orderFront，
-    // 用户看到的还是「点了没反应」。所以被拒时用老 API 强抢一次。
     let app = NSApplication::sharedApplication(mtm);
-    app.activate();
-    if !app.isActive() {
-        #[allow(deprecated)]
-        app.activateIgnoringOtherApps(true);
+    app.unhide(None);
+    let windows = app.windows();
+    let n = windows.count();
+    tracing::info!("show_windows_via_appkit: NSApp.windows={n}");
+    for i in 0..n {
+        let w = windows.objectAtIndex(i);
+        let cls = w.class().name().to_string_lossy().into_owned();
+        if cls.contains("StatusBar") || cls.contains("NSStatus") {
+            continue;
+        }
+        if w.isMiniaturized() {
+            w.deminiaturize(None);
+        }
+        w.makeKeyAndOrderFront(None);
+        tracing::info!(
+            "ordered front class={cls} visible={}",
+            w.isVisible()
+        );
+    }
+    #[allow(deprecated)]
+    app.activateIgnoringOtherApps(true);
+}
+
+fn init_tracing() {
+    let dir = dirs::home_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(".ccload-client");
+    let _ = std::fs::create_dir_all(&dir);
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("app.log"));
+    let env = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    match file {
+        Ok(f) => {
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(env)
+                .with_writer(std::sync::Mutex::new(f))
+                .with_ansi(false)
+                .try_init();
+        }
+        Err(_) => {
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(env)
+                .try_init();
+        }
     }
 }
 
@@ -96,6 +110,8 @@ pub fn run() {
     if std::env::args().nth(1).as_deref() == Some("image-mcp") {
         std::process::exit(services::image_mcp::serve_stdio());
     }
+
+    init_tracing();
 
     // 必须在 WebView 建出来之前：这些键是启动时读一次的。
     platform::disable_automatic_text_substitutions();
