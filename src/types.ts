@@ -44,11 +44,12 @@ export type TakeoverPreview = {
   /** Model this CLI will send on the next launch, if we can read one. */
   current_model?: string | null;
   /**
-   * Claude Code 磁盘上那 6 个位置现在写着什么（default/opus/sonnet/haiku/fable/custom）。
-   * 导入是「追加不改写」的，没人认领的槽位不会被动 —— 界面要把这件事显示出来，
-   * 否则用户清空一个槽位、点了写入，发现 /model 里那一项还在。
+   * Claude Code 磁盘上那 6 个槽位现在写着什么（default/opus/sonnet/haiku/fable/custom）。
+   * 表里的名字和磁盘对不上时界面要显示出来：还没写入，或者空出的槽位写入时会被清掉。
    */
   claude_slots?: Record<string, string>;
+  /** 磁盘上 modelPicker.options[] 里的模型名，按文件顺序。 */
+  claude_picker?: string[];
 };
 
 export type TakeoverResult = {
@@ -324,8 +325,11 @@ export type BridgeEntry = {
   compactPercent: number;
   /** 哪几家 CLI 要写它。 */
   targets: CliTarget[];
-  /** Claude Code 的槽位。null / "none" = 不绑。 */
-  tier?: string | null;
+  /**
+   * 这一行占的 Claude Code 槽位，可以几个同占（主模型和 opus 都是 claude-opus-5
+   * 是最常见的配法）。空 = 不占槽位，勾了 Claude Code 的话进 modelPicker 列表。
+   */
+  tiers?: string[];
 };
 
 export type BridgeOutcome = {

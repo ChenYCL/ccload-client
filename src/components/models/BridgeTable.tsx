@@ -27,9 +27,9 @@ import type { BridgeEntry, CliTarget } from "../../types";
 ///
 /// # 为什么勾选是「按 CLI」的
 ///
-/// Claude Code 没有模型目录，只有 5 个槽位；OpenCode 能装下全部 83 个。以前一张
-/// 勾选表推给所有 CLI，结果是「勾了 83 个，导入 Claude Code 写了 0 个」。现在
-/// 上面的 tab 决定你在编辑哪一家，勾选框的含义就是「写进这一家」——
+/// Claude Code 没有模型目录，是 6 个具名槽位加一份 modelPicker 列表；OpenCode 能
+/// 装下全部 83 个。以前一张勾选表推给所有 CLI，结果是「勾了 83 个，导入 Claude Code
+/// 写了 0 个」。现在上面的 tab 决定你在编辑哪一家，勾选框的含义就是「写进这一家」——
 /// 每一行自己记着它属于哪几家。
 ///
 /// # 窗口和阈值为什么在这里
@@ -43,11 +43,10 @@ const IMPORT_TARGETS: CliTarget[] = ["claude-code", "codex", "opencode", "grok-b
 /// 总控没填时的阈值。和后端 `DEFAULT_COMPACT_PERCENT` 是同一个数。
 const DEFAULT_PERCENT = 90;
 
-/// 这一行占的 Claude 槽位。`""` / `"none"` 和 `null` 都是「没占槽位」。
-/// 和后端 `BridgeEntry::slot()` 同一套判断。
-function slotOf(r: BridgeEntry): string | null {
-  const s = (r.tier ?? "").trim();
-  return s === "" || s === "none" ? null : s;
+/// 这一行占的 Claude 槽位。`""` / `"none"` 都是「没占」，和后端 `BridgeEntry::slots()`
+/// 同一套判断。可以同时占几个：主模型和 opus 都是 claude-opus-5 是最常见的配法。
+function slotsOf(r: BridgeEntry): string[] {
+  return (r.tiers ?? []).map((s) => s.trim()).filter((s) => s !== "" && s !== "none");
 }
 
 const blank = (targets: CliTarget[]): BridgeEntry => ({
@@ -56,7 +55,7 @@ const blank = (targets: CliTarget[]): BridgeEntry => ({
   contextWindow: 0,
   compactPercent: 0,
   targets,
-  tier: null,
+  tiers: [],
 });
 
 export function BridgeTable({
@@ -79,8 +78,8 @@ export function BridgeTable({
   // 的数会不一样 —— 设置里把 grok 手填成 300k，这里却还显示 500k。而「看得见
   // 会写成多少」正是这张表存在的理由。
   const policy = useQuery({ queryKey: ["context-policy"], queryFn: api.contextPolicyGet });
-  // 磁盘上那几个槽位现在写着什么。导入是「追加不改写」的 —— 表里空着的槽位
-  // 不会被清掉，不显示出来的话用户会以为清空了就生效了。
+  // 磁盘上那几个槽位和 modelPicker 现在写着什么。表和磁盘对不上的地方（还没
+  // 写入、或者空出的槽位写入时会被清掉）要显示出来，不然用户只能靠猜。
   const preview = useQuery({
     queryKey: ["cli-preview"],
     queryFn: api.cliPreviewAll,
@@ -342,9 +341,9 @@ export function BridgeTable({
           </p>
         </div>
       ) : tab === "claude-code" ? (
-        /* Claude Code 没有模型目录文件，能承载模型的地方就是这 6 个位置。
-           给它一张 82 行的勾选表，等于让人在 76 个不产生任何写入的复选框里
-           找那 5 个有用的 —— 那正是用户说的「操作很不清晰」。 */
+        /* Claude Code 没有模型目录文件：6 个具名槽位 + 一份列表。给它一张 82 行
+           的勾选表，用户就得在 82 个复选框里找出该占槽位的那 6 个 —— 那正是用户
+           说的「操作很不清晰」。这里把菜单的形状直接画出来。 */
         <ClaudeSlots
           rows={rows}
           aliases={aliases}
@@ -352,6 +351,9 @@ export function BridgeTable({
           onChange={set}
           onDisk={
             (preview.data ?? []).find((x) => x.target === "claude-code")?.claude_slots ?? {}
+          }
+          pickerOnDisk={
+            (preview.data ?? []).find((x) => x.target === "claude-code")?.claude_picker ?? []
           }
         />
       ) : (
@@ -497,25 +499,35 @@ export function BridgeTable({
 ///
 /// # 为什么这一家不给表格
 ///
-/// Claude Code **没有模型目录文件**。它能承载模型的位置一共 6 个：5 个环境变量
-/// 槽位（`ANTHROPIC_MODEL` + `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU,FABLE}_MODEL`）
-/// 加一个 `ANTHROPIC_CUSTOM_MODEL_OPTION`。`/model` 菜单里看到的就是这 6 行。
-///
-/// 所以「勾 82 个模型给 Claude Code」是个没有意义的操作：76 个会被静默跳过，
-/// 用户却要在 82 个复选框里找那 5 个真的有用的。这里直接把菜单的形状画出来 ——
+/// Claude Code **没有模型目录文件**。它的 `/model` 菜单由三部分拼成：5 个环境变量
+/// 槽位（`ANTHROPIC_MODEL` + `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU,FABLE}_MODEL`）、
+/// 一个 `ANTHROPIC_CUSTOM_MODEL_OPTION`，以及 settings.json 里的 `modelPicker` 列表
+/// （Claude Code 2.1.243 起）。前六个是具名位置，这里直接把菜单的形状画出来 ——
 /// 左边是槽位，右边选一个别名，旁边写清楚它会写成多大窗口、在哪儿触发压缩。
+/// 剩下勾了 Claude Code 的行全部进列表，一行一个 chip，想放多少放多少。
 ///
-/// # 一个槽位只能有一行
+/// # 一个槽位只能有一行，一行可以占几个槽位
 ///
 /// 两行认领同一个槽位在后端是硬错误（静默后来居上是修过的老 bug）。这里从形状上
-/// 就杜绝了：一个槽位一个下拉，选新的自动把旧的那行摘下来。
+/// 就杜绝了：一个槽位一个下拉，选新的自动把旧的那行摘下来。反过来是允许的：
+/// 主模型和 opus 都填 claude-opus-5 是最常见的配法，单槽位的模型表达不了它，
+/// 表现就是用户磁盘上明明有值、这里却显示空着。
 const CLAUDE_SLOTS: { id: string; label: string; env: string; hint: string }[] = [
   { id: "default", label: "主模型", env: "ANTHROPIC_MODEL", hint: "不选模型时用的那个" },
   { id: "opus", label: "opus", env: "ANTHROPIC_DEFAULT_OPUS_MODEL", hint: "/model 里的 Custom Opus" },
   { id: "sonnet", label: "sonnet", env: "ANTHROPIC_DEFAULT_SONNET_MODEL", hint: "/model 里的 Custom Sonnet" },
   { id: "haiku", label: "haiku", env: "ANTHROPIC_DEFAULT_HAIKU_MODEL", hint: "子代理和后台任务走它" },
   { id: "fable", label: "fable", env: "ANTHROPIC_DEFAULT_FABLE_MODEL", hint: "/model 里的 Custom Fable" },
+  { id: "custom", label: "自定义项", env: "ANTHROPIC_CUSTOM_MODEL_OPTION", hint: "菜单末尾多出来的一行" },
 ];
+
+/// 从这个版本起 Claude Code 才认 modelPicker。和后端 `PICKER_MIN_VERSION` 是同一个数。
+const PICKER_MIN_VERSION = "2.1.243";
+
+const withClaude = (r: BridgeEntry): BridgeEntry => ({
+  ...r,
+  targets: [...new Set<CliTarget>([...r.targets, "claude-code"])],
+});
 
 function ClaudeSlots({
   rows,
@@ -523,6 +535,7 @@ function ClaudeSlots({
   resolve,
   onChange,
   onDisk,
+  pickerOnDisk,
 }: {
   rows: BridgeEntry[];
   aliases: string[];
@@ -530,10 +543,12 @@ function ClaudeSlots({
   onChange: (next: BridgeEntry[]) => void;
   /// 磁盘上这几个槽位现在写着什么。槽位 id → 模型名。
   onDisk: Record<string, string>;
+  /// 磁盘上 modelPicker 里我们写的那些行。
+  pickerOnDisk: string[];
 }) {
   const t = useT();
   const mine = (r: BridgeEntry) => r.targets.includes("claude-code");
-  const inSlot = (slot: string) => rows.find((r) => mine(r) && slotOf(r) === slot);
+  const inSlot = (slot: string) => rows.find((r) => mine(r) && slotsOf(r).includes(slot));
 
   // 候选：表里已有的出口别名 + 内核别名。前者在前 —— 那是用户自己配过的。
   const options = useMemo(
@@ -547,20 +562,19 @@ function ClaudeSlots({
 
   /// 把某个槽位换成 `alias`。空字符串 = 空出这个槽位。
   ///
-  /// 旧占用者要**摘干净**：只清 tier 不清 targets 的话它会掉进「勾了 Claude Code
-  /// 但没占槽位」那一堆里，然后悄悄变成 `/model` 的自定义项。
-  const assign = (slot: string | null, alias: string) => {
+  /// 旧占用者只摘掉这个槽位，Claude Code 的勾**不动**：它还占着别的槽位就留在
+  /// 那儿，一个都不占了就掉进下面的列表 —— 看得见，真不要了去列表里点 ×。
+  /// 以前是顺手取消勾选，那时列表还是隐形的，掉进去等于凭空消失。
+  const assign = (slot: string, alias: string) => {
     const want = alias.trim();
     let next = rows.map((r) => {
-      const isOld = mine(r) && slotOf(r) === slot;
-      const isNew = want !== "" && r.alias.trim() === want;
       let out = r;
-      if (isOld && !isNew) {
-        out = { ...out, tier: null, targets: out.targets.filter((x) => x !== "claude-code") };
+      const isNew = want !== "" && r.alias.trim() === want;
+      if (slotsOf(r).includes(slot) && !isNew) {
+        out = { ...out, tiers: slotsOf(out).filter((s) => s !== slot) };
       }
       if (isNew) {
-        const with_cc: CliTarget[] = [...new Set<CliTarget>([...out.targets, "claude-code"])];
-        out = { ...out, tier: slot, targets: with_cc };
+        out = withClaude({ ...out, tiers: [...new Set([...slotsOf(out), slot])] });
       }
       return out;
     });
@@ -568,27 +582,56 @@ function ClaudeSlots({
     if (want && !rows.some((r) => r.alias.trim() === want)) {
       next = [
         ...next,
-        { alias: want, target: want, contextWindow: 0, compactPercent: 0, targets: ["claude-code"] as CliTarget[], tier: slot },
+        { alias: want, target: want, contextWindow: 0, compactPercent: 0, targets: ["claude-code"] as CliTarget[], tiers: [slot] },
       ];
     }
     onChange(next);
   };
 
-  // 勾了 Claude Code 却没占槽位的那些。第一个会成为 /model 里的自定义项，
-  // 其余**一个字都不会被写入** —— 不说的话用户会以为它们生效了。
-  const unslotted = rows.filter((r) => mine(r) && slotOf(r) === null);
-  const custom = unslotted[0];
+  // 勾了 Claude Code 却没占槽位的那些：全部写进 modelPicker，一行一个 chip。
+  // 以前这一堆是隐形的 —— 用户勾了 82 个、看到「已写入」，然后发现 /model 里
+  // 还是那 5 个。
+  const picker = rows.filter((r) => mine(r) && slotsOf(r).length === 0);
+  // 表里还没勾 Claude Code 的行 —— 「全放进来」动的就是它们。
+  const rest = rows.filter((r) => !mine(r) && r.alias.trim() !== "");
+  const [pick, setPick] = useState("");
+
+  /// 把这些名字勾给 Claude Code（不占槽位 → 进列表）。表里没有的补一行。
+  const addToPicker = (names: string[]) => {
+    const want = new Set(names.map((a) => a.trim()).filter(Boolean));
+    if (want.size === 0) return;
+    let next = rows.map((r) => (want.has(r.alias.trim()) ? withClaude(r) : r));
+    for (const a of want) {
+      if (!rows.some((r) => r.alias.trim() === a)) {
+        next = [
+          ...next,
+          { alias: a, target: a, contextWindow: 0, compactPercent: 0, targets: ["claude-code"] as CliTarget[], tiers: [] },
+        ];
+      }
+    }
+    onChange(next);
+  };
+  const removeFromPicker = (row: BridgeEntry) =>
+    onChange(
+      rows.map((r) => (r === row ? { ...r, targets: r.targets.filter((x) => x !== "claude-code") } : r)),
+    );
+
+  // 磁盘上 modelPicker 里我们的行和这里对不对得上（忽略顺序）。对不上就像槽位
+  // 那样标一个「磁盘：N 行」—— 写入是显式动作，没写之前界面不能装作已经写了。
+  const pickerSynced = useMemo(() => {
+    const here = [...new Set(picker.map((r) => r.alias.trim()))].sort();
+    const disk = [...new Set(pickerOnDisk.map((s) => s.trim()))].sort();
+    return here.length === disk.length && here.every((x, i) => x === disk[i]);
+  }, [picker, pickerOnDisk]);
 
   return (
     <div className="card divide-y divide-border">
       <p className="px-4 py-3 text-xs text-muted">
-        {t("Claude Code 没有模型目录文件，能放模型的地方就是下面这 6 个，/model 菜单里看到的就是它们。每一行三段：槽位 · 写进 CLI 的名字 → 它到了内核落在哪个别名上。两个框都能改。")}
-        {/* 「为什么只有 6 个」是这一页最常被问的一句。限制来自 Claude Code
-            本身（5 个 tier 环境变量 + 1 个自定义项），不是我们的取舍；而
-            `--model` 不受它限制，所以要一起说，否则用户会以为剩下 89 个模型
-            在 Claude Code 里根本用不了。 */}
+        {t("Claude Code 没有模型目录文件。/model 菜单 = 下面 6 个槽位 + 一份 modelPicker 列表。每一行三段：槽位 · 写进 CLI 的名字 → 它到了内核落在哪个别名上，两个框都能改。一个名字可以同时占几个槽位。")}
+        {/* 「为什么只有 6 个」曾经是这一页最常被问的一句。现在 6 个之外还有
+            modelPicker 列表，整张表都放得进 /model；`--model` 也仍然不受限制。 */}
         <span className="mt-1 block text-muted/80">
-          {t("6 个是 Claude Code 自己的上限（5 个 tier 环境变量 + 1 个自定义项），不是这一页的取舍。菜单外的模型仍然能用：启动时加 --model <名字>，或者在会话里 /model <名字>，任何一个出口别名都认。")}
+          {t("读表时磁盘上已有的槽位会先收进来；写入时这里空着的槽位会被清掉。槽位放不下的模型进最下面的列表，整张表都能放进 /model；任何出口别名也都能用 --model <名字> 直接选。")}
         </span>
       </p>
       {CLAUDE_SLOTS.map((s) => {
@@ -651,6 +694,18 @@ function ClaudeSlots({
                       {t("改写")}
                     </span>
                   )}
+                  {/* 同一行还占着别的槽位时说一声：改这一行的落点或窗口，那几个
+                      槽位一起变 —— 它们本来就是同一条记录。 */}
+                  {slotsOf(row).length > 1 && (
+                    <span className="text-[11px] text-muted">
+                      {t("同时占着：{slots}", {
+                        slots: slotsOf(row)
+                          .filter((x) => x !== s.id)
+                          .map((x) => t(CLAUDE_SLOTS.find((c) => c.id === x)?.label ?? x))
+                          .join(" / "),
+                      })}
+                    </span>
+                  )}
                 </>
               ) : (
                 <span className="text-[11px] text-muted">{t(s.hint)}</span>
@@ -661,72 +716,81 @@ function ClaudeSlots({
         );
       })}
 
-      {/* 第 6 个位置。它不是槽位，是 /model 菜单末尾多出来的那一行。 */}
+      {/* 第 7 段：modelPicker 列表。槽位之外还想放进 /model 的模型都在这里，
+          想放多少放多少 —— 「为什么只有 6 个」这个问题从此不成立。 */}
       <div className="px-4 py-2.5">
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+        <div className="flex flex-wrap items-start gap-x-2 gap-y-1.5">
           <div className="w-28 shrink-0">
-            <div className="text-sm font-medium">{t("自定义项")}</div>
-            <div className="font-mono text-[10px] leading-tight text-muted/70">
-              ANTHROPIC_CUSTOM_MODEL_OPTION
-            </div>
+            <div className="text-sm font-medium">{t("菜单里的其它模型")}</div>
+            <div className="font-mono text-[10px] leading-tight text-muted/70">modelPicker</div>
           </div>
-          <ComboBox
-            className="min-w-0 flex-1"
-            aria-label={t("/model 菜单里额外的一行")}
-            value={custom?.alias ?? ""}
-            onChange={(v) => assign(null, v)}
-            placeholder={t("空着 —— /model 里不多这一行")}
-            options={options}
-            emptyHint={t("内核里还没有别名，先去内核后台建渠道")}
-          />
-          <span aria-hidden className="shrink-0 text-muted/60">
-            →
-          </span>
-          <ComboBox
-            className="min-w-0 flex-1"
-            aria-label={t("自定义项落到哪个内核别名")}
-            value={custom?.target ?? ""}
-            onChange={(v) => custom && patchRow(custom, { target: v })}
-            placeholder={custom ? t("内核里的别名") : t("先在左边选一个")}
-            options={aliases}
-            emptyHint={t("内核里还没有别名，先去内核后台建渠道")}
-          />
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 py-0.5">
+            {picker.length === 0 && (
+              <span className="text-[11px] text-muted">{t("空着 —— /model 里只有上面那 6 个")}</span>
+            )}
+            {picker.map((r) => {
+              const renames = r.alias.trim() !== (r.target || r.alias).trim();
+              return (
+                <span
+                  key={r.alias}
+                  className="flex items-center gap-1 rounded-md border border-border bg-surface-2/60 px-1.5 py-0.5 font-mono text-[11px]"
+                >
+                  {r.alias}
+                  {renames && <span className="text-muted">→ {r.target}</span>}
+                  <button
+                    onClick={() => removeFromPicker(r)}
+                    aria-label={t("把「{alias}」从 /model 菜单拿掉", { alias: r.alias })}
+                    className="text-muted hover:text-red-600"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </span>
+              );
+            })}
+          </div>
         </div>
-        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 pl-[7.5rem]">
-          {custom ? (
-            <SlotWindow row={custom} info={resolve(custom)} onPatch={(p) => patchRow(custom, p)} />
-          ) : (
-            <span className="text-[11px] text-muted">{t("菜单末尾多出来的一行")}</span>
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 pl-[7.5rem]">
+          <ComboBox
+            className="w-60"
+            aria-label={t("往 /model 菜单里加一个别名")}
+            value={pick}
+            onChange={setPick}
+            placeholder={t("加一个别名")}
+            options={options.filter((o) => !rows.some((r) => mine(r) && r.alias.trim() === o))}
+            emptyHint={t("内核里还没有别名，先去内核后台建渠道")}
+          />
+          <button
+            onClick={() => {
+              addToPicker([pick]);
+              setPick("");
+            }}
+            disabled={!pick.trim()}
+            className="rounded-lg border border-border bg-surface-raised px-2.5 py-1 text-xs hover:bg-surface-2 disabled:opacity-40"
+          >
+            {t("加进菜单")}
+          </button>
+          <button
+            onClick={() => addToPicker(rest.map((r) => r.alias))}
+            disabled={rest.length === 0}
+            title={t("把表里其余的行全部勾给 Claude Code，它们会出现在 /model 菜单末尾")}
+            className="rounded-lg border border-border bg-surface-raised px-2.5 py-1 text-xs hover:bg-surface-2 disabled:opacity-40"
+          >
+            {t("其余 {n} 行全放进来", { n: rest.length })}
+          </button>
+          <span className="text-[11px] text-muted">
+            {t("需要 Claude Code ≥ {v}；更早的版本会忽略这一段", { v: PICKER_MIN_VERSION })}
+          </span>
+          {!pickerSynced && (
+            <span
+              title={t("磁盘上的 modelPicker 和这里不一致 —— 点「写进 Claude Code」同步")}
+              className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[10px] text-muted"
+            >
+              {t("磁盘：")}
+              {t("{n} 行", { n: pickerOnDisk.length })}
+            </span>
           )}
-          <DiskNote slot="custom" row={custom} onDisk={onDisk} />
         </div>
       </div>
-
-      {/* 勾了却没占槽位的那些。以前这一堆是隐形的 —— 用户勾了 82 个、看到
-          「已写入」，然后发现 /model 里还是那 5 个。 */}
-      {unslotted.length > 1 && (
-        <div className="flex flex-wrap items-center gap-2 bg-amber-500/10 px-4 py-2.5 text-xs text-amber-900">
-          <span>
-            {t("还有 {n} 行勾了 Claude Code 但没有槽位可放 —— 它们不会被写入任何配置。", {
-              n: unslotted.length - 1,
-            })}
-          </span>
-          <button
-            onClick={() =>
-              onChange(
-                rows.map((r) =>
-                  mine(r) && slotOf(r) === null && r !== custom
-                    ? { ...r, targets: r.targets.filter((x) => x !== "claude-code") }
-                    : r,
-                ),
-              )
-            }
-            className="ml-auto rounded-lg border border-amber-500/40 bg-surface-raised px-2.5 py-1 hover:bg-surface-2"
-          >
-            {t("把这 {n} 行取消勾选", { n: unslotted.length - 1 })}
-          </button>
-        </div>
-      )}
     </div>
   );
 }
@@ -777,10 +841,9 @@ function SlotWindow({
 
 /// 「磁盘上还写着 X」。
 ///
-/// 写入是**追加不改写**的（`model_import` 模块头那条规矩）：这张表里没人认领的
-/// 槽位，写入时一个字都不动，磁盘上的旧值原样留着。不显示的话，用户在表里把
-/// 一个槽位清空、点了「写进 Claude Code」、然后发现 `/model` 里那一项还在 ——
-/// 而界面上没有任何东西能解释这件事。
+/// 表和磁盘对不上的两种情形都得说出来：表里是新名字、磁盘还是旧的（点写入才
+/// 覆盖）；或者槽位在表里空着、磁盘上还有（读表时磁盘上的槽位会先收进来，所以
+/// 这一种只在用户刚点过 × 之后出现 —— 写入会清掉它，要留就得选回来）。
 ///
 /// 只在「磁盘上有、而表里和它不一样」时出现。一致时说了等于噪音。
 function DiskNote({
@@ -801,7 +864,7 @@ function DiskNote({
       title={
         row
           ? t("表里是这个名字，磁盘上还是旧的 —— 点「写进 Claude Code」才会覆盖")
-          : t("这一页没接管这个槽位，写入时不会动它。要清掉请在 CLI 接管页编辑配置。")
+          : t("磁盘上还有它，写入时会清掉 —— 要留就在左边选回来")
       }
       className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[10px] text-muted"
     >

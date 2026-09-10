@@ -8,7 +8,7 @@
 //!   2. 上下文窗口只有一份全局口径（`ContextPolicy`），可 `grok-4.6` 是 500k、
 //!      `claude-opus-5` 是 1M，写进 CLI 的却是同一个数或者同一套推断；
 //!   3. 「这个模型给谁用」没法表达 —— 一次导入把 83 个别名同时推给 5 家 CLI，
-//!      而 Claude Code 只有 5 个槽位。
+//!      而 Claude Code 的 `/model` 菜单是 6 个具名槽位加一份列表。
 //!
 //! 客户端本来就是代理（`services::cli_proxy`，CLI 全部指向它）。代理转发前会按
 //! `ProxyRules.rewrites` 改模型名 —— 那张表一直存在，却从来没有人往里写过。这个
@@ -26,7 +26,19 @@
 //! | `alias` | 写进各 CLI 的模型目录 / tier 槽位 —— 用户在 `/model` 里看到的就是它 |
 //! | `target` | 代理的改写表（`alias → target`），也是窗口推断的依据 |
 //! | `context_window` + `compact_percent` | 写进各 CLI 的窗口键和压缩阈值 |
-//! | `targets` | 哪几家 CLI 要写它。Claude Code 5 个槽位，OpenCode 可以全给 |
+//! | `targets` | 哪几家 CLI 要写它。OpenCode 装进目录；Claude Code 见下 |
+//! | `tiers` | Claude Code 的槽位（可以几个同占一行）；一个都没占就进 `modelPicker` 列表 |
+//!
+//! # Claude Code 那一侧：6 个槽位归这张表**独占**
+//!
+//! Claude Code 没有目录文件。`/model` 菜单由三部分拼成：5 个 tier 环境变量、1 个
+//! 自定义项、settings.json 里的 `modelPicker` 列表（2.1.243 起）。前六个是具名位置，
+//! 一个名字可以同时占几个 —— 「主模型和 opus 都是 claude-opus-5」是最常见的配法，
+//! 单槽位的模型表达不了它，表现就是用户磁盘上明明有值、这里却显示空着。
+//!
+//! 所以这张表和磁盘之间是双向的：读表时先把磁盘上已有、表里没认领的槽位收进来
+//! （[`adopt_disk_slots`]），写入时表里空着的槽位会被清掉（`claude_bridge::write`）。
+//! 「导入」命令（`model_import`）那条路仍然是纯追加，两者别混。
 //!
 //! 窗口跟着 **target**（真正跑的那个模型）算，不跟着 alias：`ccload-fast` 这个名字
 //! 什么都推不出来，而它背后的 `grok-4.6` 是 500k。阈值默认 90%，也就是 450k
@@ -46,14 +58,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 use crate::services::cli_io::write_atomic;
-use crate::services::cli_types::CliTarget;
+use crate::services::cli_types::{CliTarget, ConfigRoot};
 use crate::services::context_floor::alias_key;
 use crate::services::context_window::ContextPolicy;
 use crate::services::model_import::ImportEntry;
 
-/// Claude Code 的 5 个槽位。它没有模型目录文件，能承载模型的地方只有这几个
-/// 环境变量，所以「写进 Claude Code」= 「绑到某个槽位」。
-pub const CLAUDE_TIERS: [&str; 5] = ["default", "fable", "sonnet", "opus", "haiku"];
+/// Claude Code 的 6 个具名槽位：5 个 tier 环境变量加 `ANTHROPIC_CUSTOM_MODEL_OPTION`。
+///
+/// `custom` 也算槽位：它就是 `/model` 末尾那一行，以前靠「第一条没绑 tier 的行」
+/// 隐式推出来 —— 表里另一行勾上 Claude Code，自定义项就悄悄换了人。
+pub const CLAUDE_TIERS: [&str; 6] = ["default", "fable", "sonnet", "opus", "haiku", "custom"];
 
 /// 一条出口别名。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,9 +88,37 @@ pub struct BridgeEntry {
     /// 哪几家 CLI 要写它。空 = 谁都不写（记录留着，但不落进任何配置）。
     #[serde(default)]
     pub targets: BTreeSet<CliTarget>,
-    /// Claude Code 的槽位。`None` / `"none"` = 不绑，也就是 Claude Code 不写它。
-    #[serde(default)]
-    pub tier: Option<String>,
+    /// 这一行占的 Claude Code 槽位，可以几个同占。空 = 不占槽位；此时勾了
+    /// Claude Code 的行进 `modelPicker` 列表。
+    ///
+    /// 旧文件里是单值 `tier`（`"opus"` / `null` / `"none"`），照旧读得进来；写出去
+    /// 只有 `tiers`，两个键同时出现会被 serde 当成重复字段拒收。
+    #[serde(default, alias = "tier", deserialize_with = "de_tiers")]
+    pub tiers: BTreeSet<String>,
+}
+
+/// `tier: "opus"` / `tier: null` / `tiers: ["opus", "haiku"]` 三种写法都收，并把
+/// `""` / `"none"` 这两种「没绑」的旧拼法丢掉。
+fn de_tiers<'de, D: serde::Deserializer<'de>>(d: D) -> Result<BTreeSet<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Raw {
+        Many(Vec<String>),
+        One(Option<String>),
+    }
+    let raw: Vec<String> = match Raw::deserialize(d)? {
+        Raw::Many(v) => v,
+        Raw::One(s) => s.into_iter().collect(),
+    };
+    Ok(raw.into_iter().filter_map(|s| normalize_slot(&s)).collect())
+}
+
+/// `""` / `"none"` 都是「没绑」。
+fn normalize_slot(s: &str) -> Option<String> {
+    match s.trim() {
+        "" | "none" => None,
+        s => Some(s.to_string()),
+    }
 }
 
 impl BridgeEntry {
@@ -123,12 +165,24 @@ impl BridgeEntry {
         }
     }
 
-    /// 归一化后的 Claude 槽位。`""` / `"none"` 都当成没绑。
-    pub fn slot(&self) -> Option<&str> {
-        match self.tier.as_deref().map(str::trim) {
-            Some("") | Some("none") | None => None,
-            Some(s) => Some(s),
-        }
+    /// 这一行占的 Claude 槽位，去掉 `""` / `"none"` 这两种「没绑」的拼法。
+    /// 反序列化已经洗过一遍，这里再洗是给代码里直接构造的记录兜底。
+    pub fn slots(&self) -> impl Iterator<Item = &str> {
+        self.tiers
+            .iter()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty() && *s != "none")
+    }
+
+    pub fn has_slot(&self, slot: &str) -> bool {
+        self.slots().any(|s| s == slot)
+    }
+
+    /// 勾了 Claude Code 但一个槽位都没占 —— 这些行进 `modelPicker` 列表。
+    pub fn in_claude_picker(&self) -> bool {
+        self.targets.contains(&CliTarget::ClaudeCode)
+            && !self.alias.trim().is_empty()
+            && self.slots().next().is_none()
     }
 }
 
@@ -137,6 +191,13 @@ impl BridgeEntry {
 pub struct BridgeStore {
     #[serde(default)]
     pub entries: Vec<BridgeEntry>,
+    /// 用户清空过、但磁盘上还留着旧值的 Claude 槽位（「墓碑」）。
+    ///
+    /// 没有它，「用户刚清的」和「从没认领过」对读表的人来说长得一样：后者该把
+    /// 磁盘上的槽位收进表里，前者收进来等于清空操作永远不生效。墓碑在两种情况
+    /// 下作废：槽位被重新认领，或写入把磁盘上的旧值清掉了（`sync_entries`）。
+    #[serde(default)]
+    pub cleared_slots: BTreeSet<String>,
 }
 
 impl BridgeStore {
@@ -174,18 +235,96 @@ impl BridgeStore {
     ///
     /// 注意写进 CLI 的是 **alias**（用户在 `/model` 里选的名字），不是 target ——
     /// target 只活在代理的改写表里。
+    ///
+    /// Claude Code 一行占几个槽位就出几条（`ImportEntry::tier` 是单值）；一个都
+    /// 没占的出一条 `tier: None`。桥接写 Claude Code 走的是 `claude_bridge::write`
+    /// 而不是这里 —— 这条路留给纯追加的 `model_import` 命令。
     pub fn import_entries(&self, target: CliTarget, policy: &ContextPolicy) -> Vec<ImportEntry> {
         self.entries
             .iter()
             .filter(|e| e.targets.contains(&target) && !e.alias.trim().is_empty())
-            .map(|e| ImportEntry {
-                alias: e.alias.trim().to_string(),
-                context_window: Some(e.window(policy) as i64).filter(|n| *n > 0),
-                tier: e.slot().map(str::to_string),
-                compact_percent: Some(e.percent(policy)),
+            .flat_map(|e| {
+                let make = |tier: Option<String>| ImportEntry {
+                    alias: e.alias.trim().to_string(),
+                    context_window: Some(e.window(policy) as i64).filter(|n| *n > 0),
+                    tier,
+                    compact_percent: Some(e.percent(policy)),
+                };
+                let tiers: Vec<Option<String>> = if target == CliTarget::ClaudeCode {
+                    e.slots().map(|s| Some(s.to_string())).collect()
+                } else {
+                    Vec::new()
+                };
+                if tiers.is_empty() {
+                    vec![make(None)]
+                } else {
+                    tiers.into_iter().map(make).collect()
+                }
             })
             .collect()
     }
+}
+
+/// 把磁盘上已有、表里没人认领的 Claude 槽位收进表里。返回收了哪几个槽位。
+///
+/// `on_disk` 是 settings.json 里那 6 个键现在的值（槽位名 → 模型名）。同名的行
+/// （忽略大小写和 `[1M]` 这类后缀）直接多占一个槽位；没有这一行就补一条同名落点。
+/// 已经有人认领的槽位不动 —— 那是用户在表里做过的选择，磁盘上的旧值等写入时覆盖。
+/// `cleared` 里的槽位也不动：那是用户刚清空的，收回来等于清空永远不生效。
+///
+/// 之所以要收而不是只显示「磁盘：X」：写入会清掉表里空着的槽位，不先收进来，
+/// 用户在别处配好的 fable / haiku 会在第一次点「写进 Claude Code」时被抹掉。
+pub fn adopt_disk_slots(
+    entries: &mut Vec<BridgeEntry>,
+    on_disk: &std::collections::BTreeMap<String, String>,
+    cleared: &BTreeSet<String>,
+) -> Vec<String> {
+    let mut adopted = Vec::new();
+    for slot in CLAUDE_TIERS {
+        let Some(model) = on_disk.get(slot).map(|m| m.trim()).filter(|m| !m.is_empty()) else {
+            continue;
+        };
+        // `@chNN` 是钉住的私有名字，`validate` 不让它进表；收进来只会让下一次
+        // 保存整体失败。留在磁盘上由「磁盘：X」提示。
+        if cleared.contains(slot) || model.contains("@ch") || entries.iter().any(|e| e.has_slot(slot))
+        {
+            continue;
+        }
+        let key = alias_key(model);
+        match entries.iter_mut().find(|e| alias_key(&e.alias) == key) {
+            Some(e) => {
+                e.tiers.insert(slot.into());
+                e.targets.insert(CliTarget::ClaudeCode);
+            }
+            None => entries.push(BridgeEntry {
+                alias: model.to_string(),
+                target: model.to_string(),
+                context_window: 0,
+                compact_percent: 0,
+                targets: BTreeSet::from([CliTarget::ClaudeCode]),
+                tiers: BTreeSet::from([slot.to_string()]),
+            }),
+        }
+        adopted.push(slot.to_string());
+    }
+    adopted
+}
+
+/// 读路径共用的对齐：收磁盘上的槽位、修剪已作废的墓碑。返回有没有改动。
+///
+/// 墓碑作废的两个时机都在这：槽位被重新认领，或写入已把磁盘上的旧值清掉。
+pub fn sync_entries(store: &mut BridgeStore, root: &ConfigRoot) -> bool {
+    let disk = crate::services::claude_bridge::slots_on_disk(root);
+    let adopted = adopt_disk_slots(&mut store.entries, &disk, &store.cleared_slots);
+    let before = store.cleared_slots.len();
+    store.cleared_slots.retain(|s| {
+        disk.get(s).is_some_and(|v| !v.trim().is_empty())
+            && !store.entries.iter().any(|e| e.has_slot(s))
+    });
+    if !adopted.is_empty() {
+        tracing::info!("bridge: adopted Claude Code slots from disk: {}", adopted.join(", "));
+    }
+    !adopted.is_empty() || store.cleared_slots.len() != before
 }
 
 /// 落盘之前把写不出去的表挡掉。
@@ -196,7 +335,8 @@ impl BridgeStore {
 pub fn validate(entries: &[BridgeEntry], proxy_on: bool) -> Result<Vec<String>, AppError> {
     let mut warnings = Vec::new();
     let mut seen: HashMap<String, &str> = HashMap::new();
-    // Claude 的 5 个槽位各只有一个值，两条记录抢同一个槽位是静默后来居上。
+    // Claude 的 6 个槽位各只有一个值，两条记录抢同一个槽位是静默后来居上。
+    // 反过来（一条记录占几个槽位）是允许的：主模型和 opus 同一个名字很常见。
     let mut slots: HashMap<&str, &str> = HashMap::new();
     let mut renamed = Vec::new();
 
@@ -221,7 +361,7 @@ pub fn validate(entries: &[BridgeEntry], proxy_on: bool) -> Result<Vec<String>, 
         if e.upstream_alias().is_empty() {
             return Err(AppError::Config(format!("「{alias}」没有落点：请选一个内核别名")));
         }
-        if let Some(slot) = e.slot() {
+        for slot in e.slots() {
             if !CLAUDE_TIERS.contains(&slot) {
                 return Err(AppError::Config(format!("未知的 Claude 槽位：{slot}")));
             }
@@ -274,7 +414,7 @@ pub fn seed(aliases: &[String], targets: &BTreeSet<CliTarget>) -> Vec<BridgeEntr
             context_window: 0,
             compact_percent: 0,
             targets: targets.clone(),
-            tier: None,
+            tiers: BTreeSet::new(),
         })
         .collect()
 }
@@ -291,10 +431,10 @@ pub fn seed(aliases: &[String], targets: &BTreeSet<CliTarget>) -> Vec<BridgeEntr
 pub fn guess_slots(entries: &mut [BridgeEntry]) {
     let mut used: BTreeSet<String> = entries
         .iter()
-        .filter_map(|e| e.slot().map(str::to_string))
+        .flat_map(|e| e.slots().map(str::to_string))
         .collect();
     for e in entries.iter_mut() {
-        if e.slot().is_some() {
+        if e.slots().next().is_some() {
             continue;
         }
         let n = e.alias.to_ascii_lowercase();
@@ -303,7 +443,7 @@ pub fn guess_slots(entries: &mut [BridgeEntry]) {
             .find(|k| n.contains(k) && !used.contains(*k));
         if let Some(g) = guess {
             used.insert(g.to_string());
-            e.tier = Some(g.to_string());
+            e.tiers.insert(g.to_string());
             e.targets.insert(CliTarget::ClaudeCode);
         }
     }
@@ -320,8 +460,138 @@ mod tests {
             context_window: 0,
             compact_percent: 0,
             targets: BTreeSet::from([CliTarget::OpenCode]),
-            tier: None,
+            tiers: BTreeSet::new(),
         }
+    }
+
+    /// 单槽位的行「它占的那个槽位」。多槽位的行别用它，只会看到排序最靠前的那个。
+    fn slot(e: &BridgeEntry) -> Option<&str> {
+        e.slots().next()
+    }
+
+    fn slotted(alias: &str, target: &str, slots: &[&str]) -> BridgeEntry {
+        let mut e = entry(alias, target);
+        e.targets = BTreeSet::from([CliTarget::ClaudeCode]);
+        e.tiers = slots.iter().map(|s| s.to_string()).collect();
+        e
+    }
+
+    /// 旧 `bridge.json` 里是单值 `tier`。三种旧拼法都要读得进来，`""` / `"none"`
+    /// 要洗成「没绑」，否则校验会报「未知的 Claude 槽位：」。
+    #[test]
+    fn legacy_single_tier_files_still_load() {
+        let load = |raw: &str| -> BridgeEntry { serde_json::from_str(raw).unwrap() };
+        let base = r#""alias":"a","target":"a""#;
+        let one = load(&format!(r#"{{{base},"tier":"opus"}}"#));
+        assert_eq!(one.slots().collect::<Vec<_>>(), vec!["opus"]);
+        assert!(load(&format!(r#"{{{base},"tier":null}}"#)).slots().next().is_none());
+        assert!(load(&format!(r#"{{{base},"tier":"none"}}"#)).slots().next().is_none());
+        assert!(load(&format!(r#"{{{base}}}"#)).slots().next().is_none());
+        let many = load(&format!(r#"{{{base},"tiers":["opus","","haiku"]}}"#));
+        assert_eq!(many.slots().collect::<Vec<_>>(), vec!["haiku", "opus"]);
+        // 写出去只有 `tiers`。
+        let json = serde_json::to_string(&many).unwrap();
+        assert!(json.contains("\"tiers\""));
+        assert!(!json.contains("\"tier\":"));
+    }
+
+    /// 主模型和 opus 都是 claude-opus-5：一行占两个槽位，校验放行，导入条目出两条。
+    #[test]
+    fn one_row_may_hold_several_claude_slots() {
+        let row = slotted("claude-opus-5", "claude-opus-5", &["default", "opus"]);
+        assert!(validate(std::slice::from_ref(&row), true).unwrap().is_empty());
+        let store = BridgeStore { entries: vec![row], cleared_slots: Default::default() };
+        let cc = store.import_entries(CliTarget::ClaudeCode, &ContextPolicy::default());
+        let mut tiers: Vec<_> = cc.iter().map(|e| e.tier.clone().unwrap()).collect();
+        tiers.sort();
+        assert_eq!(tiers, vec!["default", "opus"]);
+        // 别的 CLI 不关心槽位，还是一条。
+        let mut oc = store.entries[0].clone();
+        oc.targets.insert(CliTarget::OpenCode);
+        let store = BridgeStore { entries: vec![oc], cleared_slots: Default::default() };
+        assert_eq!(store.import_entries(CliTarget::OpenCode, &ContextPolicy::default()).len(), 1);
+    }
+
+    /// 磁盘上有、表里没认领的槽位要收进表里：同名行多占一个，没有的补一行。
+    /// 已认领的槽位不动 —— 那是用户的选择，磁盘上的旧值留给写入覆盖。
+    #[test]
+    fn slots_on_disk_are_adopted_into_the_table() {
+        let mut rows = vec![
+            slotted("claude-opus-5", "claude-opus-5", &["opus"]),
+            slotted("claude-sonnet-5", "claude-sonnet-5", &["sonnet"]),
+        ];
+        let disk = std::collections::BTreeMap::from([
+            ("default".to_string(), "claude-opus-5[1M]".to_string()),
+            ("haiku".to_string(), "Claude-Opus-5".to_string()),
+            ("sonnet".to_string(), "some-old-sonnet".to_string()),
+            ("fable".to_string(), "claude-fable-5-1[1M]".to_string()),
+            ("custom".to_string(), "  ".to_string()),
+        ]);
+        let mut adopted = adopt_disk_slots(&mut rows, &disk, &Default::default());
+        adopted.sort();
+        assert_eq!(adopted, vec!["default", "fable", "haiku"]);
+        // `[1M]` 和大小写都不算另一个名字：收进已有的那一行，别名保持用户写的。
+        let opus = &rows[0];
+        assert_eq!(opus.alias, "claude-opus-5");
+        let mut got: Vec<_> = opus.slots().collect();
+        got.sort();
+        assert_eq!(got, vec!["default", "haiku", "opus"]);
+        // sonnet 已经有人认领，磁盘上的旧值不能抢回来。
+        assert!(rows[1].has_slot("sonnet"));
+        assert_eq!(rows.iter().filter(|r| r.has_slot("sonnet")).count(), 1);
+        // fable 表里没有这一行：补一条同名落点，只勾 Claude Code。
+        let fable = rows.iter().find(|r| r.has_slot("fable")).expect("补出来的行");
+        assert_eq!(fable.alias, "claude-fable-5-1[1M]");
+        assert_eq!(fable.target, "claude-fable-5-1[1M]");
+        assert_eq!(fable.targets, BTreeSet::from([CliTarget::ClaudeCode]));
+        // 空白值等于磁盘上没有。
+        assert!(!rows.iter().any(|r| r.has_slot("custom")));
+        // 再跑一遍什么都不会变。
+        assert!(adopt_disk_slots(&mut rows, &disk, &Default::default()).is_empty());
+        // 墓碑里的槽位不收：那是用户刚清空的。
+        let mut rows2 = vec![slotted("claude-opus-5", "claude-opus-5", &["opus"])];
+        let tombstones: BTreeSet<String> = ["haiku".to_string()].into();
+        assert!(adopt_disk_slots(&mut rows2, &disk, &tombstones).contains(&"fable".to_string()));
+        assert!(!rows2.iter().any(|r| r.has_slot("haiku")), "墓碑挡住收回");
+    }
+
+    /// 墓碑的完整生命周期：清空 → 保存记下 → 读表不收回 → 写入清掉磁盘旧值 →
+    /// 墓碑作废；重新认领同样让它作废。
+    #[test]
+    fn a_cleared_slot_stays_cleared_until_reclaimed_or_written() {
+        use crate::services::cli_types::ConfigRoot as TestRoot;
+        let opus_row = || slotted("claude-opus-5", "claude-opus-5", &["opus"]);
+        let mut store = BridgeStore {
+            entries: vec![opus_row()],
+            cleared_slots: ["haiku".to_string()].into(),
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let root = TestRoot::sandbox(dir.path().to_path_buf());
+        let settings = root.join(".claude/settings.json");
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        std::fs::write(
+            &settings,
+            r#"{"env":{"ANTHROPIC_DEFAULT_HAIKU_MODEL":"old-haiku"}}"#,
+        )
+        .unwrap();
+
+        // 读表不把 haiku 收回来。
+        assert!(!sync_entries(&mut store, &root));
+        assert!(!store.entries.iter().any(|r| r.has_slot("haiku")));
+
+        // 用户改主意，重新认领 haiku → 墓碑作废（被修剪属于「有改动」，会存回）。
+        store.entries[0].tiers.insert("haiku".into());
+        assert!(sync_entries(&mut store, &root));
+        assert!(!store.cleared_slots.contains("haiku"));
+        // 再跑一遍：槽位认领着、墓碑也没了，真正没什么可对齐的。
+        assert!(!sync_entries(&mut store, &root));
+
+        // 再清空一次，这次走写入：写入会清掉磁盘上的旧值、并作废墓碑
+        // （`commands::bridge` 里做的事）。这里只验证随后的读表不再有动作。
+        store.cleared_slots.insert("haiku".into());
+        store.entries[0].tiers.remove("haiku");
+        assert!(!sync_entries(&mut store, &root));
+        assert!(!store.entries.iter().any(|r| r.has_slot("haiku")));
     }
 
     /// 改写表只收改名的那些。同名记录进了表只会让代理白查一次，还会让
@@ -329,6 +599,7 @@ mod tests {
     #[test]
     fn only_renaming_entries_become_rewrites() {
         let store = BridgeStore {
+            cleared_slots: Default::default(),
             entries: vec![
                 entry("ccload-fast", "grok-4.6"),
                 entry("claude-opus-5", "claude-opus-5"),
@@ -425,11 +696,10 @@ mod tests {
     #[test]
     fn each_cli_only_gets_the_rows_that_picked_it() {
         let p = ContextPolicy::default();
-        let mut opus = entry("ccload-big", "claude-opus-5");
-        opus.targets = BTreeSet::from([CliTarget::ClaudeCode]);
-        opus.tier = Some("opus".into());
+        let opus = slotted("ccload-big", "claude-opus-5", &["opus"]);
         let store = BridgeStore {
             entries: vec![entry("ccload-fast", "grok-4.6"), opus],
+            cleared_slots: Default::default(),
         };
 
         let oc = store.import_entries(CliTarget::OpenCode, &p);
@@ -470,12 +740,8 @@ mod tests {
     /// 一个 Claude 槽位两条记录 = 静默后来居上，正是导入那条路上修过的老 bug。
     #[test]
     fn two_entries_on_one_claude_slot_is_an_error() {
-        let mut a = entry("a", "x");
-        let mut b = entry("b", "y");
-        for e in [&mut a, &mut b] {
-            e.targets = BTreeSet::from([CliTarget::ClaudeCode]);
-            e.tier = Some("opus".into());
-        }
+        let a = slotted("a", "x", &["opus"]);
+        let b = slotted("b", "y", &["opus", "haiku"]);
         let err = validate(&[a, b], true).unwrap_err();
         assert!(err.to_string().contains("opus 槽位"), "{err}");
     }
@@ -484,7 +750,7 @@ mod tests {
     #[test]
     fn a_slot_without_claude_code_is_a_warning_not_an_error() {
         let mut e = entry("a", "x");
-        e.tier = Some("opus".into());
+        e.tiers.insert("opus".into());
         let w = validate(&[e], true).unwrap();
         assert_eq!(w.len(), 1);
         assert!(w[0].contains("没勾 Claude Code"), "{}", w[0]);
@@ -520,7 +786,7 @@ mod tests {
         assert_eq!(seeded.len(), 2);
         assert!(seeded.iter().all(|e| !e.renames()));
         assert!(validate(&seeded, false).is_ok());
-        assert!(BridgeStore { entries: seeded }.rewrites().is_empty());
+        assert!(BridgeStore { entries: seeded, cleared_slots: Default::default() }.rewrites().is_empty());
     }
 
     /// 槽位猜测：每个槽位只认领一次，已经绑好的不动，认领了就顺手勾上 Claude Code。
@@ -537,17 +803,17 @@ mod tests {
             entry("grok-4.6", "grok-4.6"),
         ];
         guess_slots(&mut es);
-        assert_eq!(es[0].slot(), Some("opus"));
+        assert_eq!(slot(&es[0]), Some("opus"));
         assert!(es[0].targets.contains(&CliTarget::ClaudeCode));
-        assert_eq!(es[1].slot(), None, "opus 已经被认领了");
+        assert_eq!(slot(&es[1]), None, "opus 已经被认领了");
         assert!(
             !es[1].targets.contains(&CliTarget::ClaudeCode),
             "没认领到槽位的不该被勾上 —— 它一个字都写不进 Claude Code"
         );
-        assert_eq!(es[2].slot(), Some("haiku"));
-        assert_eq!(es[3].slot(), Some("sonnet"));
+        assert_eq!(slot(&es[2]), Some("haiku"));
+        assert_eq!(slot(&es[3]), Some("sonnet"));
         // 名字里没有档位关键字的猜不出来，也就不勾。
-        assert_eq!(es[4].slot(), None);
+        assert_eq!(slot(&es[4]), None);
         assert!(!es[4].targets.contains(&CliTarget::ClaudeCode));
     }
 
@@ -555,11 +821,11 @@ mod tests {
     #[test]
     fn slot_guessing_leaves_existing_bindings_alone() {
         let mut mine = entry("my-pick", "claude-opus-5");
-        mine.tier = Some("opus".into());
+        mine.tiers.insert("opus".into());
         let mut es = vec![mine, entry("another-opus", "claude-opus-4-8")];
         guess_slots(&mut es);
-        assert_eq!(es[0].slot(), Some("opus"));
-        assert_eq!(es[1].slot(), None);
+        assert_eq!(slot(&es[0]), Some("opus"));
+        assert_eq!(slot(&es[1]), None);
     }
 
     /// 老 bridge.json 里没有新字段时读成默认值，不是反序列化失败。
@@ -571,6 +837,6 @@ mod tests {
         assert_eq!(e.context_window, 0);
         assert_eq!(e.compact_percent, 0);
         assert!(e.targets.is_empty());
-        assert_eq!(e.slot(), None);
+        assert_eq!(slot(e), None);
     }
 }

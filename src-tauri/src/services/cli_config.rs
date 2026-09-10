@@ -120,6 +120,7 @@ pub fn preview(
         next_endpoint: next,
         current_model: current_model(root, target),
         claude_slots: claude_slots(root, target),
+        claude_picker: claude_picker(root, target),
     }
 }
 
@@ -132,31 +133,18 @@ fn claude_slots(
     root: &ConfigRoot,
     target: CliTarget,
 ) -> std::collections::BTreeMap<String, String> {
-    let mut out = std::collections::BTreeMap::new();
     if !matches!(target, CliTarget::ClaudeCode) {
-        return out;
+        return Default::default();
     }
-    let Ok(doc) = read_json(&root.join(".claude/settings.json")) else {
-        return out;
-    };
-    for (slot, key) in [
-        ("default", "ANTHROPIC_MODEL"),
-        ("opus", "ANTHROPIC_DEFAULT_OPUS_MODEL"),
-        ("sonnet", "ANTHROPIC_DEFAULT_SONNET_MODEL"),
-        ("haiku", "ANTHROPIC_DEFAULT_HAIKU_MODEL"),
-        ("fable", "ANTHROPIC_DEFAULT_FABLE_MODEL"),
-        ("custom", "ANTHROPIC_CUSTOM_MODEL_OPTION"),
-    ] {
-        if let Some(v) = doc
-            .pointer(&format!("/env/{key}"))
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            out.insert(slot.to_string(), v.to_string());
-        }
+    crate::services::claude_bridge::slots_on_disk(root)
+}
+
+/// 磁盘上 `modelPicker` 列表里的模型名。别的 CLI 返回空表。
+fn claude_picker(root: &ConfigRoot, target: CliTarget) -> Vec<String> {
+    if !matches!(target, CliTarget::ClaudeCode) {
+        return Vec::new();
     }
-    out
+    crate::services::claude_bridge::picker_on_disk(root)
 }
 
 /// The model this CLI will send, for the takeover card's combo box.
@@ -265,8 +253,9 @@ pub(crate) fn write_claude_slot(
     key: &str,
     model: Option<&str>,
 ) {
-    // `ANTHROPIC_MODEL`（主模型）和 `ANTHROPIC_CUSTOM_MODEL_OPTION` 没有 `_NAME`
-    // 伴生键 —— 菜单里它们显示自己的值。只有 `ANTHROPIC_DEFAULT_*_MODEL` 有。
+    // 只有 `ANTHROPIC_DEFAULT_*_MODEL` 写 `_NAME`。`ANTHROPIC_MODEL`（主模型）根本
+    // 没有这个伴生键；`ANTHROPIC_CUSTOM_MODEL_OPTION_NAME` 在 2.1.258 里是存在的，
+    // 但缺省就显示 id，写一份一模一样的只是多一个会过期的键。
     let name_key = key
         .starts_with("ANTHROPIC_DEFAULT_")
         .then(|| format!("{key}_NAME"));
@@ -282,6 +271,31 @@ pub(crate) fn write_claude_slot(
             if let Some(nk) = name_key {
                 env.remove(&nk);
             }
+        }
+    }
+}
+
+/// `/model` 菜单里那一行的副标题（`..._DESCRIPTION`）。
+///
+/// 改了名的槽位靠它说清楚落点：缺省文案是「Custom Opus model」，对着一个其实是
+/// grok 的出口名，那就是在骗人。`None` = 删掉，让 Claude Code 用自己的缺省文案
+/// （同名的槽位缺省文案更好 —— 它带着从 `[1m]` 后缀推出来的窗口提示）。
+/// 主模型没有这个键，「Default」那一行的描述是 Claude Code 自己拼的。
+pub(crate) fn write_claude_slot_note(
+    env: &mut serde_json::Map<String, Value>,
+    key: &str,
+    note: Option<&str>,
+) {
+    if key == "ANTHROPIC_MODEL" {
+        return;
+    }
+    let desc_key = format!("{key}_DESCRIPTION");
+    match note.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(n) => {
+            env.insert(desc_key, Value::String(n.to_string()));
+        }
+        None => {
+            env.remove(&desc_key);
         }
     }
 }

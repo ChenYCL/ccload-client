@@ -507,7 +507,7 @@ mod tests {
             context_window: window,
             compact_percent: 0,
             targets: Default::default(),
-            tier: None,
+            tiers: Default::default(),
         }
     }
 

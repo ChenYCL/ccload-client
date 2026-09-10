@@ -78,7 +78,9 @@ Any 路由（内核**本身就是**本地 OpenAI/Anthropic 出口代理），
 * **合并，不要整块替换。** MCP 服务器、profile、模型目录都要按键合并 ——
   整块 `insert` 会把用户手写的 `startup_timeout_sec` / `cwd` / 自定义模型
   一次抹掉。「导入」在语义上必须是**追加**：不动用户当前选中的模型、不动他
-  已经绑好的槽位。见 `services/model_import.rs` 的模块注释。
+  已经绑好的槽位。见 `services/model_import.rs` 的模块注释。唯一的例外是模型
+  桥接写 Claude Code 的 6 个槽位（`services/claude_bridge.rs`）：那张表独占它们，
+  前提是读表时先把磁盘上的槽位收进表里，见下文「出口别名」一节。
 
 开发期请在设置里打开「CLI 写入走沙箱」，写入会落到
 `~/.ccload-client/sandbox/`，不碰真实配置。
@@ -193,7 +195,25 @@ CLI 里那个名字**可能是出口别名**（见下一节），所以第一步
 | `alias` | 写进各 CLI 的模型目录 / tier 槽位，用户 `/model` 里看到的就是它 |
 | `target` | 代理的改写表（`alias → target`），也是窗口推断的依据 |
 | `context_window` + `compact_percent` | 写进各 CLI 的窗口键和压缩阈值 |
-| `targets` | 哪几家 CLI 要写它。Claude Code 只有 5 个槽位，OpenCode 装得下全部 |
+| `targets` | 哪几家 CLI 要写它。OpenCode 装进目录；Claude Code 见下一段 |
+| `tiers` | Claude Code 的槽位，一行可以同时占几个；一个都不占就进 `modelPicker` 列表 |
+
+Claude Code 那一侧（`services/claude_bridge.rs`）和别家**语义相反**：
+
+* `/model` 菜单 = 5 个 tier 环境变量 + `ANTHROPIC_CUSTOM_MODEL_OPTION` + settings.json
+  顶层的 `modelPicker.options[]`（Claude Code 2.1.243 起，行数不限；用户级 settings
+  生效，项目级不认；多来源不合并、最高优先级整体胜出）。网关发现那条路
+  （`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`）只留 id 含 claude/anthropic 的，
+  对多 provider 没用，别走。
+* 桥接表**独占**那 6 个槽位：读表时先把磁盘上已有、表里没认领的槽位收进来
+  （`bridge::adopt_disk_slots`），写入时表里空着的槽位会被清掉。收不进来就清，
+  用户在别处配好的 fable / haiku 会在第一次写入时被抹掉 —— 两步缺一不可。
+  「用户刚清空的」靠 `BridgeStore.cleared_slots`（墓碑）和「从没认领过」区分，
+  否则对齐会把磁盘旧值收回来，清空永远无法生效。
+* 一行可以同时占几个槽位（主模型和 opus 都是 `claude-opus-5` 是最常见的配法）；
+  `custom` 是显式槽位，不再靠「第一条没绑的行」推。
+* `modelPicker` 里只动描述以 `ccLoad` 开头的行，管理员 / 用户手写的原样留着。
+* `model_import` 命令那条路仍然是纯追加，别把两者揉在一起。
 
 几条别改回去的判断：
 

@@ -4,11 +4,13 @@
 //!
 //! Each CLI has a different notion of a "model catalog", grounded in the
 //! respective official docs:
-//!   * Claude Code — no catalog file at all. The only model surface is the
+//!   * Claude Code — no catalog file at all. The model surface here is the
 //!     five tier slots (ANTHROPIC_MODEL + ANTHROPIC_DEFAULT_{FABLE,SONNET,
 //!     OPUS,HAIKU}_MODEL) plus one `ANTHROPIC_CUSTOM_MODEL_OPTION`. Those
 //!     are *selections*, not a catalog. Custom / gateway ids also need
 //!     `*_SUPPORTED_CAPABILITIES=effort,thinking` or `/effort` is dropped.
+//!     The bridge page does not come through here — `claude_bridge::write`
+//!     owns the six slots outright and also fills `modelPicker`.
 //!   * Codex — `[profiles.<name>]` tables, each with its own `model`,
 //!     `model_context_window`, and `model_reasoning_effort`.
 //!   * OpenCode — `provider.<id>.models` object with per-model
@@ -81,7 +83,8 @@ pub struct ImportResult {
 /// The env key for a tier, or `None` when the row isn't bound to any slot.
 ///
 /// FABLE is in the list because Claude Code ships it — 用户自己的
-/// settings.json 里就有 `ANTHROPIC_DEFAULT_FABLE_MODEL`。
+/// settings.json 里就有 `ANTHROPIC_DEFAULT_FABLE_MODEL`。`custom` 是 `/model`
+/// 末尾那一行，桥接表把它当成第 6 个槽位。
 fn claude_tier_key(tier: &str) -> Result<Option<&'static str>, AppError> {
     match tier {
         "" | "none" => Ok(None),
@@ -90,6 +93,7 @@ fn claude_tier_key(tier: &str) -> Result<Option<&'static str>, AppError> {
         "sonnet" => Ok(Some("ANTHROPIC_DEFAULT_SONNET_MODEL")),
         "opus" => Ok(Some("ANTHROPIC_DEFAULT_OPUS_MODEL")),
         "haiku" => Ok(Some("ANTHROPIC_DEFAULT_HAIKU_MODEL")),
+        "custom" => Ok(Some("ANTHROPIC_CUSTOM_MODEL_OPTION")),
         other => Err(AppError::Config(format!("unknown Claude tier: {other}"))),
     }
 }

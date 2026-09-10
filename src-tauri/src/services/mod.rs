@@ -2,6 +2,7 @@ pub mod admin;
 pub mod bridge;
 pub mod channel_usage;
 pub mod channel_writer;
+pub mod claude_bridge;
 pub mod cli_advanced;
 pub mod cli_backup;
 pub mod cli_backup_diff;

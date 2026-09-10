@@ -1399,8 +1399,36 @@ registerDict("en", {
   // ---- Claude 槽位编辑器 / 钉住修复 / 两层命名的说明 ----
   "已把内核别名铺进表里，并按名字认领了 Claude Code 的槽位。确认后点「保存」。":
     "Laid the kernel's aliases into the table and claimed Claude Code's slots by name. Review, then hit Save.",
-  "Claude Code 没有模型目录文件，能放模型的地方就是下面这 6 个。/model 菜单里看到的就是它们 —— 左边是槽位，右边是这个槽位会发出去的名字。":
-    "Claude Code has no model catalog file — these six places are the only ones that can hold a model, and they are exactly what the /model menu shows. Slot on the left, the name that slot will send on the right.",
+  "Claude Code 没有模型目录文件。/model 菜单 = 下面 6 个槽位 + 一份 modelPicker 列表。每一行三段：槽位 · 写进 CLI 的名字 → 它到了内核落在哪个别名上，两个框都能改。一个名字可以同时占几个槽位。":
+    "Claude Code has no model catalog file. The /model menu = the six slots below plus a modelPicker list. Each row has three parts: the slot · the name written into the CLI → the kernel alias it lands on; both boxes are editable. One name may hold several slots at once.",
+  "读表时磁盘上已有的槽位会先收进来；写入时这里空着的槽位会被清掉。槽位放不下的模型进最下面的列表，整张表都能放进 /model；任何出口别名也都能用 --model <名字> 直接选。":
+    "Slots already on disk are adopted into this table when it loads; slots left empty here are cleared on write. Models that do not fit a slot go into the list at the bottom, so the whole table can appear in /model; any egress alias also works with --model <name>.",
+  "同时占着：{slots}":
+    "also holds: {slots}",
+  "菜单里的其它模型":
+    "Other models in the menu",
+  "空着 —— /model 里只有上面那 6 个":
+    "Empty — /model shows only the six above",
+  "把「{alias}」从 /model 菜单拿掉":
+    "Remove “{alias}” from the /model menu",
+  "往 /model 菜单里加一个别名":
+    "Add an alias to the /model menu",
+  "加一个别名":
+    "Add an alias",
+  "加进菜单":
+    "Add to menu",
+  "把表里其余的行全部勾给 Claude Code，它们会出现在 /model 菜单末尾":
+    "Tick every remaining row for Claude Code; they show up at the end of the /model menu",
+  "其余 {n} 行全放进来":
+    "Add the other {n} rows",
+  "需要 Claude Code ≥ {v}；更早的版本会忽略这一段":
+    "Needs Claude Code ≥ {v}; older versions ignore this list",
+  "{n} 行":
+    "{n} row(s)",
+  "磁盘上的 modelPicker 和这里不一致 —— 点「写进 Claude Code」同步":
+    "The modelPicker on disk differs from this list — “Write to Claude Code” syncs it",
+  "磁盘上还有它，写入时会清掉 —— 要留就在左边选回来":
+    "Still on disk; writing clears it — pick it again on the left to keep it",
   "{slot} 槽位发哪个模型":
     "Which model the {slot} slot sends",
   "空着 —— 不写这个槽位":
@@ -1411,16 +1439,8 @@ registerDict("en", {
     "Clear the {slot} slot",
   "自定义项":
     "Extra entry",
-  "/model 菜单里额外的一行":
-    "The extra row in the /model menu",
-  "空着 —— /model 里不多这一行":
-    "Empty — no extra row in /model",
   "菜单末尾多出来的一行":
     "One more row at the end of the menu",
-  "还有 {n} 行勾了 Claude Code 但没有槽位可放 —— 它们不会被写入任何配置。":
-    "{n} more row(s) are ticked for Claude Code but have no slot to sit in — they will not be written anywhere.",
-  "把这 {n} 行取消勾选":
-    "Untick those {n}",
   "CLI 发出去的名字。右边配的是它落到某个渠道之后、发给上游的真实模型名。":
     "The name the CLI sends. On the right you configure the real upstream model name it becomes once it lands on a channel.",
   "每一条 = 一个渠道 + 发给它的上游真实模型名（候选来自那个渠道自己的模型清单）。":
@@ -1447,8 +1467,6 @@ registerDict("en", {
     "Writes only {cli}'s config file; the others are untouched",
   "写进 {cli}":
     "Write to {cli}",
-  "6 个是 Claude Code 自己的上限（5 个 tier 环境变量 + 1 个自定义项），不是这一页的取舍。菜单外的模型仍然能用：启动时加 --model <名字>，或者在会话里 /model <名字>，任何一个出口别名都认。":
-    "Six is Claude Code's own ceiling (five tier env vars plus one custom option), not a choice this page made. Models outside the menu still work: pass --model <name> at launch, or /model <name> in a session — any egress alias is accepted.",
   "「{alias}」的上下文窗口":
     "Context window for “{alias}”",
   "留空 = 跟上下文窗口总控走":
@@ -1479,16 +1497,12 @@ registerDict("en", {
     "Delete hop {n}",
   "· 渠道已禁用":
     "· channel disabled",
-  "Claude Code 没有模型目录文件，能放模型的地方就是下面这 6 个，/model 菜单里看到的就是它们。每一行三段：槽位 · 写进 CLI 的名字 → 它到了内核落在哪个别名上。两个框都能改。":
-    "Claude Code has no model catalog file — these six places are the only ones that can hold a model, and they are exactly what the /model menu shows. Each row has three parts: the slot · the name written into the CLI → the kernel alias it lands on. Both boxes are editable.",
   "{slot} 槽位发哪个名字":
     "Which name the {slot} slot sends",
   "{slot} 槽位落到哪个内核别名":
     "Which kernel alias the {slot} slot lands on",
   "先在左边选一个":
     "Pick one on the left first",
-  "自定义项落到哪个内核别名":
-    "Which kernel alias the extra entry lands on",
   "模型槽位（默认 / opus / sonnet / haiku / fable）和它们的落点、窗口都在「模型桥接」页 —— Claude Code 没有模型目录文件，那 6 个位置只能有一个主人，两处都能改就会互相覆盖。":
     "The model slots (default / opus / sonnet / haiku / fable), their targets and their windows all live on the Model bridge page. Claude Code has no model catalog file, so those six places can only have one owner — editable in two places means they overwrite each other.",
   "去模型桥接":
@@ -1501,6 +1515,4 @@ registerDict("en", {
     "on disk: ",
   "表里是这个名字，磁盘上还是旧的 —— 点「写进 Claude Code」才会覆盖":
     "The table says one thing, the disk still has the old value — “Write to Claude Code” is what overwrites it",
-  "这一页没接管这个槽位，写入时不会动它。要清掉请在 CLI 接管页编辑配置。":
-    "This page does not own that slot, so writing leaves it alone. To clear it, edit the config on the CLI takeover page.",
 });

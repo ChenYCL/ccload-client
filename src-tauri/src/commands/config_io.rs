@@ -403,7 +403,7 @@ mod redaction_tests {
                 context_window: 0,
                 compact_percent: 0,
                 targets: Default::default(),
-                tier: None,
+                tiers: Default::default(),
             }],
         };
         std::fs::write(&p, serde_json::to_string(&bundle).unwrap()).unwrap();
