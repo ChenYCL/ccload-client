@@ -19,6 +19,7 @@ import { TextInput } from "./Input";
 export function ComboBox({
   value,
   onChange,
+  onCommit,
   options,
   placeholder,
   className,
@@ -27,6 +28,16 @@ export function ComboBox({
 }: {
   value: string;
   onChange: (v: string) => void;
+  /**
+   * 「这一次输入算数了」的回调：回车选中候选、鼠标点选、或失焦时以输入框里的
+   * 最终文本触发。
+   *
+   * 不传时行为照旧 —— onChange 逐键触发。**会创建东西的 onChange 必须传**：
+   * 逐键 onChange 意味着每敲一个字符就确认一个中间值（`c`、`cl`、`cla`…），
+   * 桥接页就是这样在表里攒出一串 `claude-fa` / `claude-fabl` 前缀行的 ——
+   * 每一个都自动补了行、被用户保存、最后原样写进 CLI 配置。
+   */
+  onCommit?: (v: string) => void;
   /** 候选项。可以为空 —— 那时它就是个普通输入框。 */
   options: string[];
   placeholder?: string;
@@ -89,6 +100,7 @@ export function ComboBox({
 
   const commit = (v: string) => {
     onChange(v);
+    onCommit?.(v);
     setTyped(null);
     setOpen(false);
     inputRef.current?.focus();
@@ -136,9 +148,21 @@ export function ComboBox({
         placeholder={placeholder}
         onChange={(e) => {
           setTyped(e.target.value);
-          onChange(e.target.value);
+          // 有了 onCommit 的调用点（onChange 只用来搜索/回显），打字期间不往
+          // 外发值；提交时机只有回车、点选、失焦三种。没有 onCommit 就维持
+          // 旧的逐键行为，已有调用点不受影响。
+          if (!onCommit) onChange(e.target.value);
           setActive(0);
           setOpen(true);
+        }}
+        onBlur={() => {
+          // 失焦 = 打字结束。剩下的文本就是用户的最终选择。
+          if (onCommit && typed !== null) {
+            onChange(typed);
+            onCommit(typed);
+          }
+          setTyped(null);
+          setOpen(false);
         }}
         onFocus={() => setOpen(true)}
         // 焦点已经在框里时再点一下不会触发 focus —— 用 Esc 关掉下拉之后再点

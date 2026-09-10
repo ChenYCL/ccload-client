@@ -124,7 +124,35 @@ pub async fn bridge_save(
             .map(|s| s.to_string()),
     );
     sync_entries(&mut store, &root);
-    let warnings = validate(&store.entries, proxy_on)?;
+    let mut warnings = validate(&store.entries, proxy_on)?;
+
+    // 落点在内核里不存在的行，写进 CLI 配置就是一个选中即 404 的死名字。拦不住
+    // ——「先配表、后建渠道」是合法顺序，内核离线时也查不了 —— 但保存时必须说
+    // 一声，别让人到日志里找原因。桥接页那批 `claude-fa` / `claude-fabl` 前缀垃圾
+    // 就是因为没人说，静默攒了 13 行。
+    if let Some(routes) = crate::commands::cli::fetch_kernel_routes(&state).await {
+        let missing: Vec<&str> = store
+            .entries
+            .iter()
+            .filter(|e| {
+                let upstream = e.upstream_alias();
+                !upstream.is_empty() && routes.hits(upstream).is_empty()
+            })
+            .map(|e| e.upstream_alias())
+            .collect();
+        if !missing.is_empty() {
+            let mut uniq = missing;
+            uniq.sort();
+            uniq.dedup();
+            let shown: Vec<&str> = uniq.iter().take(5).copied().collect();
+            warnings.push(format!(
+                "有 {} 个落点在内核渠道里不存在（{}{}），写进 CLI 后选中它会 404 —— 先去内核后台建渠道，或把落点改成真实存在的别名。",
+                uniq.len(),
+                shown.join("、"),
+                if uniq.len() > 5 { "…" } else { "" },
+            ));
+        }
+    }
 
     store.save(&store_path(&state))?;
     refresh_proxy_rewrites(&state).await;
@@ -287,4 +315,23 @@ pub async fn bridge_seed(
         guess_slots(&mut store.entries);
     }
     Ok(store.entries)
+}
+
+#[cfg(test)]
+mod tests {
+    /// 落点在内核渠道里不存在的行要出警告：写进 CLI 配置的就是一个选中即 404 的
+    /// 死名字。桥接页那批 `claude-fa` / `claude-fabl` 前缀垃圾就是因为没人说，
+    /// 静默攒了十几行才被用户在 Grok 的模型列表里看见。
+    #[test]
+    fn a_target_the_kernel_doesnt_serve_is_warned_about() {
+        let json = serde_json::json!([
+            {"id": 1, "enabled": true, "models": [{"model": "grok-4.6"}]},
+            {"id": 2, "enabled": false, "models": [{"model": "retired-alias"}]},
+        ]);
+        let routes = crate::services::context_floor::KernelRoutes::parse(&json);
+        let served = |a: &str| !routes.hits(a).is_empty();
+        assert!(served("grok-4.6"));
+        assert!(!served("claude-fabl"), "内核没这个前缀名");
+        assert!(!served("retired-alias"), "停用渠道不算在服务");
+    }
 }

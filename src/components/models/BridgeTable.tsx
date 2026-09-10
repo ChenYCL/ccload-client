@@ -407,7 +407,8 @@ export function BridgeTable({
                           className="min-w-0 flex-1"
                           aria-label={t("第 {n} 行的落点", { n: i + 1 })}
                           value={r.target}
-                          onChange={(v) => patch(i, { target: v })}
+                          onChange={() => {}}
+                          onCommit={(v) => patch(i, { target: v })}
                           placeholder={t("内核里的别名")}
                           options={aliases}
                           emptyHint={t("内核里还没有别名，先去内核后台建渠道")}
@@ -648,7 +649,8 @@ function ClaudeSlots({
                 className="min-w-0 flex-1"
                 aria-label={t("{slot} 槽位发哪个名字", { slot: s.label })}
                 value={row?.alias ?? ""}
-                onChange={(v) => assign(s.id, v)}
+                onChange={() => {}}
+                onCommit={(v) => assign(s.id, v)}
                 placeholder={t("空着 —— 不写这个槽位")}
                 options={options}
                 emptyHint={t("内核里还没有别名，先去内核后台建渠道")}
@@ -656,7 +658,9 @@ function ClaudeSlots({
               {/* 落点。表格视图有这一列，槽位视图以前没有 —— 于是这 6 个槽位只能
                   挑别名、不能改它落到哪，而「换上游」恰恰是换模型最常做的事。
                   两个框的含义不同：左边写进 CLI（/model 里显示的名字），右边是
-                  代理转发前换成的内核别名。 */}
+                  代理转发前换成的内核别名。两个框都走提交语义：assign 会**造行**，
+                  逐键 onChange 的中间值（`claude-fa`、`claude-fabl`…）会当场各造
+                  一行，保存后原样写进 CLI 配置 —— 那批垃圾就是这条路进来的。 */}
               <span aria-hidden className="shrink-0 text-muted/60">
                 →
               </span>
@@ -664,7 +668,8 @@ function ClaudeSlots({
                 className="min-w-0 flex-1"
                 aria-label={t("{slot} 槽位落到哪个内核别名", { slot: s.label })}
                 value={row?.target ?? ""}
-                onChange={(v) => row && patchRow(row, { target: v })}
+                onChange={() => {}}
+                onCommit={(v) => row && patchRow(row, { target: v })}
                 placeholder={row ? t("内核里的别名") : t("先在左边选一个")}
                 options={aliases}
                 emptyHint={t("内核里还没有别名，先去内核后台建渠道")}
@@ -755,6 +760,14 @@ function ClaudeSlots({
             aria-label={t("往 /model 菜单里加一个别名")}
             value={pick}
             onChange={setPick}
+            // 回车或点选候选 = 直接加进菜单。这里 onChange 只回显文本（「加进
+            // 菜单」按钮要用它），造行发生在 addToPicker，不能逐键触发。
+            onCommit={(v) => {
+              if (v.trim()) {
+                addToPicker([v]);
+                setPick("");
+              }
+            }}
             placeholder={t("加一个别名")}
             options={options.filter((o) => !rows.some((r) => mine(r) && r.alias.trim() === o))}
             emptyHint={t("内核里还没有别名，先去内核后台建渠道")}
