@@ -17,7 +17,7 @@ use tauri::State;
 
 use crate::error::{AppError, AppResult};
 use crate::services::bridge::{
-    guess_slots, seed, sync_entries, validate, BridgeEntry, BridgeStore, CLAUDE_TIERS,
+    guess_slots, seed, sync_entries, validate, BridgeEntry, BridgeStore, ClaudeSuffix, CLAUDE_TIERS,
 };
 use crate::services::claude_bridge::{self, PICKER_MIN_VERSION};
 use crate::services::cli_backup::unique_stamp;
@@ -32,10 +32,20 @@ pub(crate) fn store_path(state: &AppState) -> std::path::PathBuf {
 
 /// 保存的结果：新的全表 + 该让用户看见但不阻止保存的话。
 #[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BridgeOutcome {
     pub entries: Vec<BridgeEntry>,
+    pub claude_suffix: ClaudeSuffix,
     pub warnings: Vec<String>,
     pub log: Vec<String>,
+}
+
+/// 读表的结果。后缀跟行一起回来，否则界面上的 m/M 勾选每次刷新都会跳回默认。
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeList {
+    pub entries: Vec<BridgeEntry>,
+    pub claude_suffix: ClaudeSuffix,
 }
 
 /// 写进一家 CLI 的结果。逐家独立成败 —— 一家没接管不该拖垮其余四家。
@@ -84,8 +94,12 @@ async fn load_synced(state: &AppState) -> Result<BridgeStore, AppError> {
 }
 
 #[tauri::command]
-pub async fn bridge_list(state: State<'_, AppState>) -> AppResult<Vec<BridgeEntry>> {
-    Ok(load_synced(&state).await?.entries)
+pub async fn bridge_list(state: State<'_, AppState>) -> AppResult<BridgeList> {
+    let store = load_synced(&state).await?;
+    Ok(BridgeList {
+        entries: store.entries,
+        claude_suffix: store.claude_suffix,
+    })
 }
 
 /// 存整张表。
@@ -97,6 +111,7 @@ pub async fn bridge_list(state: State<'_, AppState>) -> AppResult<Vec<BridgeEntr
 pub async fn bridge_save(
     state: State<'_, AppState>,
     entries: Vec<BridgeEntry>,
+    claude_suffix: Option<ClaudeSuffix>,
 ) -> AppResult<BridgeOutcome> {
     // 改名依赖代理，所以校验要知道代理开没开。取的是「写进 CLI 配置的地址是不是
     // 代理」这个开关，不是代理进程活着没有 —— 代理一直在跑，但 CLI 直连时它不在
@@ -108,9 +123,11 @@ pub async fn bridge_save(
     //      下一步对齐（以及以后每次读表）会把磁盘旧值收回来，「清空槽位」永远
     //      无法生效；
     //   2. 再收磁盘上真正没人认领的槽位（用户在别处配好的 fable / haiku）。
+    let prev = BridgeStore::load(&store_path(&state)).unwrap_or_else(|_| BridgeStore::default());
     let mut store = BridgeStore {
         entries,
         cleared_slots: Default::default(),
+        claude_suffix: claude_suffix.unwrap_or(prev.claude_suffix),
     };
     let root = state.config_root().await?;
     let disk = claude_bridge::slots_on_disk(&root);
@@ -167,6 +184,7 @@ pub async fn bridge_save(
     }
     Ok(BridgeOutcome {
         entries: store.entries,
+        claude_suffix: store.claude_suffix,
         warnings,
         log,
     })
@@ -192,7 +210,14 @@ async fn write_claude(
             text: "这一家一条都没勾，配置未改动".into(),
         };
     }
-    match claude_bridge::write(root, &store.entries, policy, &unique_stamp(), &state.backups) {
+    match claude_bridge::write(
+        root,
+        &store.entries,
+        policy,
+        store.claude_suffix,
+        &unique_stamp(),
+        &state.backups,
+    ) {
         Ok(r) => {
             // 写入已把磁盘上的旧值清掉，对应的墓碑随之作废。顺手存回去，别等下次
             // 读表时才被 retain 掉。

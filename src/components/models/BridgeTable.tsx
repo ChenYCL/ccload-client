@@ -10,7 +10,19 @@ import { formatWindow, tierKey } from "../../lib/modelMeta";
 import { TARGET_LABELS } from "../../lib/targets";
 import { ComboBox } from "../ui/ComboBox";
 import { TextInput } from "../ui/Input";
-import type { BridgeEntry, CliTarget } from "../../types";
+import type { BridgeEntry, ClaudeSuffix, CliTarget } from "../../types";
+
+/// 按窗口给别名补后缀，和后端 `with_window_suffix` 同一套规则。
+function withWindowSuffix(alias: string, window: number, kind: ClaudeSuffix): string {
+  const raw = alias.trim();
+  const stripped = raw.replace(/\[[0-9.]+[kKmM]?\]\s*$/, "").trimEnd();
+  const base = stripped || raw;
+  if (kind === "off" || window <= 0 || !base) return raw;
+  const mega = kind === "1m" ? "m" : "M";
+  if (window % 1_000_000 === 0) return `${base}[${window / 1_000_000}${mega}]`;
+  if (window % 1_000 === 0) return `${base}[${window / 1_000}k]`;
+  return `${base}[${window}]`;
+}
 
 /// 出口别名表 —— 这一页真正的内容。
 ///
@@ -89,8 +101,12 @@ export function BridgeTable({
   // null = 还没动过，显示磁盘上那份。动过之后草稿才是真相 —— 中途 refetch
   // 把用户正在编的表换掉，是「我明明改了」那类 bug 里最气人的一种。
   const [draft, setDraft] = useState<BridgeEntry[] | null>(null);
-  const rows = draft ?? saved.data ?? [];
-  const dirty = draft !== null && JSON.stringify(draft) !== JSON.stringify(saved.data ?? []);
+  const [suffixDraft, setSuffixDraft] = useState<ClaudeSuffix | null>(null);
+  const rows = draft ?? saved.data?.entries ?? [];
+  const suffix: ClaudeSuffix = suffixDraft ?? saved.data?.claudeSuffix ?? "1M";
+  const dirty =
+    (draft !== null && JSON.stringify(draft) !== JSON.stringify(saved.data?.entries ?? [])) ||
+    (suffixDraft !== null && suffixDraft !== (saved.data?.claudeSuffix ?? "1M"));
 
   const [tab, setTab] = useState<CliTarget>("claude-code");
   const [prune, setPrune] = useState(false);
@@ -143,10 +159,11 @@ export function BridgeTable({
   };
 
   const save = useMutation({
-    mutationFn: () => api.bridgeSave(rows),
+    mutationFn: () => api.bridgeSave(rows, suffix),
     onSuccess: (r) => {
-      qc.setQueryData(["bridge"], r.entries);
+      qc.setQueryData(["bridge"], { entries: r.entries, claudeSuffix: r.claudeSuffix });
       setDraft(null);
+      setSuffixDraft(null);
       onMessage([...r.log, ...r.warnings.map((w) => `⚠ ${w}`)].join("\n"));
     },
     onError: (e) => onMessage(errText(e)),
@@ -166,7 +183,8 @@ export function BridgeTable({
   // 各自留在表里（切 tab 就看得见），写入也就该各写各的。
   const apply = useMutation({
     mutationFn: () => api.bridgeApply([tab], prune),
-    onSuccess: (rs) =>
+    onSuccess: (rs) => {
+      qc.invalidateQueries({ queryKey: ["cli-preview"] });
       onMessage(
         rs
           .map((r) => {
@@ -176,7 +194,8 @@ export function BridgeTable({
             return `${label}：已写入 ${r.text}`;
           })
           .join("\n"),
-      ),
+      );
+    },
     onError: (e) => onMessage(errText(e)),
   });
 
@@ -349,6 +368,8 @@ export function BridgeTable({
           aliases={aliases}
           resolve={resolve}
           onChange={set}
+          suffix={suffix}
+          onSuffix={setSuffixDraft}
           onDisk={
             (preview.data ?? []).find((x) => x.target === "claude-code")?.claude_slots ?? {}
           }
@@ -535,6 +556,8 @@ function ClaudeSlots({
   aliases,
   resolve,
   onChange,
+  suffix,
+  onSuffix,
   onDisk,
   pickerOnDisk,
 }: {
@@ -542,6 +565,8 @@ function ClaudeSlots({
   aliases: string[];
   resolve: (r: BridgeEntry) => { auto: number; window: number; percent: number; trigger: number };
   onChange: (next: BridgeEntry[]) => void;
+  suffix: ClaudeSuffix;
+  onSuffix: (s: ClaudeSuffix) => void;
   /// 磁盘上这几个槽位现在写着什么。槽位 id → 模型名。
   onDisk: Record<string, string>;
   /// 磁盘上 modelPicker 里我们写的那些行。
@@ -617,11 +642,11 @@ function ClaudeSlots({
       rows.map((r) => (r === row ? { ...r, targets: r.targets.filter((x) => x !== "claude-code") } : r)),
     );
 
-  // 磁盘上 modelPicker 里我们的行和这里对不对得上（忽略顺序）。对不上就像槽位
-  // 那样标一个「磁盘：N 行」—— 写入是显式动作，没写之前界面不能装作已经写了。
+  // 磁盘上 modelPicker 里我们的行和这里对不对得上（忽略顺序、忽略窗口后缀）。
+  // 对不上就像槽位那样标一个「磁盘：N 行」—— 写入是显式动作。
   const pickerSynced = useMemo(() => {
-    const here = [...new Set(picker.map((r) => r.alias.trim()))].sort();
-    const disk = [...new Set(pickerOnDisk.map((s) => s.trim()))].sort();
+    const here = [...new Set(picker.map((r) => tierKey(r.alias)))].sort();
+    const disk = [...new Set(pickerOnDisk.map((s) => tierKey(s)))].sort();
     return here.length === disk.length && here.every((x, i) => x === disk[i]);
   }, [picker, pickerOnDisk]);
 
@@ -633,6 +658,28 @@ function ClaudeSlots({
             modelPicker 列表，整张表都放得进 /model；`--model` 也仍然不受限制。 */}
         <span className="mt-1 block text-muted/80">
           {t("读表时磁盘上已有的槽位会先收进来；写入时这里空着的槽位会被清掉。槽位放不下的模型进最下面的列表，整张表都能放进 /model；任何出口别名也都能用 --model <名字> 直接选。")}
+        </span>
+        <span className="mt-2 flex flex-wrap items-center gap-1.5">
+          <span className="text-muted">{t("写进 CLI 的窗口后缀")}</span>
+          {(["off", "1m", "1M"] as const).map((k) => (
+            <button
+              key={k}
+              type="button"
+              aria-pressed={suffix === k}
+              onClick={() => onSuffix(k)}
+              className={cn(
+                "rounded-md border px-2 py-0.5 font-mono text-[11px]",
+                suffix === k
+                  ? "border-accent bg-accent/12 text-accent"
+                  : "border-border text-muted hover:bg-surface-2",
+              )}
+            >
+              {k === "off" ? t("不写后缀") : `[${k}]`}
+            </button>
+          ))}
+          <span className="text-muted/80">
+            {t("Claude Code 只认 [1m]（大小写都行）；没带时 opus-5 / sonnet-5 按 200k 夹。其它窗口（[500k]）走全局上限，跟着主模型。窗口数字来自 models.dev，可在下面手改。")}
+          </span>
         </span>
       </p>
       {CLAUDE_SLOTS.map((s) => {
@@ -655,6 +702,17 @@ function ClaudeSlots({
                 options={options}
                 emptyHint={t("内核里还没有别名，先去内核后台建渠道")}
               />
+              {row &&
+                suffix !== "off" &&
+                info &&
+                withWindowSuffix(row.alias, info.window, suffix) !== row.alias.trim() && (
+                  <span
+                    title={t("写入时会带上这个后缀")}
+                    className="shrink-0 font-mono text-[10px] text-muted"
+                  >
+                    → {withWindowSuffix(row.alias, info.window, suffix)}
+                  </span>
+                )}
               {/* 落点。表格视图有这一列，槽位视图以前没有 —— 于是这 6 个槽位只能
                   挑别名、不能改它落到哪，而「换上游」恰恰是换模型最常做的事。
                   两个框的含义不同：左边写进 CLI（/model 里显示的名字），右边是
@@ -715,7 +773,14 @@ function ClaudeSlots({
               ) : (
                 <span className="text-[11px] text-muted">{t(s.hint)}</span>
               )}
-              <DiskNote slot={s.id} row={row} onDisk={onDisk} />
+              <DiskNote
+                slot={s.id}
+                row={row}
+                onDisk={onDisk}
+                written={
+                  row && info ? withWindowSuffix(row.alias, info.window, suffix) : row?.alias
+                }
+              />
             </div>
           </div>
         );
@@ -863,15 +928,18 @@ function DiskNote({
   slot,
   row,
   onDisk,
+  written,
 }: {
   slot: string;
   row: BridgeEntry | undefined;
   onDisk: Record<string, string>;
+  /** 写入时会落在磁盘上的名字（含窗口后缀）。跟磁盘一致就不提示。 */
+  written?: string;
 }) {
   const t = useT();
   const disk = (onDisk[slot] ?? "").trim();
   if (!disk) return null;
-  if (row && row.alias.trim() === disk) return null;
+  if (row && (written ?? row.alias).trim() === disk) return null;
   return (
     <span
       title={

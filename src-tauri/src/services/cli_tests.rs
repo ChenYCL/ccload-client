@@ -3,7 +3,7 @@
 
 use crate::services::cli_advanced::TakeoverOptions;
 use crate::services::cli_backup::BackupStore;
-use crate::services::cli_config::{apply_takeover, current_endpoint, preview};
+use crate::services::cli_config::{apply_takeover, current_endpoint, preview, sync_claude_window_env};
 use crate::services::cli_types::{CliTarget, ConfigRoot};
 
 fn sandbox() -> (tempfile::TempDir, ConfigRoot, BackupStore) {
@@ -1098,4 +1098,35 @@ fn grok_profile_gets_the_compact_percent_next_to_its_window() {
     let doc: toml_edit::DocumentMut = read(&root, ".grok/config.toml").parse().unwrap();
     assert_eq!(doc["model"]["ccload"]["context_window"].as_integer(), Some(500_000));
     assert_eq!(doc["model"]["ccload"]["auto_compact_threshold_percent"].as_integer(), Some(90));
+}
+
+/// 现场同步只动窗口那几个键，其它 env 不动；没变就不再写。
+#[test]
+fn syncing_the_live_claude_window_is_a_merge_and_a_no_op_when_unchanged() {
+    let (_keep, root, _bk) = sandbox();
+    write(
+        &root,
+        ".claude/settings.json",
+        r#"{"env":{"ANTHROPIC_BASE_URL":"http://x","CLAUDE_CODE_MAX_CONTEXT_TOKENS":"1000000","KEEP":"yes"}}"#,
+    );
+    assert!(sync_claude_window_env(&root, 500_000, Some(90)).unwrap());
+    let doc: serde_json::Value =
+        serde_json::from_str(&read(&root, ".claude/settings.json")).unwrap();
+    assert_eq!(
+        doc.pointer("/env/CLAUDE_CODE_MAX_CONTEXT_TOKENS").and_then(|v| v.as_str()),
+        Some("500000")
+    );
+    assert_eq!(
+        doc.pointer("/env/CLAUDE_CODE_AUTO_COMPACT_WINDOW").and_then(|v| v.as_str()),
+        Some("500000")
+    );
+    assert_eq!(doc.pointer("/env/KEEP").and_then(|v| v.as_str()), Some("yes"));
+    assert!(!sync_claude_window_env(&root, 500_000, Some(90)).unwrap());
+    assert!(!sync_claude_window_env(&root, 0, None).unwrap());
+}
+
+#[test]
+fn syncing_does_nothing_until_claude_is_taken_over() {
+    let (_keep, root, _bk) = sandbox();
+    assert!(!sync_claude_window_env(&root, 500_000, None).unwrap());
 }

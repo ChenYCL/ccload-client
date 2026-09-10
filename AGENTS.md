@@ -202,7 +202,10 @@ Claude Code 那一侧（`services/claude_bridge.rs`）和别家**语义相反**�
 
 * `/model` 菜单 = 5 个 tier 环境变量 + `ANTHROPIC_CUSTOM_MODEL_OPTION` + settings.json
   顶层的 `modelPicker.options[]`（Claude Code 2.1.243 起，行数不限；用户级 settings
-  生效，项目级不认；多来源不合并、最高优先级整体胜出）。网关发现那条路
+  生效，项目级不认；多来源不合并、最高优先级整体胜出）。写进 CLI 的 id 默认带窗口
+  后缀（`claude-opus-5[1M]`）：Claude Code 只认 `[1m]`（大小写不敏感），没带时 opus-5
+  / sonnet-5 按 200k 夹。`[500k]` 它当普通 id，真正上限走全局
+  `CLAUDE_CODE_MAX_CONTEXT_TOKENS`（跟着主模型）。网关发现那条路
   （`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`）只留 id 含 claude/anthropic 的，
   对多 provider 没用，别走。
 * 桥接表**独占**那 6 个槽位：读表时先把磁盘上已有、表里没认领的槽位收进来

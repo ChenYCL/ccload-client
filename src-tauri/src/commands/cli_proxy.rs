@@ -30,6 +30,12 @@ pub async fn ensure_cli_proxy(state: &AppState) -> Result<(), crate::error::AppE
     crate::commands::rescue::refresh_proxy_rescue(state).await;
     // 动态注入同上：磁盘上的规则推进代理内存。
     crate::commands::dynamic_inject::refresh_proxy_dynamic_inject(state).await;
+    // 窗口同步：策略和配置根都齐了才装得上。
+    if let Some(proxy) = state.cli_proxy.read().await.as_ref() {
+        let policy = state.settings.read().await.context_policy.clone();
+        let root = state.config_root().await?;
+        proxy.set_window_sync(policy, root).await;
+    }
     Ok(())
 }
 

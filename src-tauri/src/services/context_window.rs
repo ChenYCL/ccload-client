@@ -280,6 +280,41 @@ fn strip_vendor(name: &str) -> &str {
     }
 }
 
+/// 按窗口给别名补上后缀，写进 Claude Code 的模型 id。
+///
+/// Claude Code 2.1.266 只认末尾 `[1m]` / `[2m]`（`jt()` 的正则是 `/\[1m\]$/i`，
+/// 大小写不敏感）。没带 `[1m]` 时，它的内置目录把 opus-5 / sonnet-5 当 200k ——
+/// 状态栏 `289k/200k` 就是这么来的。其它窗口（`[500k]`）它当普通 id，真正的
+/// 上限走全局 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`（跟着主模型那一行）。
+///
+/// `mega` 只影响百万档的字母：`'m'` → `[1m]`，其它 → `[1M]`。已经带窗口后缀
+/// 的别名先剥再补，不会攒出 `claude-opus-5[1M][1M]`。
+pub fn with_window_suffix(alias: &str, window: u64, mega: char) -> String {
+    let base = strip_window_suffix(alias.trim());
+    if base.is_empty() || window == 0 {
+        return base.to_string();
+    }
+    let mega = if mega == 'm' { 'm' } else { 'M' };
+    let suf = if window % 1_000_000 == 0 {
+        format!("[{}{mega}]", window / 1_000_000)
+    } else if window % 1_000 == 0 {
+        format!("[{}k]", window / 1_000)
+    } else {
+        format!("[{window}]")
+    };
+    format!("{base}{suf}")
+}
+
+/// 只剥**窗口**后缀（`[1m]` / `[500k]` / `[200000]`），`model[beta]` 这种不动。
+fn strip_window_suffix(name: &str) -> &str {
+    match (name.rfind('['), name.ends_with(']')) {
+        (Some(i), true) if parse_size(&name[i + 1..name.len() - 1]).is_some() => {
+            name[..i].trim_end()
+        }
+        _ => name,
+    }
+}
+
 /// `[1m]`、`[500k]`、`[200000]`。只认名字**末尾**那一组方括号，免得误伤
 /// `model[beta]-v1`。
 fn suffix_window(name: &str) -> Option<u64> {
@@ -445,6 +480,21 @@ mod tests {
         assert_eq!(parse_window("whatever[500k]"), 500_000);
         assert_eq!(parse_window("whatever[200000]"), 200_000);
         assert_eq!(parse_window("whatever[0.2m]"), 200_000);
+    }
+
+    /// 写进 Claude Code 的 id：1M 用 `[1M]`/`[1m]`，500k 用 `[500k]`；已有后缀先剥。
+    #[test]
+    fn window_suffix_is_appended_and_not_doubled() {
+        assert_eq!(with_window_suffix("claude-opus-5", 1_000_000, 'M'), "claude-opus-5[1M]");
+        assert_eq!(with_window_suffix("claude-opus-5", 1_000_000, 'm'), "claude-opus-5[1m]");
+        assert_eq!(
+            with_window_suffix("claude-opus-5[1M]", 1_000_000, 'm'),
+            "claude-opus-5[1m]"
+        );
+        assert_eq!(with_window_suffix("grok-4.6", 500_000, 'M'), "grok-4.6[500k]");
+        assert_eq!(with_window_suffix("foo[beta]", 200_000, 'M'), "foo[beta][200k]");
+        assert_eq!(with_window_suffix("x", 0, 'M'), "x");
+        assert_eq!(with_window_suffix("  ", 1_000_000, 'M'), "");
     }
 
     /// 上游 4.6 起给到 1M，4.5 及更早、以及 haiku 仍是 200k。整族按 200k 估会

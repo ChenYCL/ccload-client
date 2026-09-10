@@ -26,8 +26,10 @@ import type {
   FallbackChain,
   ForcedRoute,
   BridgeEntry,
+  BridgeList,
   BridgeOutcome,
   BridgeWrite,
+  ClaudeSuffix,
   ImageApi,
   ImageTargetState,
   ImportEntry,
@@ -226,10 +228,10 @@ export const api = {
 
   /* --- 出口别名 ---------------------------------------------------------- */
 
-  bridgeList: () => invoke<BridgeEntry[]>("bridge_list"),
+  bridgeList: () => invoke<BridgeList>("bridge_list"),
   /** 整表替换。校验不过就一个字都不写，改名记录在 CLI 直连内核时会被拒。 */
-  bridgeSave: (entries: BridgeEntry[]) =>
-    invoke<BridgeOutcome>("bridge_save", { entries }),
+  bridgeSave: (entries: BridgeEntry[], claudeSuffix?: ClaudeSuffix) =>
+    invoke<BridgeOutcome>("bridge_save", { entries, claudeSuffix }),
   /** 按已保存的表写进各 CLI 的配置文件。逐家独立成败。 */
   bridgeApply: (targets: CliTarget[], prune: boolean) =>
     invoke<BridgeWrite[]>("bridge_apply", { targets, prune }),

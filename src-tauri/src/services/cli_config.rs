@@ -334,6 +334,45 @@ pub(crate) fn write_claude_window_env(
     );
 }
 
+/// 按当前模型的窗口改 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`（及压缩分母）。
+///
+/// Claude Code 对非 `claude-*` 的模型（grok / glm / gpt）用这个全局键当窗口：
+/// `$L` 里 `BL(e)` 为真就读它。`/model grok-4.6[500k]` 之后状态栏仍显示 1.0M，
+/// 就是因为写入时这个键跟着主模型（opus 1M）走，会话里换模型不会自己改。
+///
+/// 它监听 `settings.json` 的 `env`：变了就 `Bk()` 重新套到 `process.env`。所以
+/// 代理在看到 Claude Code 请求的 model 之后改这两个键，**当前会话**下一轮就会
+/// 用新窗口。opus-5 带 `[1M]` 时 `$L` 第一行就返回 1e6，不看这个键，改 500k
+/// 不会把 opus 压窄。
+///
+/// 不拍快照：这是我们自己写过的键的现场同步，每条请求都 snapshot 会把 5 份额度
+/// 几分钟内烧光。返回是否真的写了盘（没变就 false）。
+pub fn sync_claude_window_env(
+    root: &ConfigRoot,
+    window: u64,
+    compact_percent: Option<u8>,
+) -> Result<bool, AppError> {
+    if window == 0 {
+        return Ok(false);
+    }
+    let path = root.join(".claude/settings.json");
+    if !path.exists() {
+        return Ok(false);
+    }
+    let mut doc = read_json(&path)?;
+    let env = object_at(&mut doc, "env")?;
+    let cur = env
+        .get("CLAUDE_CODE_MAX_CONTEXT_TOKENS")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if cur == window.to_string() {
+        return Ok(false);
+    }
+    write_claude_window_env(env, window, compact_percent);
+    write_pretty_json(&path, &doc)?;
+    Ok(true)
+}
+
 pub fn apply_takeover(
     root: &ConfigRoot,
     target: CliTarget,

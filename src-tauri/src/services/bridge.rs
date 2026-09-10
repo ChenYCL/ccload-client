@@ -186,6 +186,32 @@ impl BridgeEntry {
     }
 }
 
+/// 写进 Claude Code 时要不要给别名补窗口后缀，以及百万档用 `m` 还是 `M`。
+///
+/// Claude Code 只认 `[1m]`（大小写不敏感）。默认 `[1M]` 跟 Anthropic 菜单和用户
+/// 磁盘上已有的拼法一致。`off` = 表里写什么就写什么，给要自己拼后缀的人。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ClaudeSuffix {
+    #[serde(rename = "off")]
+    Off,
+    #[default]
+    #[serde(rename = "1M")]
+    Upper,
+    #[serde(rename = "1m")]
+    Lower,
+}
+
+impl ClaudeSuffix {
+    /// 百万档的字母。`None` = 不补后缀。
+    pub fn mega(self) -> Option<char> {
+        match self {
+            Self::Off => None,
+            Self::Upper => Some('M'),
+            Self::Lower => Some('m'),
+        }
+    }
+}
+
 /// `~/.ccload-client/bridge.json`。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BridgeStore {
@@ -198,6 +224,9 @@ pub struct BridgeStore {
     /// 下作废：槽位被重新认领，或写入把磁盘上的旧值清掉了（`sync_entries`）。
     #[serde(default)]
     pub cleared_slots: BTreeSet<String>,
+    /// 写进 Claude Code 时给别名补窗口后缀。默认 `[1M]`。
+    #[serde(default)]
+    pub claude_suffix: ClaudeSuffix,
 }
 
 impl BridgeStore {
@@ -500,7 +529,7 @@ mod tests {
     fn one_row_may_hold_several_claude_slots() {
         let row = slotted("claude-opus-5", "claude-opus-5", &["default", "opus"]);
         assert!(validate(std::slice::from_ref(&row), true).unwrap().is_empty());
-        let store = BridgeStore { entries: vec![row], cleared_slots: Default::default() };
+        let store = BridgeStore { entries: vec![row], cleared_slots: Default::default(), claude_suffix: Default::default() };
         let cc = store.import_entries(CliTarget::ClaudeCode, &ContextPolicy::default());
         let mut tiers: Vec<_> = cc.iter().map(|e| e.tier.clone().unwrap()).collect();
         tiers.sort();
@@ -508,7 +537,7 @@ mod tests {
         // 别的 CLI 不关心槽位，还是一条。
         let mut oc = store.entries[0].clone();
         oc.targets.insert(CliTarget::OpenCode);
-        let store = BridgeStore { entries: vec![oc], cleared_slots: Default::default() };
+        let store = BridgeStore { entries: vec![oc], cleared_slots: Default::default(), claude_suffix: Default::default() };
         assert_eq!(store.import_entries(CliTarget::OpenCode, &ContextPolicy::default()).len(), 1);
     }
 
@@ -564,6 +593,7 @@ mod tests {
         let mut store = BridgeStore {
             entries: vec![opus_row()],
             cleared_slots: ["haiku".to_string()].into(),
+            claude_suffix: Default::default(),
         };
         let dir = tempfile::tempdir().unwrap();
         let root = TestRoot::sandbox(dir.path().to_path_buf());
@@ -599,7 +629,7 @@ mod tests {
     #[test]
     fn only_renaming_entries_become_rewrites() {
         let store = BridgeStore {
-            cleared_slots: Default::default(),
+            cleared_slots: Default::default(), claude_suffix: Default::default(),
             entries: vec![
                 entry("ccload-fast", "grok-4.6"),
                 entry("claude-opus-5", "claude-opus-5"),
@@ -699,7 +729,7 @@ mod tests {
         let opus = slotted("ccload-big", "claude-opus-5", &["opus"]);
         let store = BridgeStore {
             entries: vec![entry("ccload-fast", "grok-4.6"), opus],
-            cleared_slots: Default::default(),
+            cleared_slots: Default::default(), claude_suffix: Default::default(),
         };
 
         let oc = store.import_entries(CliTarget::OpenCode, &p);
@@ -786,7 +816,7 @@ mod tests {
         assert_eq!(seeded.len(), 2);
         assert!(seeded.iter().all(|e| !e.renames()));
         assert!(validate(&seeded, false).is_ok());
-        assert!(BridgeStore { entries: seeded, cleared_slots: Default::default() }.rewrites().is_empty());
+        assert!(BridgeStore { entries: seeded, cleared_slots: Default::default(), claude_suffix: Default::default() }.rewrites().is_empty());
     }
 
     /// 槽位猜测：每个槽位只认领一次，已经绑好的不动，认领了就顺手勾上 Claude Code。

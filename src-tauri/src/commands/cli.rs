@@ -556,8 +556,12 @@ pub async fn context_policy_set(
     policy
         .overrides
         .retain(|k, v| !k.trim().is_empty() && *v > 0);
-    state.settings.write().await.context_policy = policy;
+    state.settings.write().await.context_policy = policy.clone();
     state.persist().await?;
+    if let Some(proxy) = state.cli_proxy.read().await.as_ref() {
+        let root = state.config_root().await?;
+        proxy.set_window_sync(policy.clone(), root).await;
+    }
     let root = state.config_root().await?;
     let mut stale = 0usize;
     for t in TARGETS {

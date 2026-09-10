@@ -27,13 +27,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::{Map, Value};
 
 use crate::error::AppError;
-use crate::services::bridge::BridgeEntry;
+use crate::services::bridge::{BridgeEntry, ClaudeSuffix};
 use crate::services::cli_backup::BackupStore;
 use crate::services::cli_config::{write_claude_slot, write_claude_slot_note, write_claude_window_env};
 use crate::services::cli_io::{object_at, read_json, write_pretty_json};
 use crate::services::cli_types::{CliTarget, ConfigRoot};
 use crate::services::context_floor::alias_key;
-use crate::services::context_window::ContextPolicy;
+use crate::services::context_window::{with_window_suffix, ContextPolicy};
 use crate::services::model_caps::claude_capabilities;
 
 /// 槽位名 → 环境变量键。顺序就是 `/model` 菜单里的顺序。
@@ -156,11 +156,20 @@ fn behaves_as(e: &BridgeEntry) -> Option<&'static str> {
     (!family.starts_with("claude") && capabilities_of(e).is_some()).then_some(BEHAVES_AS_REASONING)
 }
 
-fn picker_row(e: &BridgeEntry) -> Value {
-    let alias = e.alias.trim();
+/// 写进 Claude Code 的模型 id：按窗口补 `[1M]` / `[1m]` / `[500k]`。
+fn cli_alias(e: &BridgeEntry, policy: &ContextPolicy, suffix: ClaudeSuffix) -> String {
+    let raw = e.alias.trim();
+    match suffix.mega() {
+        Some(mega) => with_window_suffix(raw, e.window(policy), mega),
+        None => raw.to_string(),
+    }
+}
+
+fn picker_row(e: &BridgeEntry, policy: &ContextPolicy, suffix: ClaudeSuffix) -> Value {
+    let alias = cli_alias(e, policy, suffix);
     let mut row = Map::new();
-    row.insert("model".into(), Value::String(alias.into()));
-    row.insert("label".into(), Value::String(alias.into()));
+    row.insert("model".into(), Value::String(alias.clone()));
+    row.insert("label".into(), Value::String(alias));
     row.insert(
         "description".into(),
         Value::String(note_for(e).unwrap_or_else(|| PICKER_MARK.to_string())),
@@ -178,8 +187,13 @@ fn picker_row(e: &BridgeEntry) -> Value {
 ///   * 一行都没有时把整个键删掉，别留一个空壳让用户以为我们还在管。
 ///
 /// `replaceBuiltInOptions` 之类其它键不碰：那是用户 / 管理员的选择。
-fn merge_picker(doc: &mut Value, rows: &[&BridgeEntry]) -> Result<(), AppError> {
-    let ours: Vec<Value> = rows.iter().map(|e| picker_row(e)).collect();
+fn merge_picker(
+    doc: &mut Value,
+    rows: &[&BridgeEntry],
+    policy: &ContextPolicy,
+    suffix: ClaudeSuffix,
+) -> Result<(), AppError> {
+    let ours: Vec<Value> = rows.iter().map(|e| picker_row(e, policy, suffix)).collect();
     let our_models: BTreeSet<String> = rows.iter().map(|e| alias_key(&e.alias)).collect();
     let top = doc
         .as_object_mut()
@@ -217,6 +231,7 @@ pub fn write(
     root: &ConfigRoot,
     entries: &[BridgeEntry],
     policy: &ContextPolicy,
+    suffix: ClaudeSuffix,
     stamp: &str,
     backups: &BackupStore,
 ) -> Result<ClaudeWrite, AppError> {
@@ -255,7 +270,7 @@ pub fn write(
             match by_slot.get(slot) {
                 Some(e) => {
                     slots += 1;
-                    write_claude_slot(env, key, Some(e.alias.trim()));
+                    write_claude_slot(env, key, Some(&cli_alias(e, policy, suffix)));
                     write_claude_slot_note(env, key, note_for(e).as_deref());
                     // 主模型没有这个伴生键，靠 CLAUDE_CODE_ALWAYS_ENABLE_EFFORT。
                     // 不会推理的落点要把上一任留下的 `effort,thinking` 收走，否则
@@ -296,7 +311,7 @@ pub fn write(
             }
         }
     }
-    merge_picker(&mut doc, &picker_rows)?;
+    merge_picker(&mut doc, &picker_rows, policy, suffix)?;
     write_pretty_json(&path, &doc)?;
 
     Ok(ClaudeWrite {
@@ -350,6 +365,7 @@ mod tests {
             &root,
             &[row("claude-opus-5", "claude-opus-5", &["default", "opus"])],
             &ContextPolicy::default(),
+            ClaudeSuffix::Off,
             "s1",
             &bk,
         )
@@ -363,6 +379,46 @@ mod tests {
         assert!(env_str(&doc, "ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION").is_none());
         // 快照先于写入。
         assert_eq!(bk.list(Some(CliTarget::ClaudeCode)).unwrap().len(), 1);
+    }
+
+    /// 1M 的 Claude 模型要带 `[1M]`/`[1m]`，否则 Claude Code 的目录按 200k 夹。
+    #[test]
+    fn a_1m_claude_model_gets_the_window_suffix() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, bk, path) = sandbox(&dir, BASE);
+        write(
+            &root,
+            &[row("claude-opus-5", "claude-opus-5", &["default"])],
+            &ContextPolicy::default(),
+            ClaudeSuffix::Upper,
+            "s1",
+            &bk,
+        )
+        .unwrap();
+        assert_eq!(env_str(&read(&path), "ANTHROPIC_MODEL"), Some("claude-opus-5[1M]"));
+        write(
+            &root,
+            &[row("claude-opus-5[1M]", "claude-opus-5", &["default"])],
+            &ContextPolicy::default(),
+            ClaudeSuffix::Lower,
+            "s2",
+            &bk,
+        )
+        .unwrap();
+        assert_eq!(env_str(&read(&path), "ANTHROPIC_MODEL"), Some("claude-opus-5[1m]"));
+        // grok 的真实窗口是 500k：后缀是 [500k]，全局上限跟着主模型走。
+        write(
+            &root,
+            &[row("grok-4.6", "grok-4.6", &["default"])],
+            &ContextPolicy::default(),
+            ClaudeSuffix::Upper,
+            "s3",
+            &bk,
+        )
+        .unwrap();
+        let doc = read(&path);
+        assert_eq!(env_str(&doc, "ANTHROPIC_MODEL"), Some("grok-4.6[500k]"));
+        assert_eq!(env_str(&doc, "CLAUDE_CODE_MAX_CONTEXT_TOKENS"), Some("500000"));
     }
 
     /// 表里空着的槽位在磁盘上被清掉，连同标签、副标题、能力键一起；主模型跟着走。
@@ -383,6 +439,7 @@ mod tests {
             &root,
             &[row("keep-me", "keep-me", &["opus"])],
             &ContextPolicy::default(),
+            ClaudeSuffix::Off,
             "s1",
             &bk,
         )
@@ -420,6 +477,7 @@ mod tests {
                 row("ccload-custom", "glm-5.3-flash", &["custom"]),
             ],
             &ContextPolicy::default(),
+            ClaudeSuffix::Off,
             "s1",
             &bk,
         )
@@ -463,7 +521,7 @@ mod tests {
             row("anthropic/claude-sonnet-5", "claude-sonnet-5", &[]),
             row("tts-1", "tts-1", &[]),
         ];
-        let r = write(&root, &rows, &ContextPolicy::default(), "s1", &bk).unwrap();
+        let r = write(&root, &rows, &ContextPolicy::default(), ClaudeSuffix::Off, "s1", &bk).unwrap();
         assert_eq!(r.picker, 4);
         let doc = read(&path);
         let options = doc.pointer("/modelPicker/options").unwrap().as_array().unwrap();
@@ -486,7 +544,7 @@ mod tests {
         assert_eq!(doc.pointer("/modelPicker/replaceBuiltInOptions"), Some(&Value::Bool(false)));
 
         // 第二次：没占槽位的行全删了 → 只剩管理员那一行。
-        write(&root, &rows[..1], &ContextPolicy::default(), "s2", &bk).unwrap();
+        write(&root, &rows[..1], &ContextPolicy::default(), ClaudeSuffix::Off, "s2", &bk).unwrap();
         let doc = read(&path);
         let models: Vec<String> = picker_in(&doc);
         assert_eq!(models, vec!["admin-model"]);
@@ -495,7 +553,7 @@ mod tests {
         let mut stripped = read(&path);
         stripped.as_object_mut().unwrap().remove("modelPicker");
         std::fs::write(&path, stripped.to_string()).unwrap();
-        write(&root, &rows[..1], &ContextPolicy::default(), "s3", &bk).unwrap();
+        write(&root, &rows[..1], &ContextPolicy::default(), ClaudeSuffix::Off, "s3", &bk).unwrap();
         assert!(read(&path).get("modelPicker").is_none());
     }
 
@@ -511,6 +569,7 @@ mod tests {
             &root,
             &[row("grok-4.6", "grok-4.6", &["opus"])],
             &ContextPolicy::default(),
+            ClaudeSuffix::Off,
             "s1",
             &bk,
         )
@@ -519,7 +578,7 @@ mod tests {
 
         let mut main = row("grok-4.6", "grok-4.6", &["default"]);
         main.context_window = 300_000;
-        write(&root, &[main], &ContextPolicy::default(), "s2", &bk).unwrap();
+        write(&root, &[main], &ContextPolicy::default(), ClaudeSuffix::Off, "s2", &bk).unwrap();
         assert_eq!(env_str(&read(&path), "CLAUDE_CODE_MAX_CONTEXT_TOKENS"), Some("300000"));
     }
 

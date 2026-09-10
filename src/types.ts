@@ -332,8 +332,17 @@ export type BridgeEntry = {
   tiers?: string[];
 };
 
+/** 写进 Claude Code 时给别名补窗口后缀。默认 1M。 */
+export type ClaudeSuffix = "off" | "1M" | "1m";
+
+export type BridgeList = {
+  entries: BridgeEntry[];
+  claudeSuffix: ClaudeSuffix;
+};
+
 export type BridgeOutcome = {
   entries: BridgeEntry[];
+  claudeSuffix: ClaudeSuffix;
   /** 能存但用户该知道的话（比如选了槽位却没勾 Claude Code）。 */
   warnings: string[];
   log: string[];
