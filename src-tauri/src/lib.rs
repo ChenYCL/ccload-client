@@ -30,6 +30,14 @@ fn show_main_window(app: &tauri::AppHandle) {
         force_window_front(&w);
         let _ = w.set_focus();
         let _ = w.request_user_attention(Some(tauri::UserAttentionType::Informational));
+        tracing::info!(
+            "show_main_window: window shown (visible={:?})",
+            w.is_visible().ok()
+        );
+    } else {
+        // 窗口 manager 里没有 "main" 了 —— 说明窗口被销毁而不是隐藏。此时任何
+        // show 都无从谈起；没有日志的话用户点 Dock 就是纯粹的没反应。
+        tracing::warn!("show_main_window: main window handle is gone");
     }
 }
 
@@ -63,8 +71,15 @@ fn force_window_front(w: &tauri::WebviewWindow) {
     }
     ns.makeKeyAndOrderFront(None);
     // objc2 0.3 里 activate() 无参且标记为安全（老式 activateIgnoringOtherApps
-    // 已废弃）。拾起自己靠 makeKeyAndOrderFront + 上面那步 app.show()。
-    NSApplication::sharedApplication(mtm).activate();
+    // 已废弃）。macOS 14+ 的 activate() 是「尽力而为」：从 Dock 点击进来时本 app
+    // 还不是 active，协同激活常被系统拒绝 —— 拒了之后窗口只在背后 orderFront，
+    // 用户看到的还是「点了没反应」。所以被拒时用老 API 强抢一次。
+    let app = NSApplication::sharedApplication(mtm);
+    app.activate();
+    if !app.isActive() {
+        #[allow(deprecated)]
+        app.activateIgnoringOtherApps(true);
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -358,7 +373,8 @@ pub fn run() {
             // **不接这个事件，点 Dock 图标就什么都不会发生** —— 窗口被 ⌘H 或关窗
             // 藏起来之后，用户唯一的直觉操作（点图标）是死的，只能去找托盘。
             #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Reopen { .. } = _event {
+            if let tauri::RunEvent::Reopen { has_visible_windows, .. } = _event {
+                tracing::info!("dock reopen: has_visible_windows={has_visible_windows}");
                 show_main_window(_app);
             }
             // ⌘Q / 菜单栏「退出」/ 注销走的是 AppKit 的 terminate:，最后落到
