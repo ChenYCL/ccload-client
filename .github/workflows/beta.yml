@@ -365,11 +365,13 @@ jobs:
       - name: Publish
         uses: softprops/action-gh-release@v2
         with:
-          # prerelease：GitHub 不会把「latest」指到它，Release 列表里也标 beta，
-          # 想要尝鲜的人自己点进去下。
+          # 仍是 prerelease（Beta 标签、不计入正式版本线），但 make_latest 让
+          # 「Latest」跟着最近一次 beta 走 —— 不然 Releases 页顶上的永远是上个
+          # 正式版，新 beta 打完了还得自己翻列表找。
           tag_name: ${{ needs.bump.outputs.tag }}
           name: Beta ${{ needs.bump.outputs.tag }}
           prerelease: true
+          make_latest: true
           draft: false
           body_path: /tmp/notes.md
           files: release-assets/*
