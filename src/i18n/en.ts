@@ -1403,6 +1403,8 @@ registerDict("en", {
     "Claude Code has no model catalog file. The /model menu = the six slots below plus a modelPicker list. Each row has three parts: the slot · the name written into the CLI → the kernel alias it lands on; both boxes are editable. One name may hold several slots at once.",
   "读表时磁盘上已有的槽位会先收进来；写入时这里空着的槽位会被清掉。槽位放不下的模型进最下面的列表，整张表都能放进 /model；任何出口别名也都能用 --model <名字> 直接选。":
     "Slots already on disk are adopted into this table when it loads; slots left empty here are cleared on write. Models that do not fit a slot go into the list at the bottom, so the whole table can appear in /model; any egress alias also works with --model <name>.",
+  "搜索别名或落点": "Search alias or landing",
+  "没有匹配「{q}」的行": "No rows matching “{q}”",
   "写进 CLI 的窗口后缀":
     "Window suffix written into the CLI",
   不写后缀: "no suffix",

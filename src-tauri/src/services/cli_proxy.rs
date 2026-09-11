@@ -361,6 +361,22 @@ fn window_for(
         .unwrap_or_else(|| policy.resolve(model).unwrap_or(0))
 }
 
+const GROK_CONTEXT_HEADER: &str = "x-grok-context-window";
+
+/// Grok 会读响应头 `x-grok-context-window`，**只升不降**（二进制里写着
+/// "Ignoring context_window downgrade from response header"）。上游或内核若
+/// 带了 1M，会话就被抬到 1.0M，config.toml 里 262k 再也回不去。
+/// 转发前改成我们算的那个数；0 就剥掉，让 Grok 用目录表自己的值。
+fn patch_grok_context_header(headers: &mut reqwest::header::HeaderMap, window: u64) {
+    headers.remove(GROK_CONTEXT_HEADER);
+    if window == 0 {
+        return;
+    }
+    if let Ok(v) = reqwest::header::HeaderValue::from_str(&window.to_string()) {
+        headers.insert(GROK_CONTEXT_HEADER, v);
+    }
+}
+
 /// Claude Code 会话里换模型时，按这个模型的窗口改 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`。
 ///
 /// 不阻塞转发：CLI 这一轮的状态栏多半已经按旧窗口算过了，改文件是给下一轮
@@ -1053,10 +1069,21 @@ async fn handle_conn(mut client: TcpStream, state: Arc<ProxyState>) -> std::io::
         }
     };
 
-    let (status, headers) = match &stage {
+    let (status, mut headers) = match &stage {
         Stage::Buf(s, h, _) => (*s, h.clone()),
         Stage::Stream(r) => (r.status(), r.headers().clone()),
     };
+    if cli == "grok" {
+        let w = {
+            let windows = state.windows.read().await;
+            let policy = state.window_policy.read().await;
+            model
+                .as_deref()
+                .map(|m| window_for(m, &windows, &policy))
+                .unwrap_or(0)
+        };
+        patch_grok_context_header(&mut headers, w);
+    }
 
     push_record(
         &records,
@@ -1867,6 +1894,23 @@ mod tests {
             .iter()
             .map(|(a, b)| (a.to_string(), b.to_string()))
             .collect()
+    }
+
+    /// Grok 只升不降：上游 1M 头必须换成我们算的数，否则 262k 的模型会显示 1.0M。
+    #[test]
+    fn grok_context_header_is_replaced_not_passed_through() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            GROK_CONTEXT_HEADER,
+            reqwest::header::HeaderValue::from_static("1000000"),
+        );
+        patch_grok_context_header(&mut headers, 262_144);
+        assert_eq!(
+            headers.get(GROK_CONTEXT_HEADER).and_then(|v| v.to_str().ok()),
+            Some("262144")
+        );
+        patch_grok_context_header(&mut headers, 0);
+        assert!(headers.get(GROK_CONTEXT_HEADER).is_none());
     }
 
     /// 出口别名按**落点**的窗口算：`ccload-fast` 背后是 grok-4.6（500k），

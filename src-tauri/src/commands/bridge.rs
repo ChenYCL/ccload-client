@@ -79,9 +79,6 @@ pub(crate) async fn refresh_proxy_rewrites(state: &AppState) {
     let policy = state.settings.read().await.context_policy.clone();
     let mut windows = std::collections::HashMap::new();
     for e in &store.entries {
-        if !e.targets.contains(&CliTarget::ClaudeCode) {
-            continue;
-        }
         let w = e.window(&policy);
         if w == 0 {
             continue;

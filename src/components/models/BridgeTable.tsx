@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Download, Plus, Save, Trash2, Wand2, X } from "lucide-react";
+import { Check, Download, Plus, Save, Search, Trash2, Wand2, X } from "lucide-react";
 import { useT } from "../../i18n";
 import { api } from "../../lib/api";
 import { cn } from "../../lib/cn";
@@ -110,6 +110,14 @@ export function BridgeTable({
 
   const [tab, setTab] = useState<CliTarget>("claude-code");
   const [prune, setPrune] = useState(false);
+  const [q, setQ] = useState("");
+  const shown = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    if (!needle) return rows.map((_, i) => i);
+    return rows.flatMap((r, i) =>
+      `${r.alias} ${r.target}`.toLowerCase().includes(needle) ? [i] : [],
+    );
+  }, [rows, q]);
 
   const set = (next: BridgeEntry[]) => setDraft(next);
   const patch = (i: number, p: Partial<BridgeEntry>) =>
@@ -341,7 +349,17 @@ export function BridgeTable({
             </button>
           </>
         )}
-        <div className="flex-1" />
+        <label className="flex min-w-[12rem] flex-1 items-center gap-1.5">
+          <Search className="h-3.5 w-3.5 shrink-0 text-muted" />
+          <TextInput
+            small
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder={t("搜索别名或落点")}
+            aria-label={t("搜索别名或落点")}
+            className="w-full"
+          />
+        </label>
         {/* 只增不删会让 OpenCode / Grok 的目录一路涨：退役的名字留在选择器里，
             选中就是一个 404。默认关着 —— 删配置得是用户明确要的。 */}
         {(tab === "opencode" || tab === "grok-build") && (
@@ -370,6 +388,7 @@ export function BridgeTable({
           onChange={set}
           suffix={suffix}
           onSuffix={setSuffixDraft}
+          filter={q}
           onDisk={
             (preview.data ?? []).find((x) => x.target === "claude-code")?.claude_slots ?? {}
           }
@@ -393,7 +412,15 @@ export function BridgeTable({
               </tr>
             </thead>
             <tbody>
-              {rows.map((r, i) => {
+              {shown.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="px-3 py-6 text-center text-sm text-muted">
+                    {t("没有匹配「{q}」的行", { q })}
+                  </td>
+                </tr>
+              ) : (
+              shown.map((i) => {
+                const r = rows[i];
                 const on = r.targets.includes(tab);
                 const { auto, window, trigger } = resolve(r);
                 const renames = !!r.alias.trim() && !!r.target.trim() && r.alias.trim() !== r.target.trim();
@@ -484,7 +511,8 @@ export function BridgeTable({
                     </td>
                   </tr>
                 );
-              })}
+              })
+              )}
             </tbody>
           </table>
         </div>
@@ -558,6 +586,7 @@ function ClaudeSlots({
   onChange,
   suffix,
   onSuffix,
+  filter = "",
   onDisk,
   pickerOnDisk,
 }: {
@@ -567,6 +596,7 @@ function ClaudeSlots({
   onChange: (next: BridgeEntry[]) => void;
   suffix: ClaudeSuffix;
   onSuffix: (s: ClaudeSuffix) => void;
+  filter?: string;
   /// 磁盘上这几个槽位现在写着什么。槽位 id → 模型名。
   onDisk: Record<string, string>;
   /// 磁盘上 modelPicker 里我们写的那些行。
@@ -798,7 +828,13 @@ function ClaudeSlots({
             {picker.length === 0 && (
               <span className="text-[11px] text-muted">{t("空着 —— /model 里只有上面那 6 个")}</span>
             )}
-            {picker.map((r) => {
+            {picker
+              .filter(
+                (r) =>
+                  !filter.trim() ||
+                  `${r.alias} ${r.target}`.toLowerCase().includes(filter.trim().toLowerCase()),
+              )
+              .map((r) => {
               const renames = r.alias.trim() !== (r.target || r.alias).trim();
               return (
                 <span
