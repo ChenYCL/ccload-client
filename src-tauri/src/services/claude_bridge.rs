@@ -300,11 +300,18 @@ pub fn write(
             "CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT".into(),
             Value::String("1".into()),
         );
-        // 上下文上限是全局一个键，只能跟着主模型那一行走。
+        // 上下文上限是全局一个键，只能跟着主模型那一行走。但 `claude-*` 主模型
+        // 不读它（已知家族走内置目录，带 [1m] 的 `$L` 直接短路 1e6），写了不但
+        // 没用，还会盖掉第三方模型会话需要的启动值 —— 代理只为第三方名维护这个
+        // 键（见 cli_proxy::kick_claude_window_sync），写入这里保持同一口径。
         if let Some(main) = by_slot.get("default") {
-            let w = main.window(policy);
-            if w > 0 {
-                write_claude_window_env(env, w, Some(main.percent(policy)));
+            let bare = crate::services::context_floor::routing_base(&main.alias)
+                .to_ascii_lowercase();
+            if !bare.starts_with("claude-") {
+                let w = main.window(policy);
+                if w > 0 {
+                    write_claude_window_env(env, w, Some(main.percent(policy)));
+                }
             }
         }
     }
@@ -576,6 +583,13 @@ mod tests {
         let mut main = row("grok-4.6", "grok-4.6", &["default"]);
         main.context_window = 300_000;
         write(&root, &[main], &ContextPolicy::default(), ClaudeSuffix::Off, "s2", &bk).unwrap();
+        assert_eq!(env_str(&read(&path), "CLAUDE_CODE_MAX_CONTEXT_TOKENS"), Some("300000"));
+
+        // 主模型是 claude-* 时不写：它根本不读这个键（内置目录/[1m] 短路），写了
+        // 只会盖掉第三方模型会话要用的启动值。旧值原样留在盘上。
+        let mut main = row("claude-opus-5", "claude-opus-5", &["default", "opus"]);
+        main.context_window = 1_000_000;
+        write(&root, &[main], &ContextPolicy::default(), ClaudeSuffix::Off, "s3", &bk).unwrap();
         assert_eq!(env_str(&read(&path), "CLAUDE_CODE_MAX_CONTEXT_TOKENS"), Some("300000"));
     }
 

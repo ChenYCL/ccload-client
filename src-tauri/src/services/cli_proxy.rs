@@ -43,7 +43,7 @@ use tokio::sync::RwLock;
 use crate::error::AppError;
 use crate::services::cli_config::sync_claude_window_env;
 use crate::services::cli_types::ConfigRoot;
-use crate::services::context_floor::alias_key;
+use crate::services::context_floor::{alias_key, routing_base};
 use crate::services::context_window::ContextPolicy;
 use crate::services::dynamic_inject::{self, InjectConfig};
 use crate::services::kernel::{http_client_for_kernel, HttpClientOpts, KernelConfig};
@@ -382,7 +382,22 @@ fn patch_grok_context_header(headers: &mut reqwest::header::HeaderMap, window: u
 /// 不阻塞转发：CLI 这一轮的状态栏多半已经按旧窗口算过了，改文件是给下一轮
 /// （以及 settings.env 监听触发的刷新）用的。没装配置根、窗口没变、或还没接管
 /// Claude Code 时都是空操作。
+///
+/// 只对**第三方名**（qwen / glm / deepseek…，剥掉 `[262k]` 这类后缀后不以
+/// `claude-` 开头）写：这个键是进程启动时读一次的全局值，会话中途改了磁盘
+/// 对已开的会话也没用。`claude-*` 全家根本不读它 —— 已知家族走内置目录，
+/// 带 `[1m]` 的 `$L` 第一行就短路成 1e6 —— 写了纯属给并发的第三方会话捣乱：
+/// opus 每轮把 qwen 刚写的 262144 盖回 1e6，谁的窗口都对不上。
+fn claude_name_reads_max_context_env(model: &str) -> bool {
+    !routing_base(model)
+        .to_ascii_lowercase()
+        .starts_with("claude-")
+}
+
 fn kick_claude_window_sync(state: &Arc<ProxyState>, model: &str) {
+    if !claude_name_reads_max_context_env(model) {
+        return;
+    }
     let state = Arc::clone(state);
     let model = model.to_string();
     tokio::spawn(async move {
@@ -1942,6 +1957,36 @@ mod tests {
                 window_for(name, &windows, &ContextPolicy::default()),
                 500_000,
                 "{name} 没命中"
+            );
+        }
+    }
+
+    /// 全局 MAX_CONTEXT 键只有第三方名读：`claude-*`（剥掉窗口后缀）走内置目录
+    /// 或 `[1m]` 短路，每轮请求都写它只会让 opus 会话把 qwen 会话刚写入的
+    /// 262144 盖回 1e6 —— 两个窗口谁也对不上。`Qwen3.8-Flash-Claude` 名字里带
+    /// claude 字样但前缀不是 `claude-`，照样要写。
+    #[test]
+    fn window_env_follows_third_party_names_only() {
+        for name in [
+            "claude-opus-5[1M]",
+            "claude-haiku-4-5-20251001[200k]",
+            "Claude-Sonnet-5[1m]",
+            "claude-fable-5-1",
+        ] {
+            assert!(
+                !claude_name_reads_max_context_env(name),
+                "{name} 不读全局键，不该写"
+            );
+        }
+        for name in [
+            "Qwen3.8-Flash-Claude[262144]",
+            "qwen3.8-flash",
+            "code-glm-5.3-flash[1M]",
+            "deepseek-v4-flash",
+        ] {
+            assert!(
+                claude_name_reads_max_context_env(name),
+                "{name} 读全局键，要写"
             );
         }
     }
