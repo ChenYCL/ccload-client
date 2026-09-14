@@ -17,6 +17,15 @@ export function fmtCompact(n?: number | null): string {
   return Math.round(n).toLocaleString("en-US");
 }
 
+/** 字节速度（B/s）。量级和 fmtCompact 的紧凑口径一致，尾巴带 /s。 */
+export function fmtSpeed(bps?: number | null): string {
+  if (bps == null || !Number.isFinite(bps) || bps < 0) return "—";
+  if (bps >= 1e9) return `${(bps / 1e9).toFixed(1)}GB/s`;
+  if (bps >= 1e6) return `${(bps / 1e6).toFixed(1)}MB/s`;
+  if (bps >= 1e3) return `${(bps / 1e3).toFixed(1)}kB/s`;
+  return `${Math.round(bps)}B/s`;
+}
+
 /** 费用按量级换精度：小额要看得见，大额不需要 4 位小数的噪声。 */
 export function fmtCost(n?: number | null): string {
   if (n == null || !Number.isFinite(n)) return "—";
