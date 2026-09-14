@@ -294,6 +294,7 @@ pub fn run() {
             commands::kernel::embed_proxy_url,
             commands::cli_proxy::cli_proxy_url,
             commands::cli_proxy::cli_proxy_records,
+            commands::cli_proxy::cli_proxy_token_ticks,
             commands::cli_proxy::cli_proxy_session,
             commands::cli_proxy::cli_proxy_long_cache,
             commands::cli_proxy::cli_proxy_set_long_cache,

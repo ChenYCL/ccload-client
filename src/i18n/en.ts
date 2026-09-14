@@ -770,6 +770,7 @@ registerDict("en", {
     "'s extension list could not be read, so it is missing from the list below:",
   "第": "Slot",
   "经": "via",
+  "已出": "out",
   "给文本模型装上「眼睛」：本客户端自带一个 MCP 服务器，把图片交给一个多模态模型描述，再把文字交给当前模型。已支持多模态的模型不需要。对话里只有 [Image 1] 没有路径时，把 image 设成 \"1\"，不要让用户把图另存一份。":
     "Gives text-only models eyes: this client ships an MCP server that hands the image to a multimodal model and passes the description back as text. Models that already handle images do not need it. When the chat only shows [Image 1] with no path, set image to \"1\" — do not ask the user to save a copy.",
   列出刚贴的图: "List pasted images",

@@ -211,6 +211,49 @@ struct ProxyState {
     windows: Arc<RwLock<HashMap<String, u64>>>,
     config_root: Arc<RwLock<Option<ConfigRoot>>>,
     last_claude_window: Arc<std::sync::atomic::AtomicU64>,
+    /// 进行中请求的 token 计速表。键是落点模型名（`sent_model`，和实时日志页
+    /// 「进行中」列表显示的同一个名字）。值见 [`TokenTick`]。
+    tokens: Arc<RwLock<HashMap<String, TokenTick>>>,
+}
+
+/// 一次 SSE usage 观测。
+#[derive(Debug, Clone, Copy)]
+pub struct TokenTick {
+    /// message_delta 里累计的 `output_tokens`（message_start 是 0 或初始值）。
+    pub output_tokens: i64,
+    /// 这条观测的本地时刻（unix 毫秒）。
+    pub at: i64,
+    /// 这条请求第一条 SSE 字节进来的时刻（unix 毫秒），算全程均速用。
+    pub started_at: i64,
+    /// message_start 带的 `input_tokens`（整轮的输入规模，含缓存读）。
+    pub input_tokens: Option<i64>,
+}
+
+/// 给前端的观测快照。字段就是 `TokenTick` + 模型名 —— 跨 IPC 只走 serde，
+/// 内部表用 tuple 是为了让 sort/borrow 简单。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenTickReport {
+    pub model: String,
+    pub output_tokens: i64,
+    pub at: i64,
+    pub started_at: i64,
+    pub input_tokens: Option<i64>,
+}
+
+impl TokenTickReport {
+    pub fn from_ticks(ticks: Vec<(String, TokenTick)>) -> Vec<Self> {
+        ticks
+            .into_iter()
+            .map(|(model, t)| TokenTickReport {
+                model,
+                output_tokens: t.output_tokens,
+                at: t.at,
+                started_at: t.started_at,
+                input_tokens: t.input_tokens,
+            })
+            .collect()
+    }
 }
 
 pub struct CliProxy {
@@ -244,6 +287,7 @@ impl CliProxy {
             windows: Arc::new(RwLock::new(HashMap::new())),
             config_root: Arc::new(RwLock::new(None)),
             last_claude_window: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            tokens: Arc::new(RwLock::new(HashMap::new())),
         });
         let handle = {
             let st = Arc::clone(&state);
@@ -331,6 +375,18 @@ impl CliProxy {
     pub async fn records(&self) -> Vec<ProxyRecord> {
         let mut v = self.state.records.read().await.clone();
         v.reverse();
+        v
+    }
+
+    /// 进行中请求的 token 计速快照。掉队清理（超过 30s 没有新观测的条目多半是
+    /// 流已经断在半路、`remove` 没跑到）也在这里顺手做。
+    pub async fn token_ticks(&self) -> Vec<(String, TokenTick)> {
+        let now = util_now_ms();
+        let mut tokens = self.state.tokens.write().await;
+        tokens.retain(|_, t| now - t.at <= 30_000);
+        let mut v: Vec<(String, TokenTick)> =
+            tokens.iter().map(|(k, t)| (k.clone(), *t)).collect();
+        v.sort_by(|a, b| a.0.cmp(&b.0));
         v
     }
 
@@ -434,6 +490,75 @@ fn kick_claude_window_sync(state: &Arc<ProxyState>, model: &str) {
             Err(e) => tracing::warn!("claude window env join: {e}"),
         }
     });
+}
+
+/// 从 SSE 明文里抓 Anthropic 协议的累计 `output_tokens`。
+///
+/// 流式响应里每个 `message_delta` 都带 `usage.output_tokens`（**累计值**，不是增量），
+/// `message_start` 带 `usage.input_tokens`。盯住这两个数，前端就能把进行中的请求
+/// 显示成 tok/s —— 内核 `/admin/active-requests` 只有字节快照，字节里大头是 SSE 的
+/// JSON 包装，换算不成 token。
+///
+/// 只扫**这一块**chunk（跨 chunk 的半行不拼 —— usage 事件一秒好几个，漏一个无关
+/// 紧要，拼接状态机却要把半个 chunk 存到下轮，纯属为 0.1% 的精度付 100% 的复杂度）。
+fn observe_sse_tokens(state: &Arc<ProxyState>, model: &str, chunk: &[u8], started_at: i64) {
+    let text = match std::str::from_utf8(chunk) {
+        Ok(t) => t,
+        Err(_) => return,
+    };
+    let mut out: Option<i64> = None;
+    let mut input: Option<i64> = None;
+    for line in text.lines() {
+        let json = match line.strip_prefix("data:") {
+            Some(rest) => rest.trim_start(),
+            None => continue,
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
+            continue;
+        };
+        // message_delta: {type, delta, usage:{output_tokens}}
+        if v.get("type").and_then(|t| t.as_str()) == Some("message_delta") {
+            if let Some(n) = v.pointer("/usage/output_tokens").and_then(|n| n.as_i64()) {
+                out = Some(out.map_or(n, |acc: i64| acc.max(n)));
+            }
+        }
+        // message_start: {type, message:{usage:{input_tokens, output_tokens}}}
+        if v.get("type").and_then(|t| t.as_str()) == Some("message_start") {
+            if let Some(n) = v.pointer("/message/usage/input_tokens").and_then(|n| n.as_i64()) {
+                input = Some(n);
+            }
+        }
+    }
+    if out.is_none() && input.is_none() {
+        return;
+    }
+    let now = util_now_ms();
+    // 同一条请求重复写没问题（累计值单调不减），键本来就该是最新值。
+    // try_write 而不是 blocking_write：调用点在 tokio worker 的同步段里，等锁
+    // 会卡住转发循环。usage 事件一秒好几个，偶尔抢锁失败丢一笔毫无影响。
+    let Ok(mut tokens) = state.tokens.try_write() else {
+        return;
+    };
+    let e = tokens.entry(model.to_string()).or_insert(TokenTick {
+        output_tokens: 0,
+        at: now,
+        started_at,
+        input_tokens: None,
+    });
+    if let Some(n) = out {
+        e.output_tokens = e.output_tokens.max(n);
+    }
+    if let Some(n) = input {
+        e.input_tokens = Some(n);
+    }
+    e.at = now;
+}
+
+fn util_now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// 从 User-Agent / 特征头认出是哪个 CLI。认不出不影响转发，只是记录里标 unknown。
@@ -1100,6 +1225,13 @@ async fn handle_conn(mut client: TcpStream, state: Arc<ProxyState>) -> std::io::
         patch_grok_context_header(&mut headers, w);
     }
 
+    // tok/s 观测的门。cli/path/model/sent_model 马上要进 ProxyRecord 被移走，
+    // 这里先拍下判定结果和落点名字。
+    let watch_tokens = cli == "claude-code" && path.contains("/v1/messages");
+    let landing = sent_model
+        .clone()
+        .or_else(|| model.clone())
+        .unwrap_or_default();
     push_record(
         &records,
         ProxyRecord {
@@ -1150,6 +1282,9 @@ async fn handle_conn(mut client: TcpStream, state: Arc<ProxyState>) -> std::io::
     // 逐块转发，绝不整体缓冲 —— CLI 全是流式，缓冲会让首字节等到最后。
     let mut stream = resp.bytes_stream();
     let mut upstream_broke = false;
+    // tok/s 观测：只对聊天路径的流式响应旁路扫 SSE。落点模型名是「进行中」面板
+    // 显示的同一个名字，前端按它配对。
+    let started_at = util_now_ms();
     while let Some(item) = stream.next().await {
         let bytes = match item {
             Ok(b) => b,
@@ -1163,6 +1298,9 @@ async fn handle_conn(mut client: TcpStream, state: Arc<ProxyState>) -> std::io::
                 break;
             }
         };
+        if watch_tokens && !landing.is_empty() {
+            observe_sse_tokens(&state, &landing, &bytes, started_at);
+        }
         if !has_len {
             client
                 .write_all(format!("{:x}\r\n", bytes.len()).as_bytes())
@@ -1173,6 +1311,9 @@ async fn handle_conn(mut client: TcpStream, state: Arc<ProxyState>) -> std::io::
             client.write_all(b"\r\n").await?;
         }
         client.flush().await?;
+    }
+    if watch_tokens {
+        state.tokens.write().await.remove(&landing);
     }
     if upstream_broke {
         // 不写终止块：让对端看到「连接断在半路」而不是「干净地结束了」。
@@ -1991,6 +2132,51 @@ mod tests {
         }
     }
 
+    /// SSE 里的 usage 事件要被抓到并按落点模型名累计：`message_delta` 的
+    /// `output_tokens` 是累计值，取 max 就是对话至今的输出；`message_start`
+    /// 的 `input_tokens` 是整轮输入规模。非 JSON 行、半截 chunk 都静默跳过。
+    #[test]
+    fn sse_usage_events_are_counted_per_landing_model() {
+        let state = Arc::new(ProxyState {
+            target: RwLock::new(String::new()).into(),
+            rules: RwLock::new(ProxyRules::default()).into(),
+            records: RwLock::new(Vec::new()).into(),
+            long_cache: std::sync::atomic::AtomicBool::new(false).into(),
+            rescue: RwLock::new(RescueConfig::default()).into(),
+            inject: RwLock::new(InjectConfig::default()).into(),
+            http: RwLock::new(reqwest::Client::new()).into(),
+            window_policy: RwLock::new(ContextPolicy::default()).into(),
+            windows: RwLock::new(HashMap::new()).into(),
+            config_root: RwLock::new(None).into(),
+            last_claude_window: std::sync::atomic::AtomicU64::new(0).into(),
+            tokens: RwLock::new(HashMap::new()).into(),
+        });
+        let started = util_now_ms();
+        observe_sse_tokens(
+            &state,
+            "glm-5.3-flash",
+            concat!(
+                "event: message_start\n",
+                "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":100,\"output_tokens\":1}}}\n\n",
+                "event: message_delta\n",
+                "data: {\"type\":\"message_delta\",\"delta\":{},\"usage\":{\"output_tokens\":42}}\n\n"
+            ).as_bytes(),
+            started,
+        );
+        observe_sse_tokens(
+            &state,
+            "glm-5.3-flash",
+            b"event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":87}}\n\ndata: [BROKEN",
+            started,
+        );
+        let ticks = state.tokens.blocking_read();
+        let t = ticks.get("glm-5.3-flash").expect("tick recorded");
+        assert_eq!(t.output_tokens, 87, "累计值取 max");
+        assert_eq!(t.input_tokens, Some(100));
+        // 非 usage 的流一个条目都不该有。
+        assert!(!ticks.contains_key("other-model"));
+    }
+
     #[test]
     fn claude_code_is_detected_by_its_session_header() {
         let hs = h(&[
@@ -2158,6 +2344,7 @@ mod e2e {
                     windows: Arc::new(RwLock::new(Default::default())),
                     config_root: Arc::new(RwLock::new(None)),
                     last_claude_window: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                tokens: Arc::new(RwLock::new(HashMap::new())),
                 }),
             )
             .await
@@ -2294,6 +2481,7 @@ mod sse {
                     windows: Arc::new(RwLock::new(Default::default())),
                     config_root: Arc::new(RwLock::new(None)),
                     last_claude_window: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                tokens: Arc::new(RwLock::new(HashMap::new())),
                 }),
             )
             .await
@@ -2397,6 +2585,7 @@ mod chunked_req {
                     windows: Arc::new(RwLock::new(Default::default())),
                     config_root: Arc::new(RwLock::new(None)),
                     last_claude_window: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                tokens: Arc::new(RwLock::new(HashMap::new())),
                 }),
             )
             .await;
@@ -2644,6 +2833,7 @@ mod availability_tests {
                     windows: Arc::new(RwLock::new(Default::default())),
                     config_root: Arc::new(RwLock::new(None)),
                     last_claude_window: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                tokens: Arc::new(RwLock::new(HashMap::new())),
                 }),
             )
             .await;
@@ -2697,6 +2887,7 @@ mod availability_tests {
                     windows: Arc::new(RwLock::new(Default::default())),
                     config_root: Arc::new(RwLock::new(None)),
                     last_claude_window: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                tokens: Arc::new(RwLock::new(HashMap::new())),
                 }),
             )
             .await;
@@ -2997,6 +3188,7 @@ mod pin_tests {
                     windows: Arc::new(RwLock::new(Default::default())),
                     config_root: Arc::new(RwLock::new(None)),
                     last_claude_window: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                tokens: Arc::new(RwLock::new(HashMap::new())),
                 }),
             )
             .await;
@@ -3309,6 +3501,7 @@ mod rescue_tests {
                     windows: Arc::new(RwLock::new(Default::default())),
                     config_root: Arc::new(RwLock::new(None)),
                     last_claude_window: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                tokens: Arc::new(RwLock::new(HashMap::new())),
                 }),
             )
             .await;
@@ -3429,6 +3622,7 @@ mod rescue_tests {
             windows: Arc::new(RwLock::new(Default::default())),
             config_root: Arc::new(RwLock::new(None)),
             last_claude_window: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                tokens: Arc::new(RwLock::new(HashMap::new())),
         });
         let front = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let front_port = front.local_addr().unwrap().port();
@@ -3512,6 +3706,7 @@ mod ws_tunnel {
                     windows: Arc::new(RwLock::new(Default::default())),
                     config_root: Arc::new(RwLock::new(None)),
                     last_claude_window: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                tokens: Arc::new(RwLock::new(HashMap::new())),
                 }),
             )
             .await;
@@ -3597,6 +3792,7 @@ mod ws_tunnel {
                     windows: Arc::new(RwLock::new(Default::default())),
                     config_root: Arc::new(RwLock::new(None)),
                     last_claude_window: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                tokens: Arc::new(RwLock::new(HashMap::new())),
                 }),
             )
             .await;
@@ -3845,6 +4041,7 @@ mod ws_tunnel {
                     windows: Arc::new(RwLock::new(Default::default())),
                     config_root: Arc::new(RwLock::new(None)),
                     last_claude_window: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                tokens: Arc::new(RwLock::new(HashMap::new())),
                 }),
             )
             .await;
@@ -3916,6 +4113,7 @@ mod ws_tunnel {
                     windows: Arc::new(RwLock::new(Default::default())),
                     config_root: Arc::new(RwLock::new(None)),
                     last_claude_window: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                tokens: Arc::new(RwLock::new(HashMap::new())),
                 }),
             )
             .await;
@@ -3988,6 +4186,7 @@ mod ws_tunnel {
                     windows: Arc::new(RwLock::new(Default::default())),
                     config_root: Arc::new(RwLock::new(None)),
                     last_claude_window: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                tokens: Arc::new(RwLock::new(HashMap::new())),
                 }),
             )
             .await;

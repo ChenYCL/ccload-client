@@ -26,6 +26,13 @@ export function fmtSpeed(bps?: number | null): string {
   return `${Math.round(bps)}B/s`;
 }
 
+/** token 生成速度。整数就整 —— 「87.3 tok/s」的小数位对判断快慢没有信息量。 */
+export function fmtTokensPerSec(tps?: number | null): string {
+  if (tps == null || !Number.isFinite(tps) || tps < 0) return "—";
+  if (tps >= 1000) return `${(tps / 1000).toFixed(1)}k tok/s`;
+  return `${Math.round(tps)} tok/s`;
+}
+
 /** 费用按量级换精度：小额要看得见，大额不需要 4 位小数的噪声。 */
 export function fmtCost(n?: number | null): string {
   if (n == null || !Number.isFinite(n)) return "—";

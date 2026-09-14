@@ -89,6 +89,21 @@ pub async fn cli_proxy_records(state: State<'_, AppState>) -> AppResult<Vec<Prox
     }
 }
 
+/// 进行中请求的 token 计速观测（模型名 → 最新累计 output_tokens）。
+/// 前端「进行中」面板按落点模型名配对，差分出 tok/s。
+#[tauri::command]
+pub async fn cli_proxy_token_ticks(
+    state: State<'_, AppState>,
+) -> AppResult<Vec<crate::services::cli_proxy::TokenTickReport>> {
+    let guard = state.cli_proxy.read().await;
+    match guard.as_ref() {
+        Some(p) => Ok(crate::services::cli_proxy::TokenTickReport::from_ticks(
+            p.token_ticks().await,
+        )),
+        None => Ok(Vec::new()),
+    }
+}
+
 /// 按 CLI 聚合的今日消耗。数字全部来自内核日志（成本只有内核会算），
 /// 代理记录只贡献「这条是谁发的」这个维度。
 #[derive(Debug, serde::Serialize)]

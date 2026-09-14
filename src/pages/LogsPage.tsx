@@ -112,6 +112,13 @@ export function LogsPage({ onNavigate }: { onNavigate?: (page: "session-manage")
     refetchInterval: polling ? LOGS_POLL_MS : false,
     placeholderData: (prev) => prev,
   });
+  // 进行中请求的 tok/s。和代理记录同一个节奏轮询就够 —— 差分在前端做。
+  const tokenTicks = useQuery({
+    queryKey: ["cli-proxy-token-ticks"],
+    queryFn: api.cliProxyTokenTicks,
+    refetchInterval: polling ? ACTIVE_POLL_MS : false,
+    placeholderData: (prev) => prev,
+  });
   const matched = useMemo(
     () => matchRecords(visible, proxyRecords.data ?? []),
     [visible, proxyRecords.data],
@@ -238,7 +245,11 @@ export function LogsPage({ onNavigate }: { onNavigate?: (page: "session-manage")
               emptyText=""
               skeletonLines={2}
             >
-              <ActiveRequestsPanel items={activeItems} localIps={localIps.current} />
+              <ActiveRequestsPanel
+                items={activeItems}
+                localIps={localIps.current}
+                ticks={tokenTicks.data ?? []}
+              />
             </AsyncBlock>
           </Panel>
 

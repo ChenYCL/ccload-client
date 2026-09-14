@@ -2,8 +2,8 @@ import { useT } from "../../i18n";
 import { useEffect, useRef, useState } from "react";
 import { Radio } from "lucide-react";
 import { activeOrigin } from "../../lib/logOrigin";
-import type { ActiveRequest } from "../../types";
-import { fmtCompact, fmtDuration, fmtSpeed } from "../formatters";
+import type { ActiveRequest, TokenTick } from "../../types";
+import { fmtCompact, fmtDuration, fmtTokensPerSec } from "../formatters";
 
 /// 进行中的请求。这是整个界面里唯一真正实时的一块：内核把在飞的请求放在内存里
 /// （`/admin/active-requests`），而 `/admin/logs` 只有请求**结束**后才有记录 ——
@@ -23,45 +23,48 @@ function useTick(active: boolean) {
 }
 
 /**
- * 每条进行中请求的瞬时速度（B/s）。
+ * 按落点模型名配对的 tok/s。
  *
- * `bytes_received` 是每次轮询（1.5s）的快照，速度只能由相邻两次快照的差分算出。
- * 差分天然带毛刺（一轮 0B、下一轮 80kB，点速度在 0 和 53kB/s 之间蹦），所以做
- * 指数平滑：speed = 0.6·旧 + 0.4·新点。快照间隔不足 300ms（同轮重渲染）不算，
- * 避免把同一个快照差分重复计入。
+ * 数据来自代理的 SSE 观测（`TokenTick`）：`output_tokens` 是累计值，tok/s =
+ * 相邻两笔的差分 ÷ 时间差。做指数平滑压毛刺；超过 10s 没有新观测（流已断或
+ * 模型在慢思考，没吐新 token）就不显示速度，别让人把 0 读成「坏了」。
  *
- * 上游断流时点速度是 0，EMA 会把历史速度逐渐衰减到 0 —— 这正是想要的：「在动」
- * 的数字几秒内安静下来，和「已收 0B 不动了」的卡住观感一致。
+ * 键是模型名而不是请求 id：内核的进行中列表没有我们的会话 id，跨代理配对
+ * 只落在「模型」这个两边都有的字段上。同名并发会互相串速 —— 两台机器同时
+ * 跑同名模型时显示的是合计速度，可接受；精度换覆盖面的取舍。
  */
-function useSpeeds(items: ActiveRequest[]) {
-  const last = useRef(new Map<number, { bytes: number; at: number }>());
-  const speeds = useRef(new Map<number, number>());
-  const keep = useRef(new Set<number>());
+function useTokenSpeeds(ticks: TokenTick[]) {
+  const prev = useRef(new Map<string, { tokens: number; at: number }>());
+  const speeds = useRef(new Map<string, number>());
+  const keep = useRef(new Set<string>());
 
-  // 每次渲染都把当前快照喂进差分。写 ref 不触发渲染；数字走字靠 useTick。
-  for (const r of items) {
-    keep.current.add(r.id);
-    const prev = last.current.get(r.id);
+  for (const t of ticks) {
+    keep.current.add(t.model);
+    const p = prev.current.get(t.model);
     const now = Date.now();
-    if (prev) {
-      const dt = (now - prev.at) / 1000;
-      if (dt >= 0.3) {
-        const bytes = Math.max(0, (r.bytes_received ?? 0) - prev.bytes);
-        const point = bytes / dt;
-        const old = speeds.current.get(r.id) ?? 0;
-        speeds.current.set(r.id, old === 0 ? point : old * 0.6 + point * 0.4);
-        last.current.set(r.id, { bytes: r.bytes_received ?? 0, at: now });
+    if (p) {
+      const dt = (now - p.at) / 1000;
+      // 30s 无观测的条目后端已清，这里防的是同一轮询周期内的重复计算。
+      if (dt >= 1) {
+        const d = Math.max(0, t.outputTokens - p.tokens);
+        const point = d / dt;
+        const old = speeds.current.get(t.model) ?? 0;
+        speeds.current.set(t.model, old === 0 ? point : old * 0.6 + point * 0.4);
+        prev.current.set(t.model, { tokens: t.outputTokens, at: now });
+      } else if (now - p.at > 10_000) {
+        // 观测断了：速度不再可信，等下一笔重新起算。
+        speeds.current.delete(t.model);
+        prev.current.set(t.model, { tokens: t.outputTokens, at: now });
       }
     } else {
-      last.current.set(r.id, { bytes: r.bytes_received ?? 0, at: now });
+      prev.current.set(t.model, { tokens: t.outputTokens, at: now });
     }
   }
-  // 掉出列表的请求清掉状态，防长会话下 map 无界长。
-  if (keep.current.size !== last.current.size) {
-    for (const id of [...last.current.keys()]) {
-      if (!keep.current.has(id)) {
-        last.current.delete(id);
-        speeds.current.delete(id);
+  if (keep.current.size !== prev.current.size) {
+    for (const k of [...prev.current.keys()]) {
+      if (!keep.current.has(k)) {
+        prev.current.delete(k);
+        speeds.current.delete(k);
       }
     }
   }
@@ -71,14 +74,17 @@ function useSpeeds(items: ActiveRequest[]) {
 export function ActiveRequestsPanel({
   items,
   localIps,
+  ticks,
 }: {
   items: ActiveRequest[];
   /** 已确认属于本机的出口 IP，由历史日志那边学出来（见 logOrigin）。 */
   localIps?: ReadonlySet<string>;
+  /** 代理的 SSE token 观测，按落点模型名配对。经代理的请求才有。 */
+  ticks: TokenTick[];
 }) {
   const t = useT();
   useTick(items.length > 0);
-  const speeds = useSpeeds(items);
+  const speeds = useTokenSpeeds(ticks);
 
   // 空态和「一条进行中」占一样高。请求每 1.5s 来去一次，如果空态塌成一行、
   // 有请求时撑成三行，整页会跟着上下跳 —— 那就是肉眼看到的「闪屏」。
@@ -98,6 +104,11 @@ export function ActiveRequestsPanel({
       {items.map((r) => {
         // start_time 是 unix 毫秒。时钟有偏差时可能算出负数，钳到 0。
         const elapsed = Math.max(0, (now - r.start_time) / 1000);
+        const landing = r.model ?? "";
+        const speed = speeds.current.get(landing) ?? 0;
+        // 慢思考阶段几分钟不吐 token 是常态：速度只在有读数时显示，
+        // 显示时配「已收字节」一起看，停了还是动了一目了然。
+        const tick = ticks.find((x) => x.model === landing);
         return (
           <li
             key={r.id}
@@ -140,16 +151,17 @@ export function ActiveRequestsPanel({
                 )}
               </div>
               <div className="mt-0.5 flex flex-wrap gap-x-3 text-[11px] tabular-nums text-muted">
-                {/* bytes_received 是快照值：它在涨说明上游还在吐，停住说明可能卡了。
-                    速度是相邻快照的差分（EMA 平滑），见 useSpeeds。 */}
+                {/* bytes_received 是快照值：它在涨说明上游还在吐，停住说明可能卡了。 */}
                 <span>
                   {t("已收")} {fmtCompact(r.bytes_received ?? 0)}B
-                  {(r.bytes_received ?? 0) > 0 && (speeds.current.get(r.id) ?? 0) >= 1 && (
-                    <span className="ml-1.5 text-emerald-700">
-                      {fmtSpeed(speeds.current.get(r.id))}
-                    </span>
-                  )}
                 </span>
+                {speed >= 1 && tick && (
+                  <span className="text-emerald-700">
+                    {fmtTokensPerSec(speed)}
+                    {tick.outputTokens > 0 &&
+                      ` · ${t("已出")} ${fmtCompact(tick.outputTokens)}`}
+                  </span>
+                )}
                 {r.client_first_byte_time != null && r.client_first_byte_time > 0 && (
                   <span>{t("首字节")} {fmtDuration(r.client_first_byte_time)}</span>
                 )}

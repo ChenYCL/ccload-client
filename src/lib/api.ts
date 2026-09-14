@@ -30,6 +30,7 @@ import type {
   BridgeOutcome,
   BridgeWrite,
   ClaudeSuffix,
+  TokenTick,
   ImageApi,
   ImageTargetState,
   ImportEntry,
@@ -78,6 +79,8 @@ export const api = {
   cliProxyUrl: () => invoke<string | null>("cli_proxy_url"),
   /** 最近的转发记录，最新的在前。会话归因全靠它。 */
   cliProxyRecords: () => invoke<ProxyRecord[]>("cli_proxy_records"),
+  /** 进行中请求的 token 计速观测。差分出 tok/s。 */
+  cliProxyTokenTicks: () => invoke<TokenTick[]>("cli_proxy_token_ticks"),
   /** 缓存窗口是否升到 1h。默认关 —— 交互式会话开着更贵（写入价 2×）。 */
   cliProxyLongCache: () => invoke<boolean>("cli_proxy_long_cache"),
   cliProxySetLongCache: (enabled: boolean) =>

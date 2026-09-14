@@ -1121,6 +1121,25 @@ export type ProxyRecord = {
   rescued: number;
 };
 
+/**
+ * 进行中请求的 token 计速观测。代理转发 SSE 时旁路解析 Anthropic 协议的
+ * usage 事件（`message_delta.usage.output_tokens` 是**累计值**），按落点模型名
+ * 记最新一笔。前端拿相邻两笔差分 / 时间差 = tok/s。内核的 active-requests
+ * 只有字节快照 —— 字节里大头是 SSE 的 JSON 包装，换算不成 token。
+ */
+export type TokenTick = {
+  /** 落点模型名，和「进行中」列表显示的同一个名字。 */
+  model: string;
+  /** 累计 output tokens（单调不减）。 */
+  outputTokens: number;
+  /** 这笔观测的本地时刻（unix 毫秒）。 */
+  at: number;
+  /** 这条请求第一条 SSE 字节的时刻，算全程均速用。 */
+  startedAt: number;
+  /** message_start 的 input_tokens（整轮输入规模，含缓存读）。 */
+  inputTokens?: number;
+};
+
 /// 会话污染体检。按需算 —— 要读整份正文，不进列表扫描。
 export type PollutionReport = {
   /** 配不上任何调用的工具结果。 */
