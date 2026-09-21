@@ -161,6 +161,9 @@ export const api = {
   /** 切「CLI 走本地代理」。只改设置，返回是否还需要点「写入」才生效。 */
   cliSetProxyRouting: (enabled: boolean) =>
     invoke<boolean>("cli_set_proxy_routing", { enabled }),
+  /** 自定义接管地址。null = 回到默认的本地代理地址。只存设置不写 CLI。 */
+  cliSetTakeoverBase: (baseUrl: string | null) =>
+    invoke<boolean>("cli_set_takeover_base", { baseUrl }),
 
   /** 上下文窗口总控。五家 CLI 各写各的键，但用同一个策略。 */
   contextPolicyGet: () => invoke<ContextPolicy>("context_policy_get"),

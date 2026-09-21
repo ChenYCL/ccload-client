@@ -37,9 +37,22 @@ const TARGETS: [CliTarget; 5] = [
 /// 跑，这个开关只管「写进 CLI 配置的地址」。开着才拿得到会话归因和模型名改写
 /// （内核日志里没有 session_id）。开着但代理没起来时退回直连内核：功能少一截，
 /// 总好过把 CLI 指到一个没人监听的地址。
+///
+/// `cli_takeover_base` 有值时**整个**取代代理地址 —— 它是给「代理前面再串一层」
+/// 用的（地址里本来就包含代理），所以不再看代理起没起：billion-context 这种
+/// 本地服务死了 CLI 请求全断是用户自己选的架构，替他退回直连反而把压缩层
+/// 静默绕掉。
 pub(crate) async fn takeover_base(state: &AppState) -> String {
     let s = state.settings.read().await;
     if s.route_cli_through_proxy {
+        if let Some(custom) = s
+            .cli_takeover_base
+            .as_deref()
+            .map(str::trim)
+            .filter(|u| !u.is_empty())
+        {
+            return custom.trim_end_matches('/').to_string();
+        }
         drop(s);
         if let Some(p) = state.cli_proxy.read().await.as_ref() {
             return p.base_url();
@@ -517,6 +530,39 @@ pub async fn cli_set_proxy_routing(
     enabled: bool,
 ) -> AppResult<bool> {
     state.settings.write().await.route_cli_through_proxy = enabled;
+    state.persist().await?;
+    let root = state.config_root().await?;
+    let base = takeover_base(&state).await;
+    let token = state.settings.read().await.client_api_token.clone();
+    let needs_rewrite = TARGETS.iter().any(|t| {
+        let p = preview(&root, *t, &base, token.as_deref());
+        p.exists && !p.already_active
+    });
+    Ok(needs_rewrite)
+}
+
+/// 自定义接管地址的读写。只校验 + 存设置，不写任何 CLI 配置 —— 和切换开关
+/// 同一条规矩：改地址要用户自己点「写入」。清空 = 回到默认的本地代理地址。
+#[tauri::command]
+pub async fn cli_set_takeover_base(
+    state: State<'_, AppState>,
+    base_url: Option<String>,
+) -> AppResult<bool> {
+    let url = base_url
+        .as_deref()
+        .map(str::trim)
+        .map(|u| u.trim_end_matches('/').to_string())
+        .filter(|u| !u.is_empty());
+    if let Some(u) = url.as_deref() {
+        let scheme = u.split("://").next().unwrap_or("");
+        if !matches!(scheme, "http" | "https") {
+            return Err(AppError::Config(
+                "接管地址要以 http:// 或 https:// 开头 —— 链式的地址（如本地压缩层）也写在 scheme 里，不是裸主机名".into(),
+            )
+            .into());
+        }
+    }
+    state.settings.write().await.cli_takeover_base = url;
     state.persist().await?;
     let root = state.config_root().await?;
     let base = takeover_base(&state).await;

@@ -22,6 +22,12 @@ export type AppSettings = {
   client_api_token: string | null;
   /** CLI 的接管地址是否指向本地代理。代理一直在跑，这只管写进配置的地址。 */
   route_cli_through_proxy?: boolean;
+  /**
+   * 「经本地代理接管」开着时写进 CLI 配置的自定义地址。空 = 本地代理
+   * （127.0.0.1:15777）；填了就整个取代之 —— 用于在代理前面再串一层本地服务
+   * （如 billion-context 压缩层）。
+   */
+  cli_takeover_base?: string | null;
 };
 
 export type CliTarget =

@@ -27,6 +27,29 @@ fn takeover(root: &ConfigRoot, bk: &BackupStore, target: CliTarget) {
     apply_takeover(root, target, "http://127.0.0.1:15722", "tok", "s", bk, TakeoverOptions::default()).unwrap();
 }
 
+/// 自定义接管地址要**逐字**落进各家配置 —— billion-context 这种链式地址
+/// （`http://localhost:8787/bili/http://…`）里有冒号有斜杠，任何一个字符被
+/// 归一化吃掉，那层服务就剥不出真正的上游了。同时验证 `/v1` 族：base 尾部
+/// 已经带了路径时，拼接只能发生在末尾。
+#[test]
+fn custom_takeover_base_is_written_verbatim_and_gets_the_v1_family() {
+    let (_keep, root, bk) = sandbox();
+    let base = "http://localhost:8787/bili/http://127.0.0.1:15777";
+    for target in [CliTarget::ClaudeCode, CliTarget::Codex] {
+        apply_takeover(&root, target, base, "tok", "s1", &bk, TakeoverOptions::default())
+            .unwrap();
+    }
+
+    let claude: serde_json::Value =
+        serde_json::from_str(&read(&root, ".claude/settings.json")).unwrap();
+    assert_eq!(claude["env"]["ANTHROPIC_BASE_URL"], base);
+    let codex = read(&root, ".codex/config.toml");
+    assert!(
+        codex.contains(&format!("base_url = \"{base}/v1\"")),
+        "Codex 应在 base 末尾拼 /v1：{codex}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 
 #[test]

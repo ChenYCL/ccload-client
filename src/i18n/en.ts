@@ -1184,6 +1184,13 @@ registerDict("en", {
     "Switched back to direct kernel. Click Write on each CLI below to apply.",
   "已切回直连内核。": "Switched back to direct kernel.",
   "代理未运行": "Proxy not running",
+  "接管地址": "Takeover base URL",
+  "留空 = 默认本地代理": "Empty = default local proxy",
+  "要串本地压缩层就整条填：http://localhost:8787/bili/ + 上面这个代理地址":
+    "To chain a local compression layer, fill the whole URL: http://localhost:8787/bili/ + the proxy address above",
+  "接管地址已改。还要在下面对每家点一次「写入」才生效。":
+    "Takeover base URL changed. Click Write on each CLI below to apply.",
+  "接管地址已改。": "Takeover base URL changed.",
   "Prompt 缓存窗口升到 1 小时": "Raise prompt-cache TTL to 1 hour",
   "Node 服务": "Node services",
   "新建服务": "New service",

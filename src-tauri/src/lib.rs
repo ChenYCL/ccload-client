@@ -317,6 +317,7 @@ pub fn run() {
             commands::cli::cli_apply,
             commands::cli::cli_reconcile,
             commands::cli::cli_set_proxy_routing,
+            commands::cli::cli_set_takeover_base,
             commands::cli::context_policy_get,
             commands::cli::context_policy_set,
             commands::cli::context_window_preview,

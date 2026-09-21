@@ -48,6 +48,13 @@ pub struct AppSettings {
     /// 成另一个地址。第一次打开由用户在「CLI 接管」页显式点。
     #[serde(default)]
     pub route_cli_through_proxy: bool,
+    /// 「经本地代理接管」开着时写进 CLI 配置的地址。空 = 本地代理
+    /// （`127.0.0.1:15777`）；填了就**整个**用它 —— 给「代理前面再串一层本地
+    /// 服务」用的，比如 billion-context 压缩层：
+    /// `http://localhost:8787/bili/http://127.0.0.1:15777`，各家该拼的 `/v1`
+    /// 由 `expected_endpoint` 照这个 base 补。
+    #[serde(default)]
+    pub cli_takeover_base: Option<String>,
     /// 上下文窗口总控：接管写入时给每家 CLI 写多大的窗口。
     ///
     /// 默认 `Auto`（按选中的模型名推断）。放在设置里而不是 TakeoverOptions：
@@ -73,6 +80,7 @@ impl Default for AppSettings {
             sandbox_cli_writes: true,
             client_api_token: None,
             route_cli_through_proxy: false,
+            cli_takeover_base: None,
             context_policy: Default::default(),
             takeover_opted_out: Default::default(),
         }

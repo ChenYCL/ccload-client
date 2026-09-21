@@ -1258,6 +1258,10 @@ function FileDiffBlock({ f }: { f: FileDiff }) {
 ///
 /// 切换只改设置，不动磁盘：改地址有后果，得用户自己在下面点「写入」。所以切完
 /// 会明确告诉他还差这一步，而不是假装已经生效。
+///
+/// 地址可改：默认写本地代理（15777）；要给代理前面再串一层本地服务（如
+/// billion-context 的 8787 压缩层）时，填整条链式地址。保存同样只改设置，
+/// 要再点一次「写入」才落到 CLI 配置里。
 function ProxyRoutingCard({
   on,
   onDone,
@@ -1266,10 +1270,19 @@ function ProxyRoutingCard({
   onDone: (msg: string) => void;
 }) {
   const t = useT();
+  const qc = useQueryClient();
   const proxyUrl = useQuery({ queryKey: ["cli-proxy-url"], queryFn: api.cliProxyUrl });
+  const [draft, setDraft] = useState<string | null>(null);
+  const saved = useQuery({
+    queryKey: ["app-settings"],
+    queryFn: api.settingsGet,
+    select: (s) => s.cli_takeover_base ?? "",
+  });
+  const value = draft ?? saved.data ?? "";
   const toggle = useMutation({
     mutationFn: (next: boolean) => api.cliSetProxyRouting(next),
     onSuccess: (needsRewrite, next) => {
+      qc.invalidateQueries({ queryKey: ["app-settings"] });
       onDone(
         next
           ? needsRewrite
@@ -1282,30 +1295,69 @@ function ProxyRoutingCard({
     },
     onError: (e) => onDone(errText(e)),
   });
+  const save = useMutation({
+    mutationFn: () => api.cliSetTakeoverBase(value.trim() || null),
+    onSuccess: (needsRewrite) => {
+      setDraft(null);
+      qc.invalidateQueries({ queryKey: ["app-settings"] });
+      qc.invalidateQueries({ queryKey: ["cli-preview"] });
+      onDone(
+        needsRewrite
+          ? t("接管地址已改。还要在下面对每家点一次「写入」才生效。")
+          : t("接管地址已改。"),
+      );
+    },
+    onError: (e) => onDone(errText(e)),
+  });
 
   return (
-    <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-xl border border-border bg-surface-2/40 px-3.5 py-3">
-      <input
-        type="checkbox"
-        checked={on}
-        disabled={toggle.isPending}
-        onChange={(e) => toggle.mutate(e.target.checked)}
-        className="mt-1"
-      />
-      <div className="min-w-0">
-        <div className="flex flex-wrap items-baseline gap-2">
-          <span className="text-sm font-medium">{t("经本地代理接管")}</span>
-          <span className="font-mono text-xs text-muted">
-            {proxyUrl.data ?? t("代理未运行")}
-          </span>
+    <div className="mt-4 rounded-xl border border-border bg-surface-2/40 px-3.5 py-3">
+      <label className="flex cursor-pointer items-start gap-3">
+        <input
+          type="checkbox"
+          checked={on}
+          disabled={toggle.isPending}
+          onChange={(e) => toggle.mutate(e.target.checked)}
+          className="mt-1"
+        />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-baseline gap-2">
+            <span className="text-sm font-medium">{t("经本地代理接管")}</span>
+            <span className="font-mono text-xs text-muted">
+              {proxyUrl.data ?? t("代理未运行")}
+            </span>
+          </div>
+          <p className="mt-0.5 text-xs text-muted">
+            {t(
+              "开着时 CLI 指向本地代理，再由它转发到内核 —— 日志才认得出是哪个会话发的，CLI 发的模型名也能在转发前改写（claude-opus-5[1m] 这种内核不认的名字会被剥成能用的）。关掉则直连内核，这两项都拿不到。代理进程本来就一直在跑，这个开关只决定写进 CLI 配置的地址。",
+            )}
+          </p>
         </div>
-        <p className="mt-0.5 text-xs text-muted">
-          {t(
-            "开着时 CLI 指向本地代理，再由它转发到内核 —— 日志才认得出是哪个会话发的，CLI 发的模型名也能在转发前改写（claude-opus-5[1m] 这种内核不认的名字会被剥成能用的）。关掉则直连内核，这两项都拿不到。代理进程本来就一直在跑，这个开关只决定写进 CLI 配置的地址。",
-          )}
-        </p>
-      </div>
-    </label>
+      </label>
+      {on && (
+        <div className="ml-7 mt-2 flex flex-wrap items-center gap-2">
+          <TextInput
+            mono
+            small
+            value={value}
+            placeholder={t("留空 = 默认本地代理")}
+            onChange={(e) => setDraft(e.target.value)}
+            className="max-w-[32rem]"
+            aria-label={t("接管地址")}
+          />
+          <button
+            onClick={() => save.mutate()}
+            disabled={save.isPending || value === (saved.data ?? "")}
+            className="shrink-0 whitespace-nowrap rounded-lg border border-border bg-surface-raised px-3 py-1.5 text-sm hover:bg-surface-2 disabled:opacity-40"
+          >
+            {save.isPending ? t("保存中…") : t("保存")}
+          </button>
+          <p className="w-full font-mono text-[11px] text-muted">
+            {t("要串本地压缩层就整条填：http://localhost:8787/bili/ + 上面这个代理地址")}
+          </p>
+        </div>
+      )}
+    </div>
   );
 }
 
